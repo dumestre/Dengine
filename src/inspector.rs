@@ -1,4 +1,7 @@
-use eframe::egui::{self, Color32, FontFamily, FontId, Stroke, Vec2, TextureHandle, TextureOptions};
+use eframe::egui::{
+    self, Align2, Color32, FontFamily, FontId, LayerId, Order, Stroke, Vec2, TextureHandle,
+    TextureOptions,
+};
 use std::sync::Arc;
 use resvg::tiny_skia;
 use epaint::ColorImage;
@@ -20,7 +23,11 @@ enum InspectorDockSide {
 }
 
 // Função para carregar SVG como textura
-fn load_svg_as_texture(ctx: &egui::Context, svg_path: &str) -> Option<TextureHandle> {
+fn load_svg_as_texture(
+    ctx: &egui::Context,
+    svg_path: &str,
+    tint: Option<Color32>,
+) -> Option<TextureHandle> {
     // Lê o conteúdo do arquivo SVG
     let svg_data = std::fs::read_to_string(svg_path).ok()?;
     
@@ -41,9 +48,20 @@ fn load_svg_as_texture(ctx: &egui::Context, svg_path: &str) -> Option<TextureHan
     
     // Converte o pixmap para ColorImage
     let img = pixmap.take();
+    let mut rgba = img.as_slice().to_vec();
+    if let Some(tint) = tint {
+        for px in rgba.chunks_exact_mut(4) {
+            if px[3] > 0 {
+                px[0] = tint.r();
+                px[1] = tint.g();
+                px[2] = tint.b();
+            }
+        }
+    }
+
     let color_image = ColorImage::from_rgba_unmultiplied(
         [pixmap_size.width() as usize, pixmap_size.height() as usize],
-        img.as_slice(),
+        &rgba,
     );
     
     // Cria a textura no contexto do egui
@@ -63,26 +81,30 @@ impl InspectorWindow {
             unlock_icon_texture: None,
             add_icon_texture: None,
             is_locked: true,
-            dock_side: None,
+            dock_side: Some(InspectorDockSide::Left),
         }
     }
 
     pub fn show(&mut self, ctx: &egui::Context) {
         // Carrega os ícones se ainda não estiverem carregados
         if self.menu_icon_texture.is_none() {
-            self.menu_icon_texture = load_svg_as_texture(ctx, "src/assets/icons/more.svg");
+            self.menu_icon_texture = load_svg_as_texture(ctx, "src/assets/icons/more.svg", None);
         }
         
         if self.lock_icon_texture.is_none() {
-            self.lock_icon_texture = load_svg_as_texture(ctx, "src/assets/icons/lock.svg");
+            self.lock_icon_texture = load_svg_as_texture(ctx, "src/assets/icons/lock.svg", None);
         }
 
         if self.unlock_icon_texture.is_none() {
-            self.unlock_icon_texture = load_svg_as_texture(ctx, "src/assets/icons/unlock.svg");
+            self.unlock_icon_texture = load_svg_as_texture(ctx, "src/assets/icons/unlock.svg", None);
         }
 
         if self.add_icon_texture.is_none() {
-            self.add_icon_texture = load_svg_as_texture(ctx, "src/assets/icons/add.svg");
+            self.add_icon_texture = load_svg_as_texture(
+                ctx,
+                "src/assets/icons/add.svg",
+                Some(Color32::from_rgb(55, 55, 55)),
+            );
         }
 
         // === Configura Roboto ===
@@ -99,7 +121,8 @@ impl InspectorWindow {
         ctx.set_fonts(fonts);
 
         // === Janela do inspetor ===
-        let window_size = egui::Vec2::new(210.0, 90.0);
+        let dock_rect = ctx.available_rect();
+        let window_size = egui::Vec2::new(210.0, dock_rect.height().max(120.0));
         let mut inspector_window = egui::Window::new("inspetor_window_id")
             .open(&mut self.open)
             .title_bar(false)
@@ -107,15 +130,14 @@ impl InspectorWindow {
             .resizable(false)
             .collapsible(false)
             .fixed_size(window_size)
-            .default_height(90.0);
+            .default_height(window_size.y);
 
         if let Some(dock_side) = self.dock_side {
             if !ctx.input(|i| i.pointer.primary_down()) {
-                let content_rect = ctx.content_rect();
-                let y_offset = 80.0;
+                let y_offset = dock_rect.top();
                 let x = match dock_side {
-                    InspectorDockSide::Left => content_rect.left() + 6.0,
-                    InspectorDockSide::Right => content_rect.right() - window_size.x - 6.0,
+                    InspectorDockSide::Left => dock_rect.left(),
+                    InspectorDockSide::Right => dock_rect.right() - window_size.x,
                 };
                 inspector_window = inspector_window.current_pos(egui::pos2(x, y_offset));
             }
@@ -237,11 +259,7 @@ impl InspectorWindow {
                     let add_icon = self
                         .add_icon_texture
                         .as_ref()
-                        .map(|texture| {
-                            egui::Image::new(texture)
-                                .fit_to_exact_size(egui::Vec2::new(12.0, 12.0))
-                                .tint(Color32::from_rgb(55, 55, 55))
-                        });
+                        .map(|texture| egui::Image::new(texture).fit_to_exact_size(egui::Vec2::new(12.0, 12.0)));
 
                     let mut button = egui::Button::new(
                         egui::RichText::new("Componente")
@@ -274,14 +292,51 @@ impl InspectorWindow {
             });
 
         if let Some(window_response) = window_response {
-            if window_response.response.drag_stopped() {
-                let rect = window_response.response.rect;
-                let content_rect = ctx.content_rect();
-                let snap_distance = 28.0;
+            let rect = window_response.response.rect;
+            let content_rect = dock_rect;
+            let snap_distance = 28.0;
+            let near_left = (rect.left() - content_rect.left()).abs() <= snap_distance;
+            let near_right = (content_rect.right() - rect.right()).abs() <= snap_distance;
 
-                if (rect.left() - content_rect.left()).abs() <= snap_distance {
+            let has_pointer_motion = ctx.input(|i| i.pointer.delta().length_sq() > 0.0);
+            let is_active_drag = window_response.response.dragged()
+                && ctx.input(|i| i.pointer.primary_down())
+                && has_pointer_motion;
+
+            if is_active_drag && (near_left || near_right) {
+                let painter =
+                    ctx.layer_painter(LayerId::new(Order::Foreground, egui::Id::new("dock_hint")));
+                let hint_width = 14.0;
+                let hint_rect = if near_left {
+                    egui::Rect::from_min_max(
+                        egui::pos2(content_rect.left(), content_rect.top()),
+                        egui::pos2(content_rect.left() + hint_width, content_rect.bottom()),
+                    )
+                } else {
+                    egui::Rect::from_min_max(
+                        egui::pos2(content_rect.right() - hint_width, content_rect.top()),
+                        egui::pos2(content_rect.right(), content_rect.bottom()),
+                    )
+                };
+
+                painter.rect_filled(
+                    hint_rect,
+                    6.0,
+                    Color32::from_rgba_unmultiplied(15, 232, 121, 110),
+                );
+                painter.text(
+                    hint_rect.center_top() + egui::vec2(0.0, -18.0),
+                    Align2::CENTER_CENTER,
+                    "Solte para encaixar",
+                    FontId::new(11.0, FontFamily::Proportional),
+                    Color32::from_rgb(195, 255, 220),
+                );
+            }
+
+            if window_response.response.drag_stopped() {
+                if near_left {
                     self.dock_side = Some(InspectorDockSide::Left);
-                } else if (content_rect.right() - rect.right()).abs() <= snap_distance {
+                } else if near_right {
                     self.dock_side = Some(InspectorDockSide::Right);
                 } else {
                     self.dock_side = None;
