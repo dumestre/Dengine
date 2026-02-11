@@ -1,5 +1,5 @@
 use eframe::egui::{
-    self, Align2, Color32, FontFamily, FontId, LayerId, Order, Stroke, Vec2, TextureHandle,
+    self, Color32, FontFamily, FontId, LayerId, Order, Pos2, Stroke, Vec2, TextureHandle,
     TextureOptions,
 };
 use std::sync::Arc;
@@ -14,6 +14,8 @@ pub struct InspectorWindow {
     add_icon_texture: Option<TextureHandle>,
     is_locked: bool,
     dock_side: Option<InspectorDockSide>,
+    window_pos: Option<Pos2>,
+    dragging_from_header: bool,
 }
 
 #[derive(Clone, Copy)]
@@ -82,6 +84,8 @@ impl InspectorWindow {
             add_icon_texture: None,
             is_locked: true,
             dock_side: Some(InspectorDockSide::Left),
+            window_pos: None,
+            dragging_from_header: false,
         }
     }
 
@@ -123,25 +127,36 @@ impl InspectorWindow {
         // === Janela do inspetor ===
         let dock_rect = ctx.available_rect();
         let window_size = egui::Vec2::new(210.0, dock_rect.height().max(120.0));
+
+        if self.window_pos.is_none() {
+            self.window_pos = Some(egui::pos2(dock_rect.left(), dock_rect.top()));
+        }
+
+        if let Some(dock_side) = self.dock_side {
+            if !self.dragging_from_header {
+                let x = match dock_side {
+                    InspectorDockSide::Left => dock_rect.left(),
+                    InspectorDockSide::Right => dock_rect.right() - window_size.x,
+                };
+                self.window_pos = Some(egui::pos2(x, dock_rect.top()));
+            }
+        }
+
         let mut inspector_window = egui::Window::new("inspetor_window_id")
             .open(&mut self.open)
             .title_bar(false)
-            .movable(true)
+            .movable(false)
             .resizable(false)
             .collapsible(false)
             .fixed_size(window_size)
             .default_height(window_size.y);
 
-        if let Some(dock_side) = self.dock_side {
-            if !ctx.input(|i| i.pointer.primary_down()) {
-                let y_offset = dock_rect.top();
-                let x = match dock_side {
-                    InspectorDockSide::Left => dock_rect.left(),
-                    InspectorDockSide::Right => dock_rect.right() - window_size.x,
-                };
-                inspector_window = inspector_window.current_pos(egui::pos2(x, y_offset));
-            }
+        if let Some(pos) = self.window_pos {
+            inspector_window = inspector_window.current_pos(pos);
         }
+
+        let mut header_drag_started = false;
+        let mut header_drag_stopped = false;
 
         let window_response = inspector_window.show(ctx, |ui| {
                 ui.spacing_mut().item_spacing.y = 4.0;
@@ -150,22 +165,39 @@ impl InspectorWindow {
                 ui.horizontal(|ui| {
                     let side_width = 40.0;
                     let title_width = (ui.available_width() - (side_width * 2.0)).max(0.0);
+                    let drag_zone_start = ui.cursor().min;
 
                     // Espaço à esquerda espelhando a largura dos ícones, para centralizar o título.
                     ui.allocate_space(egui::Vec2::new(side_width, 0.0));
 
                     // Título centralizado no centro real da janela.
-                    ui.allocate_ui_with_layout(
+                    let title_ir = ui.allocate_ui_with_layout(
                         egui::Vec2::new(title_width, 16.0),
                         egui::Layout::centered_and_justified(egui::Direction::LeftToRight),
                         |ui| {
-                            ui.label(
-                                egui::RichText::new("Inspetor")
-                                    .font(FontId::new(13.0, FontFamily::Proportional))
-                                    .strong(),
+                            ui.add(
+                                egui::Label::new(
+                                    egui::RichText::new("Inspetor")
+                                        .font(FontId::new(13.0, FontFamily::Proportional))
+                                        .strong(),
+                                )
+                                .sense(egui::Sense::hover())
+                                .selectable(false),
                             );
                         },
                     );
+                    let drag_zone = egui::Rect::from_min_max(
+                        egui::pos2(drag_zone_start.x, title_ir.response.rect.top()),
+                        egui::pos2(title_ir.response.rect.right(), title_ir.response.rect.bottom()),
+                    );
+                    let header_drag_response =
+                        ui.interact(drag_zone, ui.id().with("header_drag"), egui::Sense::click_and_drag());
+                    if header_drag_response.drag_started() {
+                        header_drag_started = true;
+                    }
+                    if header_drag_response.drag_stopped() {
+                        header_drag_stopped = true;
+                    }
 
                     // Área dos ícones à direita.
                     ui.allocate_ui_with_layout(
@@ -292,16 +324,27 @@ impl InspectorWindow {
             });
 
         if let Some(window_response) = window_response {
+            if header_drag_started {
+                self.dragging_from_header = true;
+                self.dock_side = None;
+            }
+
+            if self.dragging_from_header && ctx.input(|i| i.pointer.primary_down()) {
+                let delta = ctx.input(|i| i.pointer.delta());
+                if delta != egui::Vec2::ZERO {
+                    if let Some(pos) = self.window_pos {
+                        self.window_pos = Some(pos + delta);
+                    }
+                }
+            }
+
             let rect = window_response.response.rect;
             let content_rect = dock_rect;
             let snap_distance = 28.0;
             let near_left = (rect.left() - content_rect.left()).abs() <= snap_distance;
             let near_right = (content_rect.right() - rect.right()).abs() <= snap_distance;
 
-            let has_pointer_motion = ctx.input(|i| i.pointer.delta().length_sq() > 0.0);
-            let is_active_drag = window_response.response.dragged()
-                && ctx.input(|i| i.pointer.primary_down())
-                && has_pointer_motion;
+            let is_active_drag = self.dragging_from_header && ctx.input(|i| i.pointer.primary_down());
 
             if is_active_drag && (near_left || near_right) {
                 let painter =
@@ -324,16 +367,10 @@ impl InspectorWindow {
                     6.0,
                     Color32::from_rgba_unmultiplied(15, 232, 121, 110),
                 );
-                painter.text(
-                    hint_rect.center_top() + egui::vec2(0.0, -18.0),
-                    Align2::CENTER_CENTER,
-                    "Solte para encaixar",
-                    FontId::new(11.0, FontFamily::Proportional),
-                    Color32::from_rgb(195, 255, 220),
-                );
             }
 
-            if window_response.response.drag_stopped() {
+            if header_drag_stopped || (self.dragging_from_header && !ctx.input(|i| i.pointer.primary_down())) {
+                self.dragging_from_header = false;
                 if near_left {
                     self.dock_side = Some(InspectorDockSide::Left);
                 } else if near_right {

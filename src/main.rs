@@ -46,7 +46,7 @@ fn main() -> eframe::Result<()> {
     let options = NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_title("Dengine Editor")
-            .with_fullscreen(true),
+            .with_maximized(true),
         ..Default::default()
     };
 
