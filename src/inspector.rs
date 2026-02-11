@@ -10,6 +10,13 @@ pub struct InspectorWindow {
     unlock_icon_texture: Option<TextureHandle>,
     add_icon_texture: Option<TextureHandle>,
     is_locked: bool,
+    dock_side: Option<InspectorDockSide>,
+}
+
+#[derive(Clone, Copy)]
+enum InspectorDockSide {
+    Left,
+    Right,
 }
 
 // Função para carregar SVG como textura
@@ -56,6 +63,7 @@ impl InspectorWindow {
             unlock_icon_texture: None,
             add_icon_texture: None,
             is_locked: true,
+            dock_side: None,
         }
     }
 
@@ -91,14 +99,29 @@ impl InspectorWindow {
         ctx.set_fonts(fonts);
 
         // === Janela do inspetor ===
-        egui::Window::new("inspetor_window_id")
+        let window_size = egui::Vec2::new(210.0, 90.0);
+        let mut inspector_window = egui::Window::new("inspetor_window_id")
             .open(&mut self.open)
             .title_bar(false)
+            .movable(true)
             .resizable(false)
             .collapsible(false)
-            .fixed_size(egui::Vec2::new(210.0, 90.0))
-            .default_height(90.0)
-            .show(ctx, |ui| {
+            .fixed_size(window_size)
+            .default_height(90.0);
+
+        if let Some(dock_side) = self.dock_side {
+            if !ctx.input(|i| i.pointer.primary_down()) {
+                let content_rect = ctx.content_rect();
+                let y_offset = 80.0;
+                let x = match dock_side {
+                    InspectorDockSide::Left => content_rect.left() + 6.0,
+                    InspectorDockSide::Right => content_rect.right() - window_size.x - 6.0,
+                };
+                inspector_window = inspector_window.current_pos(egui::pos2(x, y_offset));
+            }
+        }
+
+        let window_response = inspector_window.show(ctx, |ui| {
                 ui.spacing_mut().item_spacing.y = 4.0;
 
                 // Título com ícones
@@ -214,13 +237,17 @@ impl InspectorWindow {
                     let add_icon = self
                         .add_icon_texture
                         .as_ref()
-                        .map(|texture| egui::Image::new(texture).fit_to_exact_size(egui::Vec2::new(12.0, 12.0)));
+                        .map(|texture| {
+                            egui::Image::new(texture)
+                                .fit_to_exact_size(egui::Vec2::new(12.0, 12.0))
+                                .tint(Color32::from_rgb(55, 55, 55))
+                        });
 
                     let mut button = egui::Button::new(
                         egui::RichText::new("Componente")
                             .font(FontId::new(14.0, FontFamily::Proportional))
                             .strong()
-                            .color(Color32::BLACK),
+                            .color(Color32::from_rgb(55, 55, 55)),
                     );
 
                     if let Some(icon) = add_icon {
@@ -229,7 +256,7 @@ impl InspectorWindow {
                             egui::RichText::new("Componente")
                                 .font(FontId::new(14.0, FontFamily::Proportional))
                                 .strong()
-                                .color(Color32::BLACK),
+                                .color(Color32::from_rgb(55, 55, 55)),
                         );
                     }
 
@@ -245,5 +272,21 @@ impl InspectorWindow {
                     }
                 });
             });
+
+        if let Some(window_response) = window_response {
+            if window_response.response.drag_stopped() {
+                let rect = window_response.response.rect;
+                let content_rect = ctx.content_rect();
+                let snap_distance = 28.0;
+
+                if (rect.left() - content_rect.left()).abs() <= snap_distance {
+                    self.dock_side = Some(InspectorDockSide::Left);
+                } else if (content_rect.right() - rect.right()).abs() <= snap_distance {
+                    self.dock_side = Some(InspectorDockSide::Right);
+                } else {
+                    self.dock_side = None;
+                }
+            }
+        }
     }
 }
