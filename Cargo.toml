@@ -1,0 +1,12 @@
+[package]
+name = "Dengine"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+egui = "0.33.3"
+egui_dock = "0.18"
+eframe = { version = "0.33.3", features = ["wgpu"] }
+resvg = "0.47"
+usvg = "0.47"
+epaint = "0.33.3"
