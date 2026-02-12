@@ -7,6 +7,5 @@ edition = "2024"
 egui = "0.33.3"
 egui_dock = "0.18"
 eframe = { version = "0.33.3", features = ["wgpu"] }
-resvg = "0.47"
-usvg = "0.47"
 epaint = "0.33.3"
+image = { version = "0.25", default-features = false, features = ["png"] }

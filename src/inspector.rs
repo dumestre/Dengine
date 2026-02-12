@@ -2,9 +2,8 @@ use eframe::egui::{
     self, Color32, FontFamily, FontId, LayerId, Order, Pos2, Stroke, Vec2, TextureHandle,
     TextureOptions,
 };
-use std::sync::Arc;
-use resvg::tiny_skia;
 use epaint::ColorImage;
+use std::sync::Arc;
 
 pub struct InspectorWindow {
     pub open: bool,
@@ -27,33 +26,16 @@ enum InspectorDockSide {
     Right,
 }
 
-// Função para carregar SVG como textura
-fn load_svg_as_texture(
+// Função para carregar PNG como textura
+fn load_png_as_texture(
     ctx: &egui::Context,
-    svg_path: &str,
+    png_path: &str,
     tint: Option<Color32>,
 ) -> Option<TextureHandle> {
-    // Lê o conteúdo do arquivo SVG
-    let svg_data = std::fs::read_to_string(svg_path).ok()?;
-    
-    // Configura opções para parsing do SVG
-    let options = usvg::Options::default();
-    
-    // Parse do SVG
-    let tree = usvg::Tree::from_str(&svg_data, &options).ok()?;
-    
-    // Define o tamanho para renderização
-    let pixmap_size = tiny_skia::IntSize::from_wh(tree.size().width() as u32, tree.size().height() as u32)?;
-    
-    // Cria um pixmap para renderizar o SVG
-    let mut pixmap = tiny_skia::Pixmap::new(pixmap_size.width(), pixmap_size.height())?;
-    
-    // Renderiza o SVG no pixmap
-    resvg::render(&tree, tiny_skia::Transform::default(), &mut pixmap.as_mut());
-    
-    // Converte o pixmap para ColorImage
-    let img = pixmap.take();
-    let mut rgba = img.as_slice().to_vec();
+    let bytes = std::fs::read(png_path).ok()?;
+    let rgba_img = image::load_from_memory(&bytes).ok()?.to_rgba8();
+    let size = [rgba_img.width() as usize, rgba_img.height() as usize];
+    let mut rgba = rgba_img.into_raw();
     if let Some(tint) = tint {
         for px in rgba.chunks_exact_mut(4) {
             if px[3] > 0 {
@@ -64,17 +46,9 @@ fn load_svg_as_texture(
         }
     }
 
-    let color_image = ColorImage::from_rgba_unmultiplied(
-        [pixmap_size.width() as usize, pixmap_size.height() as usize],
-        &rgba,
-    );
-    
-    // Cria a textura no contexto do egui
-    Some(ctx.load_texture(
-        svg_path.to_owned(),
-        color_image,
-        TextureOptions::LINEAR,
-    ))
+    let color_image = ColorImage::from_rgba_unmultiplied(size, &rgba);
+
+    Some(ctx.load_texture(png_path.to_owned(), color_image, TextureOptions::LINEAR))
 }
 
 impl InspectorWindow {
@@ -98,21 +72,21 @@ impl InspectorWindow {
     pub fn show(&mut self, ctx: &egui::Context) {
         // Carrega os ícones se ainda não estiverem carregados
         if self.menu_icon_texture.is_none() {
-            self.menu_icon_texture = load_svg_as_texture(ctx, "src/assets/icons/more.svg", None);
+            self.menu_icon_texture = load_png_as_texture(ctx, "src/assets/icons/more.png", None);
         }
         
         if self.lock_icon_texture.is_none() {
-            self.lock_icon_texture = load_svg_as_texture(ctx, "src/assets/icons/lock.svg", None);
+            self.lock_icon_texture = load_png_as_texture(ctx, "src/assets/icons/lock.png", None);
         }
 
         if self.unlock_icon_texture.is_none() {
-            self.unlock_icon_texture = load_svg_as_texture(ctx, "src/assets/icons/unlock.svg", None);
+            self.unlock_icon_texture = load_png_as_texture(ctx, "src/assets/icons/unlock.png", None);
         }
 
         if self.add_icon_texture.is_none() {
-            self.add_icon_texture = load_svg_as_texture(
+            self.add_icon_texture = load_png_as_texture(
                 ctx,
-                "src/assets/icons/add.svg",
+                "src/assets/icons/add.png",
                 Some(Color32::from_rgb(55, 55, 55)),
             );
         }
