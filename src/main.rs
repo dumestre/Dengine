@@ -105,11 +105,11 @@ impl App for EditorApp {
                         ui.add_space(8.0);
 
                         let (close_rect, close_resp) =
-                            ui.allocate_exact_size(egui::Vec2::new(24.0, 24.0), egui::Sense::click());
+                            ui.allocate_exact_size(egui::Vec2::new(30.0, 30.0), egui::Sense::click());
                         if close_resp.hovered() {
                             ui.painter().circle_filled(
                                 close_rect.center(),
-                                9.0,
+                                12.0,
                                 egui::Color32::from_rgba_unmultiplied(255, 255, 255, 28),
                             );
                         }
@@ -123,11 +123,11 @@ impl App for EditorApp {
                         }
 
                         let (max_rect, max_resp) =
-                            ui.allocate_exact_size(egui::Vec2::new(24.0, 24.0), egui::Sense::click());
+                            ui.allocate_exact_size(egui::Vec2::new(30.0, 30.0), egui::Sense::click());
                         if max_resp.hovered() {
                             ui.painter().circle_filled(
                                 max_rect.center(),
-                                9.0,
+                                12.0,
                                 egui::Color32::from_rgba_unmultiplied(255, 255, 255, 28),
                             );
                         }
@@ -145,11 +145,11 @@ impl App for EditorApp {
                         }
 
                         let (min_rect, min_resp) =
-                            ui.allocate_exact_size(egui::Vec2::new(24.0, 24.0), egui::Sense::click());
+                            ui.allocate_exact_size(egui::Vec2::new(30.0, 30.0), egui::Sense::click());
                         if min_resp.hovered() {
                             ui.painter().circle_filled(
                                 min_rect.center(),
-                                9.0,
+                                12.0,
                                 egui::Color32::from_rgba_unmultiplied(255, 255, 255, 28),
                             );
                         }
