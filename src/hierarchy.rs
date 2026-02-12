@@ -155,10 +155,10 @@ impl HierarchyWindow {
         );
 
         let vis_rect = Rect::from_center_size(
-            egui::pos2(row_rect.max.x - 18.0, row_rect.center().y),
-            egui::vec2(14.0, 14.0),
+            egui::pos2(row_rect.max.x - 20.0, row_rect.center().y),
+            egui::vec2(16.0, 16.0),
         );
-        let dot_center = egui::pos2(row_rect.max.x - 6.0, row_rect.center().y);
+        let dot_center = egui::pos2(row_rect.max.x - 4.0, row_rect.center().y);
 
         let vis_resp = ui.interact(
             vis_rect,
@@ -181,7 +181,7 @@ impl HierarchyWindow {
         if let Some(vis_tex) = vis_tex {
             ui.painter().image(
                 vis_tex.id(),
-                vis_rect.shrink(1.0),
+                vis_rect.shrink(0.0),
                 Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
                 Color32::WHITE,
             );
@@ -598,6 +598,7 @@ impl HierarchyWindow {
                         if ui.color_edit_button_srgba(&mut color).changed() {
                             self.picker_color = color;
                             self.object_colors.insert(self.selected_object, color);
+                            self.color_picker_open = false;
                         }
                     });
                 });
