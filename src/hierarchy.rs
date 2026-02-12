@@ -22,6 +22,12 @@ pub struct HierarchyWindow {
     object_colors: HashMap<&'static str, Color32>,
     object_visibility: HashMap<&'static str, bool>,
     deleted_objects: HashSet<&'static str>,
+    top_level_order: Vec<&'static str>,
+    player_order: Vec<&'static str>,
+    armature_order: Vec<&'static str>,
+    environment_order: Vec<&'static str>,
+    dragging_object: Option<&'static str>,
+    drop_target: Option<HierarchyDropTarget>,
     color_picker_open: bool,
     picker_color: Color32,
 }
@@ -30,6 +36,23 @@ pub struct HierarchyWindow {
 enum HierarchyDockSide {
     Left,
     Right,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum HierarchyContainer {
+    Top,
+    Player,
+    Armature,
+    Environment,
+}
+
+#[derive(Clone, Copy)]
+enum HierarchyDropTarget {
+    Row {
+        target: &'static str,
+        after: bool,
+    },
+    Container(HierarchyContainer),
 }
 
 fn load_png_as_texture(ctx: &egui::Context, png_path: &str) -> Option<TextureHandle> {
@@ -64,17 +87,118 @@ impl HierarchyWindow {
             object_colors: HashMap::new(),
             object_visibility: HashMap::new(),
             deleted_objects: HashSet::new(),
+            top_level_order: vec!["Directional Light", "Main Camera", "Player", "Environment"],
+            player_order: vec!["Mesh", "Weapon Socket", "Armature"],
+            armature_order: vec!["Spine", "Head"],
+            environment_order: vec!["Terrain", "Trees", "Fog Volume"],
+            dragging_object: None,
+            drop_target: None,
             color_picker_open: false,
             picker_color: Color32::from_rgb(15, 232, 121),
         }
     }
 
-    fn parent_of(name: &'static str) -> Option<&'static str> {
-        match name {
-            "Mesh" | "Weapon Socket" | "Armature" => Some("Player"),
-            "Spine" | "Head" => Some("Armature"),
-            "Terrain" | "Trees" | "Fog Volume" => Some("Environment"),
-            _ => None,
+    fn container_of(&self, object_id: &'static str) -> Option<HierarchyContainer> {
+        if self.top_level_order.contains(&object_id) {
+            Some(HierarchyContainer::Top)
+        } else if self.player_order.contains(&object_id) {
+            Some(HierarchyContainer::Player)
+        } else if self.armature_order.contains(&object_id) {
+            Some(HierarchyContainer::Armature)
+        } else if self.environment_order.contains(&object_id) {
+            Some(HierarchyContainer::Environment)
+        } else {
+            None
+        }
+    }
+
+    fn order_mut(&mut self, container: HierarchyContainer) -> &mut Vec<&'static str> {
+        match container {
+            HierarchyContainer::Top => &mut self.top_level_order,
+            HierarchyContainer::Player => &mut self.player_order,
+            HierarchyContainer::Armature => &mut self.armature_order,
+            HierarchyContainer::Environment => &mut self.environment_order,
+        }
+    }
+
+    fn container_parent_object(container: HierarchyContainer) -> Option<&'static str> {
+        match container {
+            HierarchyContainer::Top => None,
+            HierarchyContainer::Player => Some("Player"),
+            HierarchyContainer::Armature => Some("Armature"),
+            HierarchyContainer::Environment => Some("Environment"),
+        }
+    }
+
+    fn parent_of_current(&self, name: &'static str) -> Option<&'static str> {
+        match self.container_of(name) {
+            Some(container) => Self::container_parent_object(container),
+            None => None,
+        }
+    }
+
+    fn is_descendant_of(&self, node: &'static str, maybe_ancestor: &'static str) -> bool {
+        let mut cursor = self.parent_of_current(node);
+        while let Some(current) = cursor {
+            if current == maybe_ancestor {
+                return true;
+            }
+            cursor = self.parent_of_current(current);
+        }
+        false
+    }
+
+    fn can_move_to_container(&self, dragged: &'static str, to_container: HierarchyContainer) -> bool {
+        if let Some(parent_obj) = Self::container_parent_object(to_container) {
+            if parent_obj == dragged {
+                return false;
+            }
+            if self.is_descendant_of(parent_obj, dragged) {
+                return false;
+            }
+        }
+        true
+    }
+
+    fn remove_from_container(&mut self, obj: &'static str, container: HierarchyContainer) {
+        let order = self.order_mut(container);
+        if let Some(idx) = order.iter().position(|x| *x == obj) {
+            order.remove(idx);
+        }
+    }
+
+    fn move_to_target(&mut self, dragged: &'static str, target: HierarchyDropTarget) {
+        let Some(from_container) = self.container_of(dragged) else { return };
+
+        match target {
+            HierarchyDropTarget::Container(to_container) => {
+                if !self.can_move_to_container(dragged, to_container) {
+                    return;
+                }
+                if from_container == to_container {
+                    return;
+                }
+                self.remove_from_container(dragged, from_container);
+                let to_order = self.order_mut(to_container);
+                if !to_order.contains(&dragged) {
+                    to_order.push(dragged);
+                }
+            }
+            HierarchyDropTarget::Row { target, after } => {
+                let Some(to_container) = self.container_of(target) else { return };
+                if !self.can_move_to_container(dragged, to_container) {
+                    return;
+                }
+
+                self.remove_from_container(dragged, from_container);
+                let to_order = self.order_mut(to_container);
+                let Some(target_idx) = to_order.iter().position(|x| *x == target) else { return };
+                let insert_idx = if after { target_idx + 1 } else { target_idx };
+                let idx = insert_idx.min(to_order.len());
+                if !to_order.contains(&dragged) {
+                    to_order.insert(idx, dragged);
+                }
+            }
         }
     }
 
@@ -84,7 +208,7 @@ impl HierarchyWindow {
             if let Some(color) = self.object_colors.get(current) {
                 return Some(*color);
             }
-            cursor = Self::parent_of(current);
+            cursor = self.parent_of_current(current);
         }
         None
     }
@@ -95,7 +219,7 @@ impl HierarchyWindow {
             if self.deleted_objects.contains(current) {
                 return true;
             }
-            cursor = Self::parent_of(current);
+            cursor = self.parent_of_current(current);
         }
         false
     }
@@ -215,10 +339,6 @@ impl HierarchyWindow {
         object_id: &'static str,
         label: &str,
     ) {
-        if resp.clicked() {
-            self.selected_object = object_id;
-        }
-
         if !self.is_deleted(object_id) {
             let mut copy_clicked = false;
             let mut delete_clicked = false;
@@ -237,6 +357,71 @@ impl HierarchyWindow {
             }
             if delete_clicked {
                 self.delete_object_recursive(object_id);
+            }
+        }
+
+        let drag_resp = ui.interact(
+            resp.rect,
+            ui.id().with(("hierarchy_drag_row", object_id)),
+            egui::Sense::click_and_drag(),
+        );
+        if resp.clicked() || drag_resp.clicked() {
+            self.selected_object = object_id;
+        }
+        if drag_resp.drag_started() {
+            self.dragging_object = Some(object_id);
+            self.drop_target = None;
+        }
+        if let Some(dragging) = self.dragging_object {
+            let hover_pos = ui.ctx().input(|i| i.pointer.hover_pos());
+            let hovering_row = hover_pos.map(|p| resp.rect.contains(p)).unwrap_or(false);
+            if dragging != object_id && hovering_row {
+                let hover_y = ui
+                    .ctx()
+                    .input(|i| i.pointer.hover_pos().map(|p| p.y))
+                    .unwrap_or(resp.rect.center().y);
+                let top_band = resp.rect.top() + resp.rect.height() * 0.28;
+                let bottom_band = resp.rect.bottom() - resp.rect.height() * 0.28;
+                let as_container = match object_id {
+                    "Player" => Some(HierarchyContainer::Player),
+                    "Armature" => Some(HierarchyContainer::Armature),
+                    "Environment" => Some(HierarchyContainer::Environment),
+                    _ => None,
+                };
+
+                if let Some(container) = as_container {
+                    if hover_y > top_band && hover_y < bottom_band {
+                        self.drop_target = Some(HierarchyDropTarget::Container(container));
+                        ui.painter().rect_stroke(
+                            resp.rect.shrink(1.0),
+                            3.0,
+                            Stroke::new(1.5, Color32::from_rgb(15, 232, 121)),
+                            egui::StrokeKind::Outside,
+                        );
+                    } else {
+                        let after = hover_y > resp.rect.center().y;
+                        self.drop_target = Some(HierarchyDropTarget::Row {
+                            target: object_id,
+                            after,
+                        });
+                        let y = if after { resp.rect.bottom() } else { resp.rect.top() };
+                        ui.painter().line_segment(
+                            [egui::pos2(resp.rect.left(), y), egui::pos2(resp.rect.right(), y)],
+                            Stroke::new(2.0, Color32::from_rgb(15, 232, 121)),
+                        );
+                    }
+                } else {
+                    let after = hover_y > resp.rect.center().y;
+                    self.drop_target = Some(HierarchyDropTarget::Row {
+                        target: object_id,
+                        after,
+                    });
+                    let y = if after { resp.rect.bottom() } else { resp.rect.top() };
+                    ui.painter().line_segment(
+                        [egui::pos2(resp.rect.left(), y), egui::pos2(resp.rect.right(), y)],
+                        Stroke::new(2.0, Color32::from_rgb(15, 232, 121)),
+                    );
+                }
             }
         }
     }
@@ -458,69 +643,126 @@ impl HierarchyWindow {
                                 ui.style_mut().visuals.selection.stroke =
                                     Stroke::new(1.0, Color32::from_rgb(15, 232, 121));
 
-                                self.draw_object_row_with_context(
-                                    ui,
-                                    0.0,
-                                    "Directional Light",
-                                    "Directional Light",
-                                );
+                                let top_order = self.top_level_order.clone();
+                                for object in top_order {
+                                    match object {
+                                        "Directional Light" => {
+                                            self.draw_object_row_with_context(
+                                                ui,
+                                                0.0,
+                                                "Directional Light",
+                                                "Directional Light",
+                                            );
+                                        }
+                                        "Main Camera" => {
+                                            self.draw_object_row_with_context(
+                                                ui,
+                                                0.0,
+                                                "Main Camera",
+                                                "Main Camera",
+                                            );
+                                        }
+                                        "Player" => {
+                                            let mut player_open = self.player_open;
+                                            self.draw_parent_row_with_context(
+                                                ui,
+                                                0.0,
+                                                "Player",
+                                                "Player",
+                                                &mut player_open,
+                                            );
+                                            self.player_open = player_open;
 
-                                self.draw_object_row_with_context(ui, 0.0, "Main Camera", "Main Camera");
-
-                                let mut player_open = self.player_open;
-                                self.draw_parent_row_with_context(
-                                    ui,
-                                    0.0,
-                                    "Player",
-                                    "Player",
-                                    &mut player_open,
-                                );
-                                self.player_open = player_open;
-
-                                if self.player_open {
-                                    self.draw_object_row_with_context(ui, 18.0, "Mesh", "Mesh");
-                                    self.draw_object_row_with_context(
-                                        ui,
-                                        18.0,
-                                        "Weapon Socket",
-                                        "Weapon Socket",
-                                    );
-
-                                    let mut armature_open = self.armature_open;
-                                    self.draw_parent_row_with_context(
-                                        ui,
-                                        18.0,
-                                        "Armature",
-                                        "Armature",
-                                        &mut armature_open,
-                                    );
-                                    self.armature_open = armature_open;
-
-                                    if self.armature_open {
-                                        self.draw_object_row_with_context(ui, 36.0, "Spine", "Spine");
-                                        self.draw_object_row_with_context(ui, 36.0, "Head", "Head");
+                                            if self.player_open {
+                                                let player_children = self.player_order.clone();
+                                                for child in player_children {
+                                                    match child {
+                                                        "Mesh" => {
+                                                            self.draw_object_row_with_context(
+                                                                ui, 18.0, "Mesh", "Mesh",
+                                                            );
+                                                        }
+                                                        "Weapon Socket" => {
+                                                            self.draw_object_row_with_context(
+                                                                ui,
+                                                                18.0,
+                                                                "Weapon Socket",
+                                                                "Weapon Socket",
+                                                            );
+                                                        }
+                                                        "Armature" => {
+                                                            let mut armature_open = self.armature_open;
+                                                            self.draw_parent_row_with_context(
+                                                                ui,
+                                                                18.0,
+                                                                "Armature",
+                                                                "Armature",
+                                                                &mut armature_open,
+                                                            );
+                                                            self.armature_open = armature_open;
+                                                            if self.armature_open {
+                                                                let arm_children =
+                                                                    self.armature_order.clone();
+                                                                for arm_child in arm_children {
+                                                                    match arm_child {
+                                                                        "Spine" => self
+                                                                            .draw_object_row_with_context(
+                                                                                ui,
+                                                                                36.0,
+                                                                                "Spine",
+                                                                                "Spine",
+                                                                            ),
+                                                                        "Head" => self
+                                                                            .draw_object_row_with_context(
+                                                                                ui,
+                                                                                36.0,
+                                                                                "Head",
+                                                                                "Head",
+                                                                            ),
+                                                                        _ => {}
+                                                                    }
+                                                                }
+                                                            }
+                                                        }
+                                                        _ => {}
+                                                    }
+                                                }
+                                            }
+                                        }
+                                        "Environment" => {
+                                            let mut environment_open = self.environment_open;
+                                            self.draw_parent_row_with_context(
+                                                ui,
+                                                0.0,
+                                                "Environment",
+                                                "Environment",
+                                                &mut environment_open,
+                                            );
+                                            self.environment_open = environment_open;
+                                            if self.environment_open {
+                                                let env_children = self.environment_order.clone();
+                                                for env_child in env_children {
+                                                    match env_child {
+                                                        "Terrain" => self.draw_object_row_with_context(
+                                                            ui, 18.0, "Terrain", "Terrain",
+                                                        ),
+                                                        "Trees" => self.draw_object_row_with_context(
+                                                            ui, 18.0, "Trees", "Trees",
+                                                        ),
+                                                        "Fog Volume" => self
+                                                            .draw_object_row_with_context(
+                                                                ui,
+                                                                18.0,
+                                                                "Fog Volume",
+                                                                "Fog Volume",
+                                                            ),
+                                                        _ => {}
+                                                    }
+                                                }
+                                            }
+                                        }
+                                        _ => {}
                                     }
-                                }
-
-                                let mut environment_open = self.environment_open;
-                                self.draw_parent_row_with_context(
-                                    ui,
-                                    0.0,
-                                    "Environment",
-                                    "Environment",
-                                    &mut environment_open,
-                                );
-                                self.environment_open = environment_open;
-
-                                if self.environment_open {
-                                    self.draw_object_row_with_context(ui, 18.0, "Terrain", "Terrain");
-                                    self.draw_object_row_with_context(ui, 18.0, "Trees", "Trees");
-                                    self.draw_object_row_with_context(
-                                        ui,
-                                        18.0,
-                                        "Fog Volume",
-                                        "Fog Volume",
-                                    );
                                 }
 
                                 let empty_h = ui.available_height().max(120.0);
@@ -533,6 +775,17 @@ impl HierarchyWindow {
                                     0.0,
                                     Color32::from_rgba_unmultiplied(0, 0, 0, 0),
                                 );
+                                if self.dragging_object.is_some() && empty_resp.hovered() {
+                                    self.drop_target = Some(HierarchyDropTarget::Container(
+                                        HierarchyContainer::Top,
+                                    ));
+                                    ui.painter().rect_stroke(
+                                        empty_rect.shrink(2.0),
+                                        3.0,
+                                        Stroke::new(1.5, Color32::from_rgb(15, 232, 121)),
+                                        egui::StrokeKind::Outside,
+                                    );
+                                }
                                 empty_resp.context_menu(|ui| {
                                     if ui.button("Criar objeto vazio").clicked() {
                                         ui.close();
@@ -677,6 +930,14 @@ impl HierarchyWindow {
 
         if resize_stopped || (self.resizing_width && !pointer_down) {
             self.resizing_width = false;
+        }
+
+        if self.dragging_object.is_some() && !pointer_down {
+            if let (Some(dragged), Some(target)) = (self.dragging_object, self.drop_target) {
+                self.move_to_target(dragged, target);
+            }
+            self.dragging_object = None;
+            self.drop_target = None;
         }
     }
 
