@@ -373,7 +373,7 @@ impl App for EditorApp {
             });
 
         // Janela Inspetor
-        self.inspector.show(ctx);
+        self.inspector.show(ctx, 0.0, 0.0);
         let i_left = self.inspector.docked_left_width();
         let i_right = self.inspector.docked_right_width();
         self.hierarchy.show(ctx, i_left, i_right);
