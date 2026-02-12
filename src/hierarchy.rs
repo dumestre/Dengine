@@ -2,12 +2,14 @@ use eframe::egui::{
     self, Align2, Color32, FontFamily, FontId, Id, Order, Pos2, Rect, Stroke, TextureHandle, Vec2,
 };
 use epaint::ColorImage;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 pub struct HierarchyWindow {
     pub open: bool,
     selector_icon_texture: Option<TextureHandle>,
     arrow_icon_texture: Option<TextureHandle>,
+    view_icon_texture: Option<TextureHandle>,
+    no_view_icon_texture: Option<TextureHandle>,
     dock_side: Option<HierarchyDockSide>,
     window_pos: Option<Pos2>,
     window_width: f32,
@@ -18,6 +20,8 @@ pub struct HierarchyWindow {
     armature_open: bool,
     environment_open: bool,
     object_colors: HashMap<&'static str, Color32>,
+    object_visibility: HashMap<&'static str, bool>,
+    deleted_objects: HashSet<&'static str>,
     color_picker_open: bool,
     picker_color: Color32,
 }
@@ -46,6 +50,8 @@ impl HierarchyWindow {
             open: true,
             selector_icon_texture: None,
             arrow_icon_texture: None,
+            view_icon_texture: None,
+            no_view_icon_texture: None,
             dock_side: Some(HierarchyDockSide::Right),
             window_pos: None,
             window_width: 220.0,
@@ -56,6 +62,8 @@ impl HierarchyWindow {
             armature_open: true,
             environment_open: true,
             object_colors: HashMap::new(),
+            object_visibility: HashMap::new(),
+            deleted_objects: HashSet::new(),
             color_picker_open: false,
             picker_color: Color32::from_rgb(15, 232, 121),
         }
@@ -81,25 +89,209 @@ impl HierarchyWindow {
         None
     }
 
+    fn is_deleted(&self, name: &'static str) -> bool {
+        let mut cursor = Some(name);
+        while let Some(current) = cursor {
+            if self.deleted_objects.contains(current) {
+                return true;
+            }
+            cursor = Self::parent_of(current);
+        }
+        false
+    }
+
+    fn children_of(name: &'static str) -> &'static [&'static str] {
+        match name {
+            "Player" => &["Mesh", "Weapon Socket", "Armature"],
+            "Armature" => &["Spine", "Head"],
+            "Environment" => &["Terrain", "Trees", "Fog Volume"],
+            _ => &[],
+        }
+    }
+
+    fn delete_object_recursive(&mut self, name: &'static str) {
+        self.deleted_objects.insert(name);
+        self.object_colors.remove(name);
+        self.object_visibility.remove(name);
+        for &child in Self::children_of(name) {
+            self.delete_object_recursive(child);
+        }
+        if self.selected_object == name {
+            self.selected_object = "Main Camera";
+        }
+    }
+
     fn draw_object_row(
-        &self,
+        &mut self,
         ui: &mut egui::Ui,
         indent: f32,
         object_id: &'static str,
         label: &str,
         selected: bool,
     ) -> egui::Response {
+        if self.is_deleted(object_id) {
+            return ui.allocate_response(egui::vec2(0.0, 0.0), egui::Sense::hover());
+        }
+
         let color_dot = self.effective_color(object_id);
-        ui.horizontal(|ui| {
-            ui.add_space(indent);
-            let resp = ui.selectable_label(selected, label);
-            if let Some(color) = color_dot {
-                let center = egui::pos2(ui.max_rect().right() - 8.0, resp.rect.center().y);
-                ui.painter().circle_filled(center, 4.0, color);
+        let is_visible = *self.object_visibility.get(object_id).unwrap_or(&true);
+        let (row_rect, _) =
+            ui.allocate_exact_size(egui::vec2(ui.available_width(), 18.0), egui::Sense::hover());
+
+        let controls_w = 36.0;
+        let left_rect = Rect::from_min_max(
+            row_rect.min,
+            egui::pos2((row_rect.max.x - controls_w).max(row_rect.min.x), row_rect.max.y),
+        );
+        let mut row_resp = ui.allocate_response(egui::vec2(0.0, 0.0), egui::Sense::hover());
+        ui.scope_builder(
+            egui::UiBuilder::new()
+                .max_rect(left_rect)
+                .layout(egui::Layout::left_to_right(egui::Align::Center)),
+            |ui| {
+                ui.add_space(indent);
+                row_resp = ui.selectable_label(selected, label);
+            },
+        );
+
+        let vis_rect = Rect::from_center_size(
+            egui::pos2(row_rect.max.x - 18.0, row_rect.center().y),
+            egui::vec2(14.0, 14.0),
+        );
+        let dot_center = egui::pos2(row_rect.max.x - 6.0, row_rect.center().y);
+
+        let vis_resp = ui.interact(
+            vis_rect,
+            ui.id().with(("vis_toggle", object_id)),
+            egui::Sense::click(),
+        );
+        if vis_resp.hovered() {
+            ui.painter().rect_filled(
+                vis_rect.expand2(egui::vec2(1.0, 1.0)),
+                3.0,
+                Color32::from_rgba_unmultiplied(255, 255, 255, 20),
+            );
+        }
+
+        let vis_tex = if is_visible {
+            self.view_icon_texture.as_ref()
+        } else {
+            self.no_view_icon_texture.as_ref()
+        };
+        if let Some(vis_tex) = vis_tex {
+            ui.painter().image(
+                vis_tex.id(),
+                vis_rect.shrink(1.0),
+                Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
+                Color32::WHITE,
+            );
+        }
+        if vis_resp.clicked() {
+            self.object_visibility.insert(object_id, !is_visible);
+        }
+
+        if let Some(color) = color_dot {
+            ui.painter().circle_filled(dot_center, 4.0, color);
+        }
+
+        row_resp
+    }
+
+    fn draw_object_row_with_context(
+        &mut self,
+        ui: &mut egui::Ui,
+        indent: f32,
+        object_id: &'static str,
+        label: &str,
+    ) {
+        let resp = self.draw_object_row(ui, indent, object_id, label, self.selected_object == object_id);
+        self.apply_row_interactions(ui, &resp, object_id, label);
+    }
+
+    fn apply_row_interactions(
+        &mut self,
+        ui: &mut egui::Ui,
+        resp: &egui::Response,
+        object_id: &'static str,
+        label: &str,
+    ) {
+        if resp.clicked() {
+            self.selected_object = object_id;
+        }
+
+        if !self.is_deleted(object_id) {
+            let mut copy_clicked = false;
+            let mut delete_clicked = false;
+            resp.context_menu(|ui| {
+                if ui.button("Copiar").clicked() {
+                    copy_clicked = true;
+                    ui.close();
+                }
+                if ui.button("Deletar").clicked() {
+                    delete_clicked = true;
+                    ui.close();
+                }
+            });
+            if copy_clicked {
+                ui.ctx().copy_text(label.to_owned());
             }
-            resp
-        })
-        .inner
+            if delete_clicked {
+                self.delete_object_recursive(object_id);
+            }
+        }
+    }
+
+    fn draw_parent_row_with_context(
+        &mut self,
+        ui: &mut egui::Ui,
+        indent: f32,
+        object_id: &'static str,
+        label: &str,
+        is_open: &mut bool,
+    ) {
+        let resp = self.draw_object_row(
+            ui,
+            indent + 16.0,
+            object_id,
+            label,
+            self.selected_object == object_id,
+        );
+        self.apply_row_interactions(ui, &resp, object_id, label);
+
+        let arrow_rect = Rect::from_center_size(
+            egui::pos2(resp.rect.left() - 8.0, resp.rect.center().y),
+            egui::vec2(14.0, 14.0),
+        );
+        let arrow_resp = ui.interact(
+            arrow_rect,
+            ui.id().with(("hierarchy_arrow", object_id)),
+            egui::Sense::click(),
+        );
+        if arrow_resp.clicked() {
+            *is_open = !*is_open;
+        }
+
+        if let Some(arrow_tex) = &self.arrow_icon_texture {
+            let angle = if *is_open {
+                std::f32::consts::FRAC_PI_2
+            } else {
+                0.0
+            };
+            let _ = ui.put(
+                arrow_rect,
+                egui::Image::new(arrow_tex)
+                    .fit_to_exact_size(egui::vec2(10.0, 10.0))
+                    .rotate(angle, Vec2::splat(0.5)),
+            );
+        } else {
+            ui.painter().text(
+                arrow_rect.center(),
+                Align2::CENTER_CENTER,
+                if *is_open { "▾" } else { "▸" },
+                FontId::new(11.0, FontFamily::Proportional),
+                Color32::from_gray(140),
+            );
+        }
     }
 
     pub fn show(&mut self, ctx: &egui::Context, left_reserved: f32, right_reserved: f32) {
@@ -114,7 +306,12 @@ impl HierarchyWindow {
         if self.arrow_icon_texture.is_none() {
             self.arrow_icon_texture = load_png_as_texture(ctx, "src/assets/icons/seta.png");
         }
-        let arrow_icon_texture = self.arrow_icon_texture.clone();
+        if self.view_icon_texture.is_none() {
+            self.view_icon_texture = load_png_as_texture(ctx, "src/assets/icons/view.png");
+        }
+        if self.no_view_icon_texture.is_none() {
+            self.no_view_icon_texture = load_png_as_texture(ctx, "src/assets/icons/noview.png");
+        }
 
         let dock_rect = ctx.available_rect();
         let pointer_down = ctx.input(|i| i.pointer.primary_down());
@@ -261,284 +458,98 @@ impl HierarchyWindow {
                                 ui.style_mut().visuals.selection.stroke =
                                     Stroke::new(1.0, Color32::from_rgb(15, 232, 121));
 
-                                if self
-                                    .draw_object_row(
-                                        ui,
-                                        0.0,
-                                        "Directional Light",
-                                        "Directional Light",
-                                        self.selected_object == "Directional Light",
-                                    )
-                                    .clicked()
-                                {
-                                    self.selected_object = "Directional Light";
-                                }
+                                self.draw_object_row_with_context(
+                                    ui,
+                                    0.0,
+                                    "Directional Light",
+                                    "Directional Light",
+                                );
 
-                                if self
-                                    .draw_object_row(
-                                        ui,
-                                        0.0,
-                                        "Main Camera",
-                                        "Main Camera",
-                                        self.selected_object == "Main Camera",
-                                    )
-                                    .clicked()
-                                {
-                                    self.selected_object = "Main Camera";
-                                }
+                                self.draw_object_row_with_context(ui, 0.0, "Main Camera", "Main Camera");
 
-                                ui.horizontal(|ui| {
-                                    let arrow_clicked = if let Some(arrow_tex) = &arrow_icon_texture {
-                                        let arrow_img = egui::Image::new(arrow_tex)
-                                            .fit_to_exact_size(egui::vec2(10.0, 10.0))
-                                            .rotate(
-                                                if self.player_open {
-                                                    std::f32::consts::FRAC_PI_2
-                                                } else {
-                                                    0.0
-                                                },
-                                                Vec2::splat(0.5),
-                                            );
-                                        ui.add_sized(
-                                            [16.0, 16.0],
-                                            egui::Button::image(arrow_img).frame(false),
-                                        )
-                                        .clicked()
-                                    } else {
-                                        ui.add_sized(
-                                            [16.0, 16.0],
-                                            egui::Button::new(if self.player_open { "▾" } else { "▸" })
-                                                .frame(false),
-                                        )
-                                        .clicked()
-                                    };
-                                    if arrow_clicked
-                                    {
-                                        self.player_open = !self.player_open;
-                                    }
-                                    if self
-                                        .draw_object_row(
-                                            ui,
-                                            0.0,
-                                            "Player",
-                                            "Player",
-                                            self.selected_object == "Player",
-                                        )
-                                        .clicked()
-                                    {
-                                        self.selected_object = "Player";
-                                    }
-                                });
+                                let mut player_open = self.player_open;
+                                self.draw_parent_row_with_context(
+                                    ui,
+                                    0.0,
+                                    "Player",
+                                    "Player",
+                                    &mut player_open,
+                                );
+                                self.player_open = player_open;
 
                                 if self.player_open {
-                                    ui.horizontal(|ui| {
-                                        ui.add_space(18.0);
-                                        if self
-                                            .draw_object_row(
-                                                ui,
-                                                0.0,
-                                                "Mesh",
-                                                "Mesh",
-                                                self.selected_object == "Mesh",
-                                            )
-                                            .clicked()
-                                        {
-                                            self.selected_object = "Mesh";
-                                        }
-                                    });
+                                    self.draw_object_row_with_context(ui, 18.0, "Mesh", "Mesh");
+                                    self.draw_object_row_with_context(
+                                        ui,
+                                        18.0,
+                                        "Weapon Socket",
+                                        "Weapon Socket",
+                                    );
 
-                                    ui.horizontal(|ui| {
-                                        ui.add_space(18.0);
-                                        if self
-                                            .draw_object_row(
-                                                ui,
-                                                0.0,
-                                                "Weapon Socket",
-                                                "Weapon Socket",
-                                                self.selected_object == "Weapon Socket",
-                                            )
-                                            .clicked()
-                                        {
-                                            self.selected_object = "Weapon Socket";
-                                        }
-                                    });
-
-                                    ui.horizontal(|ui| {
-                                        ui.add_space(18.0);
-                                        let arrow_clicked = if let Some(arrow_tex) = &arrow_icon_texture {
-                                            let arrow_img = egui::Image::new(arrow_tex)
-                                                .fit_to_exact_size(egui::vec2(10.0, 10.0))
-                                                .rotate(
-                                                    if self.armature_open {
-                                                        std::f32::consts::FRAC_PI_2
-                                                    } else {
-                                                        0.0
-                                                    },
-                                                    Vec2::splat(0.5),
-                                                );
-                                            ui.add_sized(
-                                                [16.0, 16.0],
-                                                egui::Button::image(arrow_img).frame(false),
-                                            )
-                                            .clicked()
-                                        } else {
-                                            ui.add_sized(
-                                                [16.0, 16.0],
-                                                egui::Button::new(if self.armature_open {
-                                                    "▾"
-                                                } else {
-                                                    "▸"
-                                                })
-                                                .frame(false),
-                                            )
-                                            .clicked()
-                                        };
-                                        if arrow_clicked
-                                        {
-                                            self.armature_open = !self.armature_open;
-                                        }
-                                        if self
-                                            .draw_object_row(
-                                                ui,
-                                                0.0,
-                                                "Armature",
-                                                "Armature",
-                                                self.selected_object == "Armature",
-                                            )
-                                            .clicked()
-                                        {
-                                            self.selected_object = "Armature";
-                                        }
-                                    });
+                                    let mut armature_open = self.armature_open;
+                                    self.draw_parent_row_with_context(
+                                        ui,
+                                        18.0,
+                                        "Armature",
+                                        "Armature",
+                                        &mut armature_open,
+                                    );
+                                    self.armature_open = armature_open;
 
                                     if self.armature_open {
-                                        ui.horizontal(|ui| {
-                                            ui.add_space(36.0);
-                                            if self
-                                                .draw_object_row(
-                                                    ui,
-                                                    0.0,
-                                                    "Spine",
-                                                    "Spine",
-                                                    self.selected_object == "Spine",
-                                                )
-                                                .clicked()
-                                            {
-                                                self.selected_object = "Spine";
-                                            }
-                                        });
-                                        ui.horizontal(|ui| {
-                                            ui.add_space(36.0);
-                                            if self
-                                                .draw_object_row(
-                                                    ui,
-                                                    0.0,
-                                                    "Head",
-                                                    "Head",
-                                                    self.selected_object == "Head",
-                                                )
-                                                .clicked()
-                                            {
-                                                self.selected_object = "Head";
-                                            }
-                                        });
+                                        self.draw_object_row_with_context(ui, 36.0, "Spine", "Spine");
+                                        self.draw_object_row_with_context(ui, 36.0, "Head", "Head");
                                     }
                                 }
 
-                                ui.horizontal(|ui| {
-                                    let arrow_clicked = if let Some(arrow_tex) = &arrow_icon_texture {
-                                        let arrow_img = egui::Image::new(arrow_tex)
-                                            .fit_to_exact_size(egui::vec2(10.0, 10.0))
-                                            .rotate(
-                                                if self.environment_open {
-                                                    std::f32::consts::FRAC_PI_2
-                                                } else {
-                                                    0.0
-                                                },
-                                                Vec2::splat(0.5),
-                                            );
-                                        ui.add_sized(
-                                            [16.0, 16.0],
-                                            egui::Button::image(arrow_img).frame(false),
-                                        )
-                                        .clicked()
-                                    } else {
-                                        ui.add_sized(
-                                            [16.0, 16.0],
-                                            egui::Button::new(if self.environment_open {
-                                                "▾"
-                                            } else {
-                                                "▸"
-                                            })
-                                            .frame(false),
-                                        )
-                                        .clicked()
-                                    };
-                                    if arrow_clicked
-                                    {
-                                        self.environment_open = !self.environment_open;
-                                    }
-                                    if self
-                                        .draw_object_row(
-                                            ui,
-                                            0.0,
-                                            "Environment",
-                                            "Environment",
-                                            self.selected_object == "Environment",
-                                        )
-                                        .clicked()
-                                    {
-                                        self.selected_object = "Environment";
-                                    }
-                                });
+                                let mut environment_open = self.environment_open;
+                                self.draw_parent_row_with_context(
+                                    ui,
+                                    0.0,
+                                    "Environment",
+                                    "Environment",
+                                    &mut environment_open,
+                                );
+                                self.environment_open = environment_open;
 
                                 if self.environment_open {
-                                    ui.horizontal(|ui| {
-                                        ui.add_space(18.0);
-                                        if self
-                                            .draw_object_row(
-                                                ui,
-                                                0.0,
-                                                "Terrain",
-                                                "Terrain",
-                                                self.selected_object == "Terrain",
-                                            )
-                                            .clicked()
-                                        {
-                                            self.selected_object = "Terrain";
-                                        }
-                                    });
-                                    ui.horizontal(|ui| {
-                                        ui.add_space(18.0);
-                                        if self
-                                            .draw_object_row(
-                                                ui,
-                                                0.0,
-                                                "Trees",
-                                                "Trees",
-                                                self.selected_object == "Trees",
-                                            )
-                                            .clicked()
-                                        {
-                                            self.selected_object = "Trees";
-                                        }
-                                    });
-                                    ui.horizontal(|ui| {
-                                        ui.add_space(18.0);
-                                        if self
-                                            .draw_object_row(
-                                                ui,
-                                                0.0,
-                                                "Fog Volume",
-                                                "Fog Volume",
-                                                self.selected_object == "Fog Volume",
-                                            )
-                                            .clicked()
-                                        {
-                                            self.selected_object = "Fog Volume";
-                                        }
-                                    });
+                                    self.draw_object_row_with_context(ui, 18.0, "Terrain", "Terrain");
+                                    self.draw_object_row_with_context(ui, 18.0, "Trees", "Trees");
+                                    self.draw_object_row_with_context(
+                                        ui,
+                                        18.0,
+                                        "Fog Volume",
+                                        "Fog Volume",
+                                    );
                                 }
+
+                                let empty_h = ui.available_height().max(120.0);
+                                let (empty_rect, empty_resp) = ui.allocate_exact_size(
+                                    egui::vec2(ui.available_width(), empty_h),
+                                    egui::Sense::click(),
+                                );
+                                ui.painter().rect_filled(
+                                    empty_rect,
+                                    0.0,
+                                    Color32::from_rgba_unmultiplied(0, 0, 0, 0),
+                                );
+                                empty_resp.context_menu(|ui| {
+                                    if ui.button("Criar objeto vazio").clicked() {
+                                        ui.close();
+                                    }
+                                    ui.menu_button("Luzes", |ui| {
+                                        if ui.button("Directional Light").clicked() {
+                                            self.deleted_objects.remove("Directional Light");
+                                            ui.close();
+                                        }
+                                        if ui.button("Point Light").clicked() {
+                                            ui.close();
+                                        }
+                                        if ui.button("Spot Light").clicked() {
+                                            ui.close();
+                                        }
+                                    });
+                                });
                             });
                     },
                 );
