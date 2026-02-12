@@ -28,6 +28,7 @@ pub struct HierarchyWindow {
     environment_order: Vec<&'static str>,
     dragging_object: Option<&'static str>,
     drop_target: Option<HierarchyDropTarget>,
+    drag_hover_parent: Option<(&'static str, f64)>,
     color_picker_open: bool,
     picker_color: Color32,
 }
@@ -93,8 +94,27 @@ impl HierarchyWindow {
             environment_order: vec!["Terrain", "Trees", "Fog Volume"],
             dragging_object: None,
             drop_target: None,
+            drag_hover_parent: None,
             color_picker_open: false,
             picker_color: Color32::from_rgb(15, 232, 121),
+        }
+    }
+
+    fn is_parent_open(&self, object_id: &'static str) -> Option<bool> {
+        match object_id {
+            "Player" => Some(self.player_open),
+            "Armature" => Some(self.armature_open),
+            "Environment" => Some(self.environment_open),
+            _ => None,
+        }
+    }
+
+    fn set_parent_open(&mut self, object_id: &'static str, open: bool) {
+        match object_id {
+            "Player" => self.player_open = open,
+            "Armature" => self.armature_open = open,
+            "Environment" => self.environment_open = open,
+            _ => {}
         }
     }
 
@@ -376,6 +396,7 @@ impl HierarchyWindow {
             let hover_pos = ui.ctx().input(|i| i.pointer.hover_pos());
             let hovering_row = hover_pos.map(|p| resp.rect.contains(p)).unwrap_or(false);
             if dragging != object_id && hovering_row {
+                let now = ui.ctx().input(|i| i.time);
                 let hover_y = ui
                     .ctx()
                     .input(|i| i.pointer.hover_pos().map(|p| p.y))
@@ -398,6 +419,21 @@ impl HierarchyWindow {
                             Stroke::new(1.5, Color32::from_rgb(15, 232, 121)),
                             egui::StrokeKind::Outside,
                         );
+                        if self.is_parent_open(object_id) == Some(false) {
+                            match self.drag_hover_parent {
+                                Some((id, start)) if id == object_id => {
+                                    if now - start >= 0.45 {
+                                        self.set_parent_open(object_id, true);
+                                        self.drag_hover_parent = None;
+                                    }
+                                }
+                                _ => {
+                                    self.drag_hover_parent = Some((object_id, now));
+                                }
+                            }
+                        } else {
+                            self.drag_hover_parent = None;
+                        }
                     } else {
                         let after = hover_y > resp.rect.center().y;
                         self.drop_target = Some(HierarchyDropTarget::Row {
@@ -409,6 +445,7 @@ impl HierarchyWindow {
                             [egui::pos2(resp.rect.left(), y), egui::pos2(resp.rect.right(), y)],
                             Stroke::new(2.0, Color32::from_rgb(15, 232, 121)),
                         );
+                        self.drag_hover_parent = None;
                     }
                 } else {
                     let after = hover_y > resp.rect.center().y;
@@ -421,6 +458,7 @@ impl HierarchyWindow {
                         [egui::pos2(resp.rect.left(), y), egui::pos2(resp.rect.right(), y)],
                         Stroke::new(2.0, Color32::from_rgb(15, 232, 121)),
                     );
+                    self.drag_hover_parent = None;
                 }
             }
         }
@@ -938,6 +976,34 @@ impl HierarchyWindow {
             }
             self.dragging_object = None;
             self.drop_target = None;
+            self.drag_hover_parent = None;
+        }
+
+        if let Some(dragging) = self.dragging_object {
+            if let Some(pos) = ctx.input(|i| i.pointer.hover_pos()) {
+                let preview_rect =
+                    Rect::from_min_size(pos + egui::vec2(12.0, 12.0), egui::vec2(124.0, 22.0));
+                let painter =
+                    ctx.layer_painter(egui::LayerId::new(Order::Tooltip, Id::new("hier_drag_preview")));
+                painter.rect_filled(
+                    preview_rect,
+                    4.0,
+                    Color32::from_rgba_unmultiplied(28, 28, 28, 220),
+                );
+                painter.rect_stroke(
+                    preview_rect,
+                    4.0,
+                    Stroke::new(1.0, Color32::from_gray(90)),
+                    egui::StrokeKind::Outside,
+                );
+                painter.text(
+                    preview_rect.left_center() + egui::vec2(8.0, 0.0),
+                    Align2::LEFT_CENTER,
+                    dragging,
+                    FontId::new(12.0, FontFamily::Proportional),
+                    Color32::from_gray(220),
+                );
+            }
         }
     }
 
