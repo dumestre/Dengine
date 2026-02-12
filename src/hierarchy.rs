@@ -3,6 +3,7 @@ use eframe::egui::{
 };
 use epaint::ColorImage;
 use std::collections::{HashMap, HashSet};
+use crate::EngineLanguage;
 
 pub struct HierarchyWindow {
     pub open: bool,
@@ -31,6 +32,7 @@ pub struct HierarchyWindow {
     drag_hover_parent: Option<(&'static str, f64)>,
     color_picker_open: bool,
     picker_color: Color32,
+    language: EngineLanguage,
 }
 
 #[derive(Clone, Copy)]
@@ -97,6 +99,84 @@ impl HierarchyWindow {
             drag_hover_parent: None,
             color_picker_open: false,
             picker_color: Color32::from_rgb(15, 232, 121),
+            language: EngineLanguage::Pt,
+        }
+    }
+
+    fn tr(&self, key: &'static str) -> &'static str {
+        match (self.language, key) {
+            (EngineLanguage::Pt, "title") => "Hierarquia",
+            (EngineLanguage::En, "title") => "Hierarchy",
+            (EngineLanguage::Es, "title") => "Jerarquía",
+            (EngineLanguage::Pt, "copy") => "Copiar",
+            (EngineLanguage::En, "copy") => "Copy",
+            (EngineLanguage::Es, "copy") => "Copiar",
+            (EngineLanguage::Pt, "delete") => "Deletar",
+            (EngineLanguage::En, "delete") => "Delete",
+            (EngineLanguage::Es, "delete") => "Eliminar",
+            (EngineLanguage::Pt, "create_empty") => "Criar objeto vazio",
+            (EngineLanguage::En, "create_empty") => "Create Empty Object",
+            (EngineLanguage::Es, "create_empty") => "Crear objeto vacío",
+            (EngineLanguage::Pt, "lights") => "Luzes",
+            (EngineLanguage::En, "lights") => "Lights",
+            (EngineLanguage::Es, "lights") => "Luces",
+            (EngineLanguage::Pt, "pick_color") => "Selecionar cor",
+            (EngineLanguage::En, "pick_color") => "Pick color",
+            (EngineLanguage::Es, "pick_color") => "Seleccionar color",
+            _ => key,
+        }
+    }
+
+    fn object_label(&self, object_id: &'static str) -> &'static str {
+        match (self.language, object_id) {
+            (EngineLanguage::Pt, "Directional Light") => "Luz Direcional",
+            (EngineLanguage::En, "Directional Light") => "Directional Light",
+            (EngineLanguage::Es, "Directional Light") => "Luz Direccional",
+
+            (EngineLanguage::Pt, "Main Camera") => "Câmera Principal",
+            (EngineLanguage::En, "Main Camera") => "Main Camera",
+            (EngineLanguage::Es, "Main Camera") => "Cámara Principal",
+
+            (EngineLanguage::Pt, "Player") => "Jogador",
+            (EngineLanguage::En, "Player") => "Player",
+            (EngineLanguage::Es, "Player") => "Jugador",
+
+            (EngineLanguage::Pt, "Mesh") => "Malha",
+            (EngineLanguage::En, "Mesh") => "Mesh",
+            (EngineLanguage::Es, "Mesh") => "Malla",
+
+            (EngineLanguage::Pt, "Weapon Socket") => "Encaixe de Arma",
+            (EngineLanguage::En, "Weapon Socket") => "Weapon Socket",
+            (EngineLanguage::Es, "Weapon Socket") => "Anclaje de Arma",
+
+            (EngineLanguage::Pt, "Armature") => "Armadura",
+            (EngineLanguage::En, "Armature") => "Armature",
+            (EngineLanguage::Es, "Armature") => "Armadura",
+
+            (EngineLanguage::Pt, "Spine") => "Espinha",
+            (EngineLanguage::En, "Spine") => "Spine",
+            (EngineLanguage::Es, "Spine") => "Columna",
+
+            (EngineLanguage::Pt, "Head") => "Cabeça",
+            (EngineLanguage::En, "Head") => "Head",
+            (EngineLanguage::Es, "Head") => "Cabeza",
+
+            (EngineLanguage::Pt, "Environment") => "Ambiente",
+            (EngineLanguage::En, "Environment") => "Environment",
+            (EngineLanguage::Es, "Environment") => "Entorno",
+
+            (EngineLanguage::Pt, "Terrain") => "Terreno",
+            (EngineLanguage::En, "Terrain") => "Terrain",
+            (EngineLanguage::Es, "Terrain") => "Terreno",
+
+            (EngineLanguage::Pt, "Trees") => "Árvores",
+            (EngineLanguage::En, "Trees") => "Trees",
+            (EngineLanguage::Es, "Trees") => "Árboles",
+
+            (EngineLanguage::Pt, "Fog Volume") => "Volume de Névoa",
+            (EngineLanguage::En, "Fog Volume") => "Fog Volume",
+            (EngineLanguage::Es, "Fog Volume") => "Volumen de Niebla",
+            _ => object_id,
         }
     }
 
@@ -363,11 +443,11 @@ impl HierarchyWindow {
             let mut copy_clicked = false;
             let mut delete_clicked = false;
             resp.context_menu(|ui| {
-                if ui.button("Copiar").clicked() {
+                if ui.button(self.tr("copy")).clicked() {
                     copy_clicked = true;
                     ui.close();
                 }
-                if ui.button("Deletar").clicked() {
+                if ui.button(self.tr("delete")).clicked() {
                     delete_clicked = true;
                     ui.close();
                 }
@@ -517,10 +597,17 @@ impl HierarchyWindow {
         }
     }
 
-    pub fn show(&mut self, ctx: &egui::Context, left_reserved: f32, right_reserved: f32) {
+    pub fn show(
+        &mut self,
+        ctx: &egui::Context,
+        left_reserved: f32,
+        right_reserved: f32,
+        language: EngineLanguage,
+    ) {
         if !self.open {
             return;
         }
+        self.language = language;
 
         if self.selector_icon_texture.is_none() {
             self.selector_icon_texture =
@@ -622,7 +709,7 @@ impl HierarchyWindow {
                 ui.painter().text(
                     drag_rect.center(),
                     Align2::CENTER_CENTER,
-                    "Hierarquia",
+                    self.tr("title"),
                     FontId::new(13.0, FontFamily::Proportional),
                     Color32::WHITE,
                 );
@@ -689,7 +776,7 @@ impl HierarchyWindow {
                                                 ui,
                                                 0.0,
                                                 "Directional Light",
-                                                "Directional Light",
+                                                self.object_label("Directional Light"),
                                             );
                                         }
                                         "Main Camera" => {
@@ -697,7 +784,7 @@ impl HierarchyWindow {
                                                 ui,
                                                 0.0,
                                                 "Main Camera",
-                                                "Main Camera",
+                                                self.object_label("Main Camera"),
                                             );
                                         }
                                         "Player" => {
@@ -706,7 +793,7 @@ impl HierarchyWindow {
                                                 ui,
                                                 0.0,
                                                 "Player",
-                                                "Player",
+                                                self.object_label("Player"),
                                                 &mut player_open,
                                             );
                                             self.player_open = player_open;
@@ -717,7 +804,10 @@ impl HierarchyWindow {
                                                     match child {
                                                         "Mesh" => {
                                                             self.draw_object_row_with_context(
-                                                                ui, 18.0, "Mesh", "Mesh",
+                                                                ui,
+                                                                18.0,
+                                                                "Mesh",
+                                                                self.object_label("Mesh"),
                                                             );
                                                         }
                                                         "Weapon Socket" => {
@@ -725,7 +815,7 @@ impl HierarchyWindow {
                                                                 ui,
                                                                 18.0,
                                                                 "Weapon Socket",
-                                                                "Weapon Socket",
+                                                                self.object_label("Weapon Socket"),
                                                             );
                                                         }
                                                         "Armature" => {
@@ -734,7 +824,7 @@ impl HierarchyWindow {
                                                                 ui,
                                                                 18.0,
                                                                 "Armature",
-                                                                "Armature",
+                                                                self.object_label("Armature"),
                                                                 &mut armature_open,
                                                             );
                                                             self.armature_open = armature_open;
@@ -748,14 +838,14 @@ impl HierarchyWindow {
                                                                                 ui,
                                                                                 36.0,
                                                                                 "Spine",
-                                                                                "Spine",
+                                                                                self.object_label("Spine"),
                                                                             ),
                                                                         "Head" => self
                                                                             .draw_object_row_with_context(
                                                                                 ui,
                                                                                 36.0,
                                                                                 "Head",
-                                                                                "Head",
+                                                                                self.object_label("Head"),
                                                                             ),
                                                                         _ => {}
                                                                     }
@@ -773,7 +863,7 @@ impl HierarchyWindow {
                                                 ui,
                                                 0.0,
                                                 "Environment",
-                                                "Environment",
+                                                self.object_label("Environment"),
                                                 &mut environment_open,
                                             );
                                             self.environment_open = environment_open;
@@ -782,17 +872,23 @@ impl HierarchyWindow {
                                                 for env_child in env_children {
                                                     match env_child {
                                                         "Terrain" => self.draw_object_row_with_context(
-                                                            ui, 18.0, "Terrain", "Terrain",
+                                                            ui,
+                                                            18.0,
+                                                            "Terrain",
+                                                            self.object_label("Terrain"),
                                                         ),
                                                         "Trees" => self.draw_object_row_with_context(
-                                                            ui, 18.0, "Trees", "Trees",
+                                                            ui,
+                                                            18.0,
+                                                            "Trees",
+                                                            self.object_label("Trees"),
                                                         ),
                                                         "Fog Volume" => self
                                                             .draw_object_row_with_context(
                                                                 ui,
                                                                 18.0,
                                                                 "Fog Volume",
-                                                                "Fog Volume",
+                                                                self.object_label("Fog Volume"),
                                                             ),
                                                         _ => {}
                                                     }
@@ -825,10 +921,10 @@ impl HierarchyWindow {
                                     );
                                 }
                                 empty_resp.context_menu(|ui| {
-                                    if ui.button("Criar objeto vazio").clicked() {
+                                    if ui.button(self.tr("create_empty")).clicked() {
                                         ui.close();
                                     }
-                                    ui.menu_button("Luzes", |ui| {
+                                    ui.menu_button(self.tr("lights"), |ui| {
                                         if ui.button("Directional Light").clicked() {
                                             self.deleted_objects.remove("Directional Light");
                                             ui.close();
@@ -884,7 +980,7 @@ impl HierarchyWindow {
                 .show(ctx, |ui| {
                     egui::Frame::popup(ui.style()).show(ui, |ui| {
                         ui.set_min_width(176.0);
-                        ui.label("Selecionar cor");
+                        ui.label(self.tr("pick_color"));
                         let mut color = self.picker_color;
                         if ui.color_edit_button_srgba(&mut color).changed() {
                             self.picker_color = color;
@@ -999,7 +1095,7 @@ impl HierarchyWindow {
                 painter.text(
                     preview_rect.left_center() + egui::vec2(8.0, 0.0),
                     Align2::LEFT_CENTER,
-                    dragging,
+                    self.object_label(dragging),
                     FontId::new(12.0, FontFamily::Proportional),
                     Color32::from_gray(220),
                 );

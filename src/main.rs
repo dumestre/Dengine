@@ -1,26 +1,43 @@
 // src/main.rs
 mod inspector;
 mod hierarchy;
+mod project;
 
 use eframe::egui::{TextureHandle, TextureOptions};
 use eframe::{App, Frame, NativeOptions, egui};
 use epaint::ColorImage;
 use hierarchy::HierarchyWindow;
 use inspector::InspectorWindow;
+use project::ProjectWindow;
 use std::sync::Arc;
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum EngineLanguage {
+    Pt,
+    En,
+    Es,
+}
+
+impl EngineLanguage {
+}
 
 struct EditorApp {
     inspector: InspectorWindow,
     hierarchy: HierarchyWindow,
+    project: ProjectWindow,
     app_icon_texture: Option<TextureHandle>,
     cena_icon: Option<TextureHandle>,
     game_icon: Option<TextureHandle>,
     play_icon: Option<TextureHandle>,
     pause_icon: Option<TextureHandle>,
     stop_icon: Option<TextureHandle>,
+    lang_pt_icon: Option<TextureHandle>,
+    lang_en_icon: Option<TextureHandle>,
+    lang_es_icon: Option<TextureHandle>,
     is_playing: bool,
     is_window_maximized: bool,
     selected_mode: ToolbarMode,
+    language: EngineLanguage,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -50,6 +67,63 @@ fn load_icon_data_from_png(png_path: &str) -> Option<Arc<egui::IconData>> {
 }
 
 impl EditorApp {
+    fn language_name(&self, lang: EngineLanguage) -> &'static str {
+        match lang {
+            EngineLanguage::Pt => "Português",
+            EngineLanguage::En => "English",
+            EngineLanguage::Es => "Español",
+        }
+    }
+
+    fn language_icon(&self, lang: EngineLanguage) -> Option<&TextureHandle> {
+        match lang {
+            EngineLanguage::Pt => self.lang_pt_icon.as_ref(),
+            EngineLanguage::En => self.lang_en_icon.as_ref(),
+            EngineLanguage::Es => self.lang_es_icon.as_ref(),
+        }
+    }
+
+    fn tr(&self, key: &'static str) -> &'static str {
+        match (self.language, key) {
+            (EngineLanguage::Pt, "menu_file") => "Arquivo",
+            (EngineLanguage::En, "menu_file") => "File",
+            (EngineLanguage::Es, "menu_file") => "Archivo",
+
+            (EngineLanguage::Pt, "menu_edit") => "Editar",
+            (EngineLanguage::En, "menu_edit") => "Edit",
+            (EngineLanguage::Es, "menu_edit") => "Editar",
+
+            (EngineLanguage::Pt, "menu_help") => "Ajuda",
+            (EngineLanguage::En, "menu_help") => "Help",
+            (EngineLanguage::Es, "menu_help") => "Ayuda",
+
+            (EngineLanguage::Pt, "new") => "Novo",
+            (EngineLanguage::En, "new") => "New",
+            (EngineLanguage::Es, "new") => "Nuevo",
+
+            (EngineLanguage::Pt, "save") => "Salvar",
+            (EngineLanguage::En, "save") => "Save",
+            (EngineLanguage::Es, "save") => "Guardar",
+
+            (EngineLanguage::Pt, "exit") => "Sair",
+            (EngineLanguage::En, "exit") => "Exit",
+            (EngineLanguage::Es, "exit") => "Salir",
+
+            (EngineLanguage::Pt, "about") => "Sobre",
+            (EngineLanguage::En, "about") => "About",
+            (EngineLanguage::Es, "about") => "Acerca de",
+
+            (EngineLanguage::Pt, "scene") => "Cena",
+            (EngineLanguage::En, "scene") => "Scene",
+            (EngineLanguage::Es, "scene") => "Escena",
+
+            (EngineLanguage::Pt, "game") => "Game",
+            (EngineLanguage::En, "game") => "Game",
+            (EngineLanguage::Es, "game") => "Juego",
+            _ => key,
+        }
+    }
+
     fn ensure_toolbar_icons_loaded(&mut self, ctx: &egui::Context) {
         if self.app_icon_texture.is_none() {
             self.app_icon_texture = load_png_as_texture(ctx, "src/assets/icons/icon.png");
@@ -68,6 +142,15 @@ impl EditorApp {
         }
         if self.stop_icon.is_none() {
             self.stop_icon = load_png_as_texture(ctx, "src/assets/icons/stop.png");
+        }
+        if self.lang_pt_icon.is_none() {
+            self.lang_pt_icon = load_png_as_texture(ctx, "src/assets/icons/portugues.png");
+        }
+        if self.lang_en_icon.is_none() {
+            self.lang_en_icon = load_png_as_texture(ctx, "src/assets/icons/ingles.png");
+        }
+        if self.lang_es_icon.is_none() {
+            self.lang_es_icon = load_png_as_texture(ctx, "src/assets/icons/espanhol.png");
         }
     }
 }
@@ -104,49 +187,173 @@ impl App for EditorApp {
                     ui.ctx().send_viewport_cmd(egui::ViewportCommand::StartDrag);
                 }
 
-                ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
-                    ui.add_space(10.0);
-                    if let Some(app_icon) = &self.app_icon_texture {
-                        ui.add(
-                            egui::Image::new(app_icon).fit_to_exact_size(egui::Vec2::new(14.0, 14.0)),
+                let controls_w = 104.0;
+                let lang_w = 124.0;
+                let gap = 8.0;
+                let controls_rect = egui::Rect::from_min_max(
+                    egui::pos2(title_rect.max.x - controls_w, title_rect.min.y),
+                    title_rect.max,
+                );
+                let lang_rect = egui::Rect::from_min_max(
+                    egui::pos2(controls_rect.min.x - lang_w - gap, title_rect.min.y),
+                    egui::pos2(controls_rect.min.x - gap, title_rect.max.y),
+                );
+                let main_rect = egui::Rect::from_min_max(
+                    title_rect.min,
+                    egui::pos2(lang_rect.min.x - gap, title_rect.max.y),
+                );
+
+                ui.scope_builder(
+                    egui::UiBuilder::new()
+                        .max_rect(main_rect)
+                        .layout(egui::Layout::left_to_right(egui::Align::Center)),
+                    |ui| {
+                        ui.add_space(10.0);
+                        if let Some(app_icon) = &self.app_icon_texture {
+                            ui.add(
+                                egui::Image::new(app_icon)
+                                    .fit_to_exact_size(egui::Vec2::new(14.0, 14.0)),
+                            );
+                            ui.add_space(6.0);
+                        }
+                        ui.label(
+                            egui::RichText::new("Dengine")
+                                .strong()
+                                .color(egui::Color32::from_gray(220)),
                         );
-                        ui.add_space(6.0);
-                    }
-                    ui.label(
-                        egui::RichText::new("Dengine")
-                            .strong()
-                            .color(egui::Color32::from_gray(220)),
-                    );
-                    ui.add_space(10.0);
+                        ui.add_space(10.0);
 
-                    egui::MenuBar::new().ui(ui, |ui| {
-                        ui.menu_button("Arquivo", |ui| {
-                            if ui.button("Novo").clicked() {
-                                ui.close();
-                            }
-                            if ui.button("Salvar").clicked() {
-                                ui.close();
-                            }
-                            if ui.button("Sair").clicked() {
-                                ui.close();
+                        egui::MenuBar::new().ui(ui, |ui| {
+                            ui.menu_button(self.tr("menu_file"), |ui| {
+                                if ui.button(self.tr("new")).clicked() {
+                                    ui.close();
+                                }
+                                if ui.button(self.tr("save")).clicked() {
+                                    ui.close();
+                                }
+                                if ui.button(self.tr("exit")).clicked() {
+                                    ui.close();
+                                }
+                            });
+
+                            ui.menu_button(self.tr("menu_edit"), |ui| {
+                                if ui.button("Undo").clicked() {}
+                                if ui.button("Redo").clicked() {}
+                            });
+
+                            ui.menu_button(self.tr("menu_help"), |ui| {
+                                if ui.button(self.tr("about")).clicked() {}
+                            });
+                        });
+                    },
+                );
+
+                let mut lang_resp_opt: Option<egui::Response> = None;
+                ui.scope_builder(
+                    egui::UiBuilder::new()
+                        .max_rect(lang_rect)
+                        .layout(
+                            egui::Layout::left_to_right(egui::Align::Center)
+                                .with_main_align(egui::Align::Center),
+                        ),
+                    |ui| {
+                        let current_lang = self.language;
+                        let current_lang_name = self.language_name(current_lang);
+                        let lang_resp = if let Some(lang_icon) = self.language_icon(current_lang) {
+                            ui.add_sized(
+                                [116.0, 24.0],
+                                egui::Button::image_and_text(
+                                    egui::Image::new(lang_icon)
+                                        .fit_to_exact_size(egui::vec2(14.0, 14.0)),
+                                    egui::RichText::new(current_lang_name).size(12.0),
+                                )
+                                .corner_radius(6)
+                                .fill(egui::Color32::from_rgb(44, 44, 44))
+                                .stroke(egui::Stroke::new(1.0, egui::Color32::from_gray(70))),
+                            )
+                        } else {
+                            ui.add_sized(
+                                [116.0, 24.0],
+                                egui::Button::new(current_lang_name)
+                                    .corner_radius(6)
+                                    .fill(egui::Color32::from_rgb(44, 44, 44))
+                                    .stroke(egui::Stroke::new(1.0, egui::Color32::from_gray(70))),
+                            )
+                        };
+                        lang_resp_opt = Some(lang_resp);
+                    },
+                );
+
+                if let Some(lang_resp) = &lang_resp_opt {
+                    egui::Popup::menu(lang_resp)
+                        .id(egui::Id::new("language_menu_popup"))
+                        .width(150.0)
+                        .show(|ui| {
+                            let languages = [EngineLanguage::Pt, EngineLanguage::En, EngineLanguage::Es];
+                            for lang in languages {
+                                let name = self.language_name(lang);
+                                let selected = self.language == lang;
+                                let clicked = if let Some(icon) = self.language_icon(lang) {
+                                    ui.add_sized(
+                                        [138.0, 24.0],
+                                        egui::Button::image_and_text(
+                                            egui::Image::new(icon)
+                                                .fit_to_exact_size(egui::vec2(14.0, 14.0)),
+                                            egui::RichText::new(name),
+                                        )
+                                        .fill(if selected {
+                                            egui::Color32::from_rgb(62, 62, 62)
+                                        } else {
+                                            egui::Color32::from_rgb(44, 44, 44)
+                                        })
+                                        .stroke(if selected {
+                                            egui::Stroke::new(1.0, egui::Color32::from_rgb(15, 232, 121))
+                                        } else {
+                                            egui::Stroke::new(1.0, egui::Color32::from_gray(70))
+                                        })
+                                        .corner_radius(6),
+                                    )
+                                    .clicked()
+                                } else {
+                                    ui.add_sized(
+                                        [138.0, 24.0],
+                                        egui::Button::new(name)
+                                            .fill(if selected {
+                                                egui::Color32::from_rgb(62, 62, 62)
+                                            } else {
+                                                egui::Color32::from_rgb(44, 44, 44)
+                                            })
+                                            .stroke(if selected {
+                                                egui::Stroke::new(
+                                                    1.0,
+                                                    egui::Color32::from_rgb(15, 232, 121),
+                                                )
+                                            } else {
+                                                egui::Stroke::new(1.0, egui::Color32::from_gray(70))
+                                            })
+                                            .corner_radius(6),
+                                    )
+                                    .clicked()
+                                };
+                                if clicked {
+                                    self.language = lang;
+                                    ui.close();
+                                }
                             }
                         });
+                }
 
-                        ui.menu_button("Editar", |ui| {
-                            if ui.button("Undo").clicked() {}
-                            if ui.button("Redo").clicked() {}
-                        });
-
-                        ui.menu_button("Ajuda", |ui| {
-                            if ui.button("Sobre").clicked() {}
-                        });
-                    });
-
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                ui.scope_builder(
+                    egui::UiBuilder::new()
+                        .max_rect(controls_rect)
+                        .layout(egui::Layout::right_to_left(egui::Align::Center)),
+                    |ui| {
                         ui.add_space(8.0);
 
-                        let (close_rect, close_resp) =
-                            ui.allocate_exact_size(egui::Vec2::new(30.0, 30.0), egui::Sense::click());
+                        let (close_rect, close_resp) = ui.allocate_exact_size(
+                            egui::Vec2::new(30.0, 30.0),
+                            egui::Sense::click(),
+                        );
                         if close_resp.hovered() {
                             ui.painter().circle_filled(
                                 close_rect.center(),
@@ -163,8 +370,10 @@ impl App for EditorApp {
                             ui.ctx().send_viewport_cmd(egui::ViewportCommand::Close);
                         }
 
-                        let (max_rect, max_resp) =
-                            ui.allocate_exact_size(egui::Vec2::new(30.0, 30.0), egui::Sense::click());
+                        let (max_rect, max_resp) = ui.allocate_exact_size(
+                            egui::Vec2::new(30.0, 30.0),
+                            egui::Sense::click(),
+                        );
                         if max_resp.hovered() {
                             ui.painter().circle_filled(
                                 max_rect.center(),
@@ -185,8 +394,10 @@ impl App for EditorApp {
                                 ));
                         }
 
-                        let (min_rect, min_resp) =
-                            ui.allocate_exact_size(egui::Vec2::new(30.0, 30.0), egui::Sense::click());
+                        let (min_rect, min_resp) = ui.allocate_exact_size(
+                            egui::Vec2::new(30.0, 30.0),
+                            egui::Sense::click(),
+                        );
                         if min_resp.hovered() {
                             ui.painter().circle_filled(
                                 min_rect.center(),
@@ -203,8 +414,8 @@ impl App for EditorApp {
                             ui.ctx()
                                 .send_viewport_cmd(egui::ViewportCommand::Minimized(true));
                         }
-                    });
-                });
+                    },
+                );
             });
 
         // Toolbar logo abaixo do menu
@@ -232,7 +443,7 @@ impl App for EditorApp {
                             let cena_button = egui::Button::image_and_text(
                                 egui::Image::new(cena_icon)
                                     .fit_to_exact_size(egui::Vec2::new(16.0, 16.0)),
-                                egui::RichText::new("Cena"),
+                                egui::RichText::new(self.tr("scene")),
                             )
                             .corner_radius(8)
                             .fill(if self.selected_mode == ToolbarMode::Cena {
@@ -253,7 +464,7 @@ impl App for EditorApp {
                             let cena_clicked = ui
                                 .add_sized(
                                     [88.0, 28.0],
-                                    egui::Button::new("Cena")
+                                    egui::Button::new(self.tr("scene"))
                                         .corner_radius(8)
                                         .fill(if self.selected_mode == ToolbarMode::Cena {
                                             egui::Color32::from_rgb(62, 62, 62)
@@ -276,7 +487,7 @@ impl App for EditorApp {
                             let game_button = egui::Button::image_and_text(
                                 egui::Image::new(game_icon)
                                     .fit_to_exact_size(egui::Vec2::new(16.0, 16.0)),
-                                egui::RichText::new("Game"),
+                                egui::RichText::new(self.tr("game")),
                             )
                             .corner_radius(8)
                             .fill(if self.selected_mode == ToolbarMode::Game {
@@ -297,7 +508,7 @@ impl App for EditorApp {
                             let game_clicked = ui
                                 .add_sized(
                                     [88.0, 28.0],
-                                    egui::Button::new("Game")
+                                    egui::Button::new(self.tr("game"))
                                         .corner_radius(8)
                                         .fill(if self.selected_mode == ToolbarMode::Game {
                                             egui::Color32::from_rgb(62, 62, 62)
@@ -373,10 +584,11 @@ impl App for EditorApp {
             });
 
         // Janela Inspetor
-        self.inspector.show(ctx, 0.0, 0.0);
+        self.inspector.show(ctx, 0.0, 0.0, self.language);
         let i_left = self.inspector.docked_left_width();
         let i_right = self.inspector.docked_right_width();
-        self.hierarchy.show(ctx, i_left, i_right);
+        self.hierarchy.show(ctx, i_left, i_right, self.language);
+        self.project.show(ctx, self.language);
     }
 }
 
@@ -406,15 +618,20 @@ fn main() -> eframe::Result<()> {
             Ok(Box::new(EditorApp {
                 inspector: InspectorWindow::new(),
                 hierarchy: HierarchyWindow::new(),
+                project: ProjectWindow::new(),
                 app_icon_texture: None,
                 cena_icon: None,
                 game_icon: None,
                 play_icon: None,
                 pause_icon: None,
                 stop_icon: None,
+                lang_pt_icon: None,
+                lang_en_icon: None,
+                lang_es_icon: None,
                 is_playing: false,
                 is_window_maximized: true,
                 selected_mode: ToolbarMode::Cena,
+                language: EngineLanguage::Pt,
             }))
         }),
     )

@@ -3,6 +3,7 @@ use eframe::egui::{
 };
 use epaint::ColorImage;
 use std::sync::Arc;
+use crate::EngineLanguage;
 
 pub struct InspectorWindow {
     pub open: bool,
@@ -69,7 +70,13 @@ impl InspectorWindow {
         }
     }
 
-    pub fn show(&mut self, ctx: &egui::Context, left_reserved: f32, right_reserved: f32) {
+    pub fn show(
+        &mut self,
+        ctx: &egui::Context,
+        left_reserved: f32,
+        right_reserved: f32,
+        language: EngineLanguage,
+    ) {
         if !self.open {
             return;
         }
@@ -185,7 +192,11 @@ impl InspectorWindow {
                 ui.painter().text(
                     drag_rect.center(),
                     Align2::CENTER_CENTER,
-                    "Inspetor",
+                    match language {
+                        EngineLanguage::Pt => "Inspetor",
+                        EngineLanguage::En => "Inspector",
+                        EngineLanguage::Es => "Inspector",
+                    },
                     FontId::new(13.0, FontFamily::Proportional),
                     Color32::WHITE,
                 );
@@ -252,7 +263,11 @@ impl InspectorWindow {
                                 .add_sized(
                                     [208.0, 26.0],
                                     egui::Button::new(
-                                        egui::RichText::new("Copiar cadeia de componentes")
+                                        egui::RichText::new(match language {
+                                            EngineLanguage::Pt => "Copiar cadeia de componentes",
+                                            EngineLanguage::En => "Copy component chain",
+                                            EngineLanguage::Es => "Copiar cadena de componentes",
+                                        })
                                             .color(Color32::WHITE),
                                     )
                                     .fill(Color32::from_rgb(62, 62, 62))
@@ -268,7 +283,11 @@ impl InspectorWindow {
                                 .add_sized(
                                     [208.0, 26.0],
                                     egui::Button::new(
-                                        egui::RichText::new("Enviar cadeia para...")
+                                        egui::RichText::new(match language {
+                                            EngineLanguage::Pt => "Enviar cadeia para...",
+                                            EngineLanguage::En => "Send chain to...",
+                                            EngineLanguage::Es => "Enviar cadena a...",
+                                        })
                                             .color(Color32::WHITE),
                                     )
                                     .fill(Color32::from_rgb(62, 62, 62))
@@ -300,7 +319,12 @@ impl InspectorWindow {
                     ),
                     |ui| {
                         let mut button = egui::Button::new(
-                            egui::RichText::new("Componente")
+                            egui::RichText::new(match language {
+                                EngineLanguage::Pt => "Componente",
+                                EngineLanguage::En => "Component",
+                                EngineLanguage::Es => "Componente",
+                            })
+                                .text_style(egui::TextStyle::Button)
                                 .font(FontId::new(14.0, FontFamily::Proportional))
                                 .strong()
                                 .color(Color32::from_rgb(55, 55, 55)),
@@ -312,7 +336,11 @@ impl InspectorWindow {
                         if let Some(add_tex) = &self.add_icon_texture {
                             button = egui::Button::image_and_text(
                                 egui::Image::new(add_tex).fit_to_exact_size(egui::vec2(12.0, 12.0)),
-                                egui::RichText::new("Componente")
+                                egui::RichText::new(match language {
+                                    EngineLanguage::Pt => "Componente",
+                                    EngineLanguage::En => "Component",
+                                    EngineLanguage::Es => "Componente",
+                                })
                                     .font(FontId::new(14.0, FontFamily::Proportional))
                                     .strong()
                                     .color(Color32::from_rgb(55, 55, 55)),
