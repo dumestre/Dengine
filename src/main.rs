@@ -1,14 +1,17 @@
 // src/main.rs
 mod inspector;
+mod hierarchy;
 
 use eframe::egui::{TextureHandle, TextureOptions};
 use eframe::{App, Frame, NativeOptions, egui};
 use epaint::ColorImage;
+use hierarchy::HierarchyWindow;
 use inspector::InspectorWindow;
 use std::sync::Arc;
 
 struct EditorApp {
     inspector: InspectorWindow,
+    hierarchy: HierarchyWindow,
     app_icon_texture: Option<TextureHandle>,
     cena_icon: Option<TextureHandle>,
     game_icon: Option<TextureHandle>,
@@ -370,7 +373,13 @@ impl App for EditorApp {
             });
 
         // Janela Inspetor
-        self.inspector.show(ctx);
+        let h_left = self.hierarchy.docked_left_width();
+        let h_right = self.hierarchy.docked_right_width();
+        self.inspector.show(ctx, h_left, h_right);
+
+        let i_left = self.inspector.docked_left_width();
+        let i_right = self.inspector.docked_right_width();
+        self.hierarchy.show(ctx, i_left, i_right);
     }
 }
 
@@ -399,6 +408,7 @@ fn main() -> eframe::Result<()> {
         Box::new(|_cc| {
             Ok(Box::new(EditorApp {
                 inspector: InspectorWindow::new(),
+                hierarchy: HierarchyWindow::new(),
                 app_icon_texture: None,
                 cena_icon: None,
                 game_icon: None,

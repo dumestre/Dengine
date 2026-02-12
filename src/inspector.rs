@@ -69,7 +69,7 @@ impl InspectorWindow {
         }
     }
 
-    pub fn show(&mut self, ctx: &egui::Context) {
+    pub fn show(&mut self, ctx: &egui::Context, left_reserved: f32, right_reserved: f32) {
         if !self.open {
             return;
         }
@@ -112,18 +112,21 @@ impl InspectorWindow {
         } else {
             (dock_rect.height() * 0.85).max(520.0)
         };
-        self.window_width = self.window_width.clamp(180.0, 520.0);
+        let max_width = (dock_rect.width() - left_reserved - right_reserved - 40.0).max(180.0);
+        self.window_width = self.window_width.clamp(180.0, max_width.min(520.0));
         let window_size = egui::vec2(self.window_width, height);
+        let left_snap_x = dock_rect.left() + left_reserved;
+        let right_snap_right = dock_rect.right() - right_reserved;
 
         if self.window_pos.is_none() {
-            self.window_pos = Some(egui::pos2(dock_rect.left(), dock_rect.top()));
+            self.window_pos = Some(egui::pos2(left_snap_x, dock_rect.top()));
         }
 
         if let Some(side) = self.dock_side {
             if !self.dragging_from_header && !self.resizing_width && !pointer_down {
                 let x = match side {
-                    InspectorDockSide::Left => dock_rect.left(),
-                    InspectorDockSide::Right => dock_rect.right() - self.window_width,
+                    InspectorDockSide::Left => left_snap_x,
+                    InspectorDockSide::Right => right_snap_right - self.window_width,
                 };
                 self.window_pos = Some(egui::pos2(x, dock_rect.top()));
             }
@@ -131,7 +134,7 @@ impl InspectorWindow {
 
         let pos = self
             .window_pos
-            .unwrap_or(egui::pos2(dock_rect.left(), dock_rect.top()));
+            .unwrap_or(egui::pos2(left_snap_x, dock_rect.top()));
 
         let mut header_drag_started = false;
         let mut header_drag_stopped = false;
@@ -204,6 +207,13 @@ impl InspectorWindow {
                             .fit_to_exact_size(egui::vec2(icon_side, icon_side))
                             .sense(egui::Sense::click()),
                     );
+                    if lock_resp.hovered() {
+                        ui.painter().rect_filled(
+                            lock_rect.expand2(egui::vec2(2.0, 2.0)),
+                            4.0,
+                            Color32::from_rgba_unmultiplied(255, 255, 255, 28),
+                        );
+                    }
                     if lock_resp.clicked() {
                         self.is_locked = !self.is_locked;
                     }
@@ -220,6 +230,13 @@ impl InspectorWindow {
                             .fit_to_exact_size(egui::vec2(icon_side, icon_side))
                             .sense(egui::Sense::click()),
                     );
+                    if menu_resp.hovered() {
+                        ui.painter().rect_filled(
+                            menu_rect.expand2(egui::vec2(2.0, 2.0)),
+                            4.0,
+                            Color32::from_rgba_unmultiplied(255, 255, 255, 28),
+                        );
+                    }
 
                     egui::Popup::menu(&menu_resp)
                         .id(egui::Id::new("inspector_menu_popup"))
@@ -370,19 +387,19 @@ impl InspectorWindow {
             }
         }
 
-        let near_left = (panel_rect.left() - dock_rect.left()).abs() <= 28.0;
-        let near_right = (dock_rect.right() - panel_rect.right()).abs() <= 28.0;
+        let near_left = (panel_rect.left() - left_snap_x).abs() <= 28.0;
+        let near_right = (right_snap_right - panel_rect.right()).abs() <= 28.0;
         if self.dragging_from_header && pointer_down && (near_left || near_right) {
             let hint_w = 14.0;
             let hint_rect = if near_left {
                 Rect::from_min_max(
-                    egui::pos2(dock_rect.left(), dock_rect.top()),
-                    egui::pos2(dock_rect.left() + hint_w, dock_rect.bottom()),
+                    egui::pos2(left_snap_x, dock_rect.top()),
+                    egui::pos2(left_snap_x + hint_w, dock_rect.bottom()),
                 )
             } else {
                 Rect::from_min_max(
-                    egui::pos2(dock_rect.right() - hint_w, dock_rect.top()),
-                    egui::pos2(dock_rect.right(), dock_rect.bottom()),
+                    egui::pos2(right_snap_right - hint_w, dock_rect.top()),
+                    egui::pos2(right_snap_right, dock_rect.bottom()),
                 )
             };
             ctx.layer_painter(egui::LayerId::new(Order::Foreground, Id::new("dock_hint")))
@@ -406,6 +423,22 @@ impl InspectorWindow {
 
         if resize_stopped || (self.resizing_width && !pointer_down) {
             self.resizing_width = false;
+        }
+    }
+
+    pub fn docked_left_width(&self) -> f32 {
+        if self.open && matches!(self.dock_side, Some(InspectorDockSide::Left)) {
+            self.window_width
+        } else {
+            0.0
+        }
+    }
+
+    pub fn docked_right_width(&self) -> f32 {
+        if self.open && matches!(self.dock_side, Some(InspectorDockSide::Right)) {
+            self.window_width
+        } else {
+            0.0
         }
     }
 }
