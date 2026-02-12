@@ -5,10 +5,11 @@ use eframe::egui::{TextureHandle, TextureOptions};
 use eframe::{App, Frame, NativeOptions, egui};
 use epaint::ColorImage;
 use inspector::InspectorWindow;
+use std::sync::Arc;
 
 struct EditorApp {
     inspector: InspectorWindow,
-    win_close_icon: Option<TextureHandle>,
+    app_icon_texture: Option<TextureHandle>,
     cena_icon: Option<TextureHandle>,
     game_icon: Option<TextureHandle>,
     play_icon: Option<TextureHandle>,
@@ -33,10 +34,22 @@ fn load_png_as_texture(ctx: &egui::Context, png_path: &str) -> Option<TextureHan
     Some(ctx.load_texture(png_path.to_owned(), color_image, TextureOptions::LINEAR))
 }
 
+fn load_icon_data_from_png(png_path: &str) -> Option<Arc<egui::IconData>> {
+    let bytes = std::fs::read(png_path).ok()?;
+    let rgba = image::load_from_memory(&bytes).ok()?.to_rgba8();
+    let width = rgba.width();
+    let height = rgba.height();
+    Some(Arc::new(egui::IconData {
+        rgba: rgba.into_raw(),
+        width,
+        height,
+    }))
+}
+
 impl EditorApp {
     fn ensure_toolbar_icons_loaded(&mut self, ctx: &egui::Context) {
-        if self.win_close_icon.is_none() {
-            self.win_close_icon = load_png_as_texture(ctx, "src/assets/icons/fechar.png");
+        if self.app_icon_texture.is_none() {
+            self.app_icon_texture = load_png_as_texture(ctx, "src/assets/icons/icon.png");
         }
         if self.cena_icon.is_none() {
             self.cena_icon = load_png_as_texture(ctx, "src/assets/icons/cena.png");
@@ -89,7 +102,8 @@ impl App for EditorApp {
                 }
 
                 ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
-                    if let Some(app_icon) = &self.win_close_icon {
+                    ui.add_space(10.0);
+                    if let Some(app_icon) = &self.app_icon_texture {
                         ui.add(
                             egui::Image::new(app_icon).fit_to_exact_size(egui::Vec2::new(14.0, 14.0)),
                         );
@@ -100,6 +114,30 @@ impl App for EditorApp {
                             .strong()
                             .color(egui::Color32::from_gray(220)),
                     );
+                    ui.add_space(10.0);
+
+                    egui::MenuBar::new().ui(ui, |ui| {
+                        ui.menu_button("Arquivo", |ui| {
+                            if ui.button("Novo").clicked() {
+                                ui.close();
+                            }
+                            if ui.button("Salvar").clicked() {
+                                ui.close();
+                            }
+                            if ui.button("Sair").clicked() {
+                                ui.close();
+                            }
+                        });
+
+                        ui.menu_button("Editar", |ui| {
+                            if ui.button("Undo").clicked() {}
+                            if ui.button("Redo").clicked() {}
+                        });
+
+                        ui.menu_button("Ajuda", |ui| {
+                            if ui.button("Sobre").clicked() {}
+                        });
+                    });
 
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         ui.add_space(8.0);
@@ -165,30 +203,6 @@ impl App for EditorApp {
                     });
                 });
             });
-
-        // Top menu
-        egui::TopBottomPanel::top("menu_bar").show(ctx, |ui| {
-            egui::MenuBar::new().ui(ui, |ui| {
-                ui.menu_button("Arquivo", |ui| {
-                    if ui.button("Novo").clicked() {
-                        ui.close();
-                    }
-                    if ui.button("Salvar").clicked() {
-                        ui.close();
-                    }
-                    if ui.button("Sair").clicked() {
-                        ui.close();
-                    }
-                });
-
-                ui.menu_button("Editar", |ui| {
-                    if ui.button("Undo").clicked() {}
-                    if ui.button("Redo").clicked() {}
-                });
-
-                ui.menu_button("Ajuda", |ui| if ui.button("Sobre").clicked() {});
-            });
-        });
 
         // Toolbar logo abaixo do menu
         egui::TopBottomPanel::top("toolbar_row")
@@ -361,11 +375,21 @@ impl App for EditorApp {
 }
 
 fn main() -> eframe::Result<()> {
+    let app_icon = load_icon_data_from_png("src/assets/icons/icon.png");
     let options = NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_title("Dengine Editor")
             .with_decorations(false)
-            .with_maximized(true),
+            .with_maximized(true)
+            .with_icon(
+                app_icon.unwrap_or_else(|| {
+                    Arc::new(egui::IconData {
+                        rgba: vec![0, 0, 0, 0],
+                        width: 1,
+                        height: 1,
+                    })
+                }),
+            ),
         ..Default::default()
     };
 
@@ -375,7 +399,7 @@ fn main() -> eframe::Result<()> {
         Box::new(|_cc| {
             Ok(Box::new(EditorApp {
                 inspector: InspectorWindow::new(),
-                win_close_icon: None,
+                app_icon_texture: None,
                 cena_icon: None,
                 game_icon: None,
                 play_icon: None,

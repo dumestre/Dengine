@@ -1,6 +1,5 @@
 use eframe::egui::{
-    self, Color32, FontFamily, FontId, LayerId, Order, Pos2, Stroke, Vec2, TextureHandle,
-    TextureOptions,
+    self, Align2, Color32, FontFamily, FontId, Id, Order, Pos2, Rect, Stroke, TextureHandle, Vec2,
 };
 use epaint::ColorImage;
 use std::sync::Arc;
@@ -16,6 +15,7 @@ pub struct InspectorWindow {
     window_pos: Option<Pos2>,
     window_width: f32,
     dragging_from_header: bool,
+    resizing_width: bool,
 }
 
 #[derive(Clone, Copy)]
@@ -24,7 +24,6 @@ enum InspectorDockSide {
     Right,
 }
 
-// Função para carregar PNG como textura
 fn load_png_as_texture(
     ctx: &egui::Context,
     png_path: &str,
@@ -34,6 +33,7 @@ fn load_png_as_texture(
     let rgba_img = image::load_from_memory(&bytes).ok()?.to_rgba8();
     let size = [rgba_img.width() as usize, rgba_img.height() as usize];
     let mut rgba = rgba_img.into_raw();
+
     if let Some(tint) = tint {
         for px in rgba.chunks_exact_mut(4) {
             if px[3] > 0 {
@@ -45,13 +45,16 @@ fn load_png_as_texture(
     }
 
     let color_image = ColorImage::from_rgba_unmultiplied(size, &rgba);
-
-    Some(ctx.load_texture(png_path.to_owned(), color_image, TextureOptions::LINEAR))
+    Some(ctx.load_texture(
+        png_path.to_owned(),
+        color_image,
+        egui::TextureOptions::LINEAR,
+    ))
 }
 
 impl InspectorWindow {
     pub fn new() -> Self {
-        Self { 
+        Self {
             open: true,
             menu_icon_texture: None,
             lock_icon_texture: None,
@@ -62,23 +65,25 @@ impl InspectorWindow {
             window_pos: None,
             window_width: 190.0,
             dragging_from_header: false,
+            resizing_width: false,
         }
     }
 
     pub fn show(&mut self, ctx: &egui::Context) {
-        // Carrega os ícones se ainda não estiverem carregados
+        if !self.open {
+            return;
+        }
+
         if self.menu_icon_texture.is_none() {
             self.menu_icon_texture = load_png_as_texture(ctx, "src/assets/icons/more.png", None);
         }
-        
         if self.lock_icon_texture.is_none() {
             self.lock_icon_texture = load_png_as_texture(ctx, "src/assets/icons/lock.png", None);
         }
-
         if self.unlock_icon_texture.is_none() {
-            self.unlock_icon_texture = load_png_as_texture(ctx, "src/assets/icons/unlock.png", None);
+            self.unlock_icon_texture =
+                load_png_as_texture(ctx, "src/assets/icons/unlock.png", None);
         }
-
         if self.add_icon_texture.is_none() {
             self.add_icon_texture = load_png_as_texture(
                 ctx,
@@ -87,7 +92,6 @@ impl InspectorWindow {
             );
         }
 
-        // === Configura Roboto ===
         let mut fonts = egui::FontDefinitions::default();
         fonts.font_data.insert(
             "Roboto".to_owned(),
@@ -100,301 +104,308 @@ impl InspectorWindow {
             .insert(FontFamily::Proportional, vec!["Roboto".to_owned()]);
         ctx.set_fonts(fonts);
 
-        // === Janela do inspetor ===
         let dock_rect = ctx.available_rect();
-        let is_docked = self.dock_side.is_some();
-        let docked_height = dock_rect.height().max(120.0);
-        let floating_height = (dock_rect.height() * 0.85).max(520.0);
-        let window_width = self.window_width.clamp(180.0, 520.0);
-        let window_size = egui::Vec2::new(
-            window_width,
-            if is_docked {
-                docked_height
-            } else {
-                floating_height
-            },
-        );
+        let pointer_down = ctx.input(|i| i.pointer.primary_down());
+
+        let height = if self.dock_side.is_some() {
+            dock_rect.height().max(120.0)
+        } else {
+            (dock_rect.height() * 0.85).max(520.0)
+        };
+        self.window_width = self.window_width.clamp(180.0, 520.0);
+        let window_size = egui::vec2(self.window_width, height);
 
         if self.window_pos.is_none() {
             self.window_pos = Some(egui::pos2(dock_rect.left(), dock_rect.top()));
         }
 
-        let mut inspector_window = egui::Window::new("inspetor_window_id")
-            .open(&mut self.open)
-            .title_bar(false)
-            .movable(false)
-            .resizable([true, false])
-            .collapsible(false)
-            .min_width(180.0)
-            .max_width(520.0)
-            .min_height(window_size.y)
-            .max_height(window_size.y)
-            .default_width(window_size.x)
-            .default_height(window_size.y);
-
-        let primary_down = ctx.input(|i| i.pointer.primary_down());
-        if self.dragging_from_header {
-            if let Some(pos) = self.window_pos {
-                inspector_window = inspector_window.current_pos(pos);
-            }
-        } else if let Some(dock_side) = self.dock_side {
-            if !primary_down {
-                let x = match dock_side {
+        if let Some(side) = self.dock_side {
+            if !self.dragging_from_header && !self.resizing_width && !pointer_down {
+                let x = match side {
                     InspectorDockSide::Left => dock_rect.left(),
-                    InspectorDockSide::Right => dock_rect.right() - window_size.x,
+                    InspectorDockSide::Right => dock_rect.right() - self.window_width,
                 };
-                let docked_pos = egui::pos2(x, dock_rect.top());
-                self.window_pos = Some(docked_pos);
-                inspector_window = inspector_window.current_pos(docked_pos);
-            } else if let Some(pos) = self.window_pos {
-                inspector_window = inspector_window.current_pos(pos);
-            }
-        } else if !primary_down {
-            if let Some(pos) = self.window_pos {
-                inspector_window = inspector_window.current_pos(pos);
+                self.window_pos = Some(egui::pos2(x, dock_rect.top()));
             }
         }
 
+        let pos = self
+            .window_pos
+            .unwrap_or(egui::pos2(dock_rect.left(), dock_rect.top()));
+
         let mut header_drag_started = false;
         let mut header_drag_stopped = false;
-        let window_response = inspector_window.show(ctx, |ui| {
-                ui.spacing_mut().item_spacing.y = 4.0;
+        let mut resize_started = false;
+        let mut resize_stopped = false;
+        let mut panel_rect = Rect::from_min_size(pos, window_size);
 
-                // Título com ícones
-                ui.horizontal(|ui| {
-                    let side_width = 40.0;
-                    let title_width = (ui.available_width() - (side_width * 2.0)).max(0.0);
-                    let drag_zone_start = ui.cursor().min;
+        egui::Area::new(Id::new("inspetor_window_id"))
+            .order(Order::Foreground)
+            .fixed_pos(pos)
+            .show(ctx, |ui| {
+                let (rect, _) = ui.allocate_exact_size(window_size, egui::Sense::hover());
+                panel_rect = rect;
 
-                    // Espaço à esquerda espelhando a largura dos ícones, para centralizar o título.
-                    ui.allocate_space(egui::Vec2::new(side_width, 0.0));
+                ui.painter()
+                    .rect_filled(rect, 6.0, Color32::from_rgb(28, 28, 28));
+                ui.painter().rect_stroke(
+                    rect,
+                    6.0,
+                    Stroke::new(1.0, Color32::from_gray(60)),
+                    egui::StrokeKind::Outside,
+                );
 
-                    // Título centralizado no centro real da janela.
-                    let title_ir = ui.allocate_ui_with_layout(
-                        egui::Vec2::new(title_width, 16.0),
-                        egui::Layout::centered_and_justified(egui::Direction::LeftToRight),
-                        |ui| {
-                            ui.add(
-                                egui::Label::new(
-                                    egui::RichText::new("Inspetor")
-                                        .font(FontId::new(13.0, FontFamily::Proportional))
-                                        .strong(),
-                                )
-                                .sense(egui::Sense::hover())
-                                .selectable(false),
-                            );
-                        },
+                let inner = rect.shrink2(egui::vec2(8.0, 6.0));
+                let header_h = 18.0;
+                let header_rect =
+                    Rect::from_min_max(inner.min, egui::pos2(inner.max.x, inner.min.y + header_h));
+                let icon_side = 16.0;
+                let icon_gap = 5.0;
+                let icon_block = (icon_side * 2.0) + icon_gap;
+                let drag_rect = Rect::from_min_max(
+                    header_rect.min,
+                    egui::pos2(header_rect.max.x - icon_block - 4.0, header_rect.max.y),
+                );
+
+                let drag_resp = ui.interact(
+                    drag_rect,
+                    ui.id().with("header_drag"),
+                    egui::Sense::click_and_drag(),
+                );
+                if drag_resp.drag_started() {
+                    header_drag_started = true;
+                }
+                if drag_resp.drag_stopped() {
+                    header_drag_stopped = true;
+                }
+
+                ui.painter().text(
+                    drag_rect.center(),
+                    Align2::CENTER_CENTER,
+                    "Inspetor",
+                    FontId::new(13.0, FontFamily::Proportional),
+                    Color32::WHITE,
+                );
+
+                let lock_tex = if self.is_locked {
+                    self.lock_icon_texture.as_ref()
+                } else {
+                    self.unlock_icon_texture.as_ref()
+                };
+
+                let lock_rect = Rect::from_min_size(
+                    egui::pos2(header_rect.max.x - icon_block, header_rect.min.y + 1.0),
+                    egui::vec2(icon_side, icon_side),
+                );
+                if let Some(lock_tex) = lock_tex {
+                    let lock_resp = ui.put(
+                        lock_rect,
+                        egui::Image::new(lock_tex)
+                            .fit_to_exact_size(egui::vec2(icon_side, icon_side))
+                            .sense(egui::Sense::click()),
                     );
-                    let drag_zone = egui::Rect::from_min_max(
-                        egui::pos2(drag_zone_start.x, title_ir.response.rect.top()),
-                        egui::pos2(title_ir.response.rect.right(), title_ir.response.rect.bottom()),
+                    if lock_resp.clicked() {
+                        self.is_locked = !self.is_locked;
+                    }
+                }
+
+                let menu_rect = Rect::from_min_size(
+                    egui::pos2(lock_rect.max.x + icon_gap, header_rect.min.y + 1.0),
+                    egui::vec2(icon_side, icon_side),
+                );
+                if let Some(menu_tex) = &self.menu_icon_texture {
+                    let menu_resp = ui.put(
+                        menu_rect,
+                        egui::Image::new(menu_tex)
+                            .fit_to_exact_size(egui::vec2(icon_side, icon_side))
+                            .sense(egui::Sense::click()),
                     );
-                    let header_drag_response =
-                        ui.interact(drag_zone, ui.id().with("header_drag"), egui::Sense::click_and_drag());
-                    if header_drag_response.drag_started() {
-                        header_drag_started = true;
-                    }
-                    if header_drag_response.drag_stopped() {
-                        header_drag_stopped = true;
-                    }
 
-                    // Área dos ícones à direita.
-                    ui.allocate_ui_with_layout(
-                        egui::Vec2::new(side_width, 16.0),
-                        egui::Layout::left_to_right(egui::Align::Center),
-                        |ui| {
-                            // Ícone lock (à esquerda do ícone menu)
-                            let lock_texture = if self.is_locked {
-                                self.lock_icon_texture.as_ref()
-                            } else {
-                                self.unlock_icon_texture.as_ref()
-                            };
-
-                            if let Some(lock_texture) = lock_texture {
-                                let lock_response = ui.add(
-                                    egui::Image::new(lock_texture)
-                                        .fit_to_exact_size(egui::Vec2::new(16.0, 16.0))
-                                        .sense(egui::Sense::click()),
-                                );
-                                if lock_response.clicked() {
-                                    self.is_locked = !self.is_locked;
-                                }
-                            } else {
-                                ui.allocate_space(egui::Vec2::new(16.0, 16.0));
-                            }
-
-                            ui.allocate_space(egui::Vec2::new(5.0, 0.0));
-
-                            // Ícone menu (à direita)
-                            if let Some(menu_texture) = &self.menu_icon_texture {
-                                let menu_response = ui.add(
-                                    egui::Image::new(menu_texture)
-                                        .fit_to_exact_size(egui::Vec2::new(16.0, 16.0))
-                                        .sense(egui::Sense::click()),
-                                );
-
-                                egui::Popup::menu(&menu_response)
-                                    .id(egui::Id::new("inspector_menu_popup"))
-                                    .width(220.0)
-                                    .frame(
-                                        egui::Frame::new()
-                                            .fill(Color32::from_rgb(45, 45, 45))
-                                            .corner_radius(8)
-                                            .stroke(Stroke::new(1.0, Color32::from_gray(78))),
+                    egui::Popup::menu(&menu_resp)
+                        .id(egui::Id::new("inspector_menu_popup"))
+                        .width(220.0)
+                        .frame(
+                            egui::Frame::new()
+                                .fill(Color32::from_rgb(45, 45, 45))
+                                .corner_radius(8)
+                                .stroke(Stroke::new(1.0, Color32::from_gray(78))),
+                        )
+                        .show(|ui| {
+                            let copy_clicked = ui
+                                .add_sized(
+                                    [208.0, 26.0],
+                                    egui::Button::new(
+                                        egui::RichText::new("Copiar cadeia de componentes")
+                                            .color(Color32::WHITE),
                                     )
-                                    .show(|ui| {
-                                        let copy_clicked = ui
-                                            .add_sized(
-                                                [208.0, 26.0],
-                                                egui::Button::new(
-                                                    egui::RichText::new("Copiar cadeia de componentes")
-                                                        .color(Color32::WHITE),
-                                                )
-                                                .fill(Color32::from_rgb(62, 62, 62))
-                                                .corner_radius(6),
-                                            )
-                                            .clicked();
-                                        if copy_clicked {
-                                            ui.ctx().copy_text("cadeia de componentes".to_owned());
-                                            println!("Cadeia de componentes copiada.");
-                                            ui.close();
-                                        }
-
-                                        let send_clicked = ui
-                                            .add_sized(
-                                                [208.0, 26.0],
-                                                egui::Button::new(
-                                                    egui::RichText::new("Enviar cadeia para...")
-                                                        .color(Color32::WHITE),
-                                                )
-                                                .fill(Color32::from_rgb(62, 62, 62))
-                                                .corner_radius(6),
-                                            )
-                                            .clicked();
-                                        if send_clicked {
-                                            println!("Ação: Enviar cadeia para...");
-                                            ui.close();
-                                        }
-                                    });
-                            } else {
-                                ui.allocate_space(egui::Vec2::new(16.0, 16.0));
+                                    .fill(Color32::from_rgb(62, 62, 62))
+                                    .corner_radius(6),
+                                )
+                                .clicked();
+                            if copy_clicked {
+                                ui.ctx().copy_text("cadeia de componentes".to_owned());
+                                ui.close();
                             }
-                        },
-                    );
-                });
 
-                ui.separator();
+                            let send_clicked = ui
+                                .add_sized(
+                                    [208.0, 26.0],
+                                    egui::Button::new(
+                                        egui::RichText::new("Enviar cadeia para...")
+                                            .color(Color32::WHITE),
+                                    )
+                                    .fill(Color32::from_rgb(62, 62, 62))
+                                    .corner_radius(6),
+                                )
+                                .clicked();
+                            if send_clicked {
+                                ui.close();
+                            }
+                        });
+                }
 
-                // Botão centralizado, verde, maior e arredondado
-                ui.vertical_centered(|ui| {
-                    let add_icon = self
-                        .add_icon_texture
-                        .as_ref()
-                        .map(|texture| egui::Image::new(texture).fit_to_exact_size(egui::Vec2::new(12.0, 12.0)));
+                let sep_y = header_rect.max.y + 5.0;
+                ui.painter().line_segment(
+                    [
+                        egui::pos2(inner.min.x, sep_y),
+                        egui::pos2(inner.max.x, sep_y),
+                    ],
+                    Stroke::new(1.0, Color32::from_gray(60)),
+                );
 
-                    let mut button = egui::Button::new(
-                        egui::RichText::new("Componente")
-                            .font(FontId::new(14.0, FontFamily::Proportional))
-                            .strong()
-                            .color(Color32::from_rgb(55, 55, 55)),
-                    );
-
-                    if let Some(icon) = add_icon {
-                        button = egui::Button::image_and_text(
-                            icon,
+                let button_rect = Rect::from_min_max(
+                    egui::pos2(inner.min.x, sep_y + 8.0),
+                    egui::pos2(inner.max.x, sep_y + 40.0),
+                );
+                ui.scope_builder(
+                    egui::UiBuilder::new().max_rect(button_rect).layout(
+                        egui::Layout::centered_and_justified(egui::Direction::LeftToRight),
+                    ),
+                    |ui| {
+                        let mut button = egui::Button::new(
                             egui::RichText::new("Componente")
                                 .font(FontId::new(14.0, FontFamily::Proportional))
                                 .strong()
                                 .color(Color32::from_rgb(55, 55, 55)),
-                        );
-                    }
+                        )
+                        .fill(Color32::from_rgb(0x0F, 0xE8, 0x79))
+                        .corner_radius(3)
+                        .min_size(egui::vec2(82.0, 16.0));
 
-                    let button = button
-                        .min_size(Vec2::new(0.0, 25.0)) // altura maior
-                        .corner_radius(3) // borda arredondada pequena
-                        .fill(Color32::from_rgb(0x0F, 0xE8, 0x79)); // verde
+                        if let Some(add_tex) = &self.add_icon_texture {
+                            button = egui::Button::image_and_text(
+                                egui::Image::new(add_tex).fit_to_exact_size(egui::vec2(12.0, 12.0)),
+                                egui::RichText::new("Componente")
+                                    .font(FontId::new(14.0, FontFamily::Proportional))
+                                    .strong()
+                                    .color(Color32::from_rgb(55, 55, 55)),
+                            )
+                            .fill(Color32::from_rgb(0x0F, 0xE8, 0x79))
+                            .corner_radius(3)
+                            .min_size(egui::vec2(82.0, 16.0));
+                        }
 
-                    let response = ui.add(button);
+                        let _ = ui.add(button);
+                    },
+                );
 
-                    if response.clicked() {
-                        println!("Botão Componente clicado!");
-                    }
-                });
+                let handle_w = 10.0;
+                let handle_rect = match self.dock_side {
+                    Some(InspectorDockSide::Right) => Rect::from_min_max(
+                        egui::pos2(rect.left(), rect.top()),
+                        egui::pos2(rect.left() + handle_w, rect.bottom()),
+                    ),
+                    _ => Rect::from_min_max(
+                        egui::pos2(rect.right() - handle_w, rect.top()),
+                        egui::pos2(rect.right(), rect.bottom()),
+                    ),
+                };
+                let resize_resp = ui.interact(
+                    handle_rect,
+                    ui.id().with("width_resize_handle"),
+                    egui::Sense::click_and_drag(),
+                );
+                if resize_resp.hovered() || resize_resp.dragged() {
+                    ui.output_mut(|o| o.cursor_icon = egui::CursorIcon::ResizeHorizontal);
+                }
+                if resize_resp.drag_started() {
+                    resize_started = true;
+                }
+                if resize_resp.drag_stopped() {
+                    resize_stopped = true;
+                }
             });
 
-        if let Some(window_response) = window_response {
-            if header_drag_started {
-                self.dragging_from_header = true;
-                self.dock_side = None;
-                self.window_pos = Some(window_response.response.rect.min);
-            }
+        if header_drag_started {
+            self.dragging_from_header = true;
+            self.resizing_width = false;
+            self.dock_side = None;
+        }
+        if resize_started {
+            self.resizing_width = true;
+            self.dragging_from_header = false;
+        }
 
-            if self.dragging_from_header && ctx.input(|i| i.pointer.primary_down()) {
-                let delta = ctx.input(|i| i.pointer.delta());
-                if delta != egui::Vec2::ZERO {
-                    if let Some(pos) = self.window_pos {
-                        self.window_pos = Some(pos + delta);
+        let delta = ctx.input(|i| i.pointer.delta());
+        if pointer_down {
+            if self.dragging_from_header && delta != Vec2::ZERO {
+                if let Some(p) = self.window_pos {
+                    self.window_pos = Some(p + delta);
+                }
+            } else if self.resizing_width && delta.x != 0.0 {
+                match self.dock_side {
+                    Some(InspectorDockSide::Right) => {
+                        let old_w = self.window_width;
+                        let new_w = (old_w - delta.x).clamp(180.0, 520.0);
+                        let applied = old_w - new_w;
+                        self.window_width = new_w;
+                        if let Some(p) = self.window_pos {
+                            self.window_pos = Some(egui::pos2(p.x + applied, p.y));
+                        }
+                    }
+                    _ => {
+                        self.window_width = (self.window_width + delta.x).clamp(180.0, 520.0);
                     }
                 }
             }
+        }
 
-            let rect = window_response.response.rect;
-            self.window_width = rect.width().clamp(180.0, 520.0);
-            if !self.dragging_from_header {
-                self.window_pos = Some(rect.min);
-            }
-            let content_rect = dock_rect;
-
-            if let Some(dock_side) = self.dock_side {
-                if !self.dragging_from_header && !ctx.input(|i| i.pointer.primary_down()) {
-                    let x = match dock_side {
-                        InspectorDockSide::Left => content_rect.left(),
-                        InspectorDockSide::Right => content_rect.right() - rect.width(),
-                    };
-                    let docked_pos = egui::pos2(x, content_rect.top());
-                    self.window_pos = Some(docked_pos);
-                }
-            }
-
-            let snap_distance = 28.0;
-            let near_left = (rect.left() - content_rect.left()).abs() <= snap_distance;
-            let near_right = (content_rect.right() - rect.right()).abs() <= snap_distance;
-
-            let is_active_drag = self.dragging_from_header && ctx.input(|i| i.pointer.primary_down());
-
-            if is_active_drag && (near_left || near_right) {
-                let painter =
-                    ctx.layer_painter(LayerId::new(Order::Foreground, egui::Id::new("dock_hint")));
-                let hint_width = 14.0;
-                let hint_rect = if near_left {
-                    egui::Rect::from_min_max(
-                        egui::pos2(content_rect.left(), content_rect.top()),
-                        egui::pos2(content_rect.left() + hint_width, content_rect.bottom()),
-                    )
-                } else {
-                    egui::Rect::from_min_max(
-                        egui::pos2(content_rect.right() - hint_width, content_rect.top()),
-                        egui::pos2(content_rect.right(), content_rect.bottom()),
-                    )
-                };
-
-                painter.rect_filled(
+        let near_left = (panel_rect.left() - dock_rect.left()).abs() <= 28.0;
+        let near_right = (dock_rect.right() - panel_rect.right()).abs() <= 28.0;
+        if self.dragging_from_header && pointer_down && (near_left || near_right) {
+            let hint_w = 14.0;
+            let hint_rect = if near_left {
+                Rect::from_min_max(
+                    egui::pos2(dock_rect.left(), dock_rect.top()),
+                    egui::pos2(dock_rect.left() + hint_w, dock_rect.bottom()),
+                )
+            } else {
+                Rect::from_min_max(
+                    egui::pos2(dock_rect.right() - hint_w, dock_rect.top()),
+                    egui::pos2(dock_rect.right(), dock_rect.bottom()),
+                )
+            };
+            ctx.layer_painter(egui::LayerId::new(Order::Foreground, Id::new("dock_hint")))
+                .rect_filled(
                     hint_rect,
                     6.0,
                     Color32::from_rgba_unmultiplied(15, 232, 121, 110),
                 );
-            }
+        }
 
-            if header_drag_stopped || (self.dragging_from_header && !ctx.input(|i| i.pointer.primary_down())) {
-                self.dragging_from_header = false;
-                if near_left {
-                    self.dock_side = Some(InspectorDockSide::Left);
-                } else if near_right {
-                    self.dock_side = Some(InspectorDockSide::Right);
-                } else {
-                    self.dock_side = None;
-                }
+        if header_drag_stopped || (self.dragging_from_header && !pointer_down) {
+            self.dragging_from_header = false;
+            if near_left {
+                self.dock_side = Some(InspectorDockSide::Left);
+            } else if near_right {
+                self.dock_side = Some(InspectorDockSide::Right);
+            } else {
+                self.dock_side = None;
             }
+        }
+
+        if resize_stopped || (self.resizing_width && !pointer_down) {
+            self.resizing_width = false;
         }
     }
 }
