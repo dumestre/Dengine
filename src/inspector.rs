@@ -69,7 +69,7 @@ impl InspectorWindow {
         }
     }
 
-    pub fn show(&mut self, ctx: &egui::Context, left_reserved: f32, right_reserved: f32) {
+    pub fn show(&mut self, ctx: &egui::Context) {
         if !self.open {
             return;
         }
@@ -112,11 +112,10 @@ impl InspectorWindow {
         } else {
             (dock_rect.height() * 0.85).max(520.0)
         };
-        let max_width = (dock_rect.width() - left_reserved - right_reserved - 40.0).max(180.0);
-        self.window_width = self.window_width.clamp(180.0, max_width.min(520.0));
+        self.window_width = self.window_width.clamp(180.0, 520.0);
         let window_size = egui::vec2(self.window_width, height);
-        let left_snap_x = dock_rect.left() + left_reserved;
-        let right_snap_right = dock_rect.right() - right_reserved;
+        let left_snap_x = dock_rect.left();
+        let right_snap_right = dock_rect.right();
 
         if self.window_pos.is_none() {
             self.window_pos = Some(egui::pos2(left_snap_x, dock_rect.top()));

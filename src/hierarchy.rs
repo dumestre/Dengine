@@ -11,6 +11,7 @@ pub struct HierarchyWindow {
     window_width: f32,
     dragging_from_header: bool,
     resizing_width: bool,
+    selected_object: &'static str,
 }
 
 #[derive(Clone, Copy)]
@@ -41,6 +42,7 @@ impl HierarchyWindow {
             window_width: 220.0,
             dragging_from_header: false,
             resizing_width: false,
+            selected_object: "Main Camera",
         }
     }
 
@@ -169,6 +171,116 @@ impl HierarchyWindow {
                     Stroke::new(1.0, Color32::from_gray(60)),
                 );
 
+                let content_rect = Rect::from_min_max(
+                    egui::pos2(inner.min.x, sep_y + 8.0),
+                    egui::pos2(inner.max.x, rect.bottom() - 6.0),
+                );
+                ui.scope_builder(
+                    egui::UiBuilder::new().max_rect(content_rect).layout(egui::Layout::top_down(
+                        egui::Align::Min,
+                    )),
+                    |ui| {
+                        egui::ScrollArea::vertical()
+                            .id_salt("hierarchy_scroll")
+                            .auto_shrink([false, false])
+                            .show(ui, |ui| {
+                                ui.spacing_mut().item_spacing.y = 2.0;
+                                ui.style_mut().visuals.selection.bg_fill =
+                                    Color32::from_rgb(47, 47, 47);
+                                ui.style_mut().visuals.selection.stroke =
+                                    Stroke::new(1.0, Color32::from_rgb(15, 232, 121));
+
+                                if ui
+                                    .selectable_label(
+                                        self.selected_object == "Directional Light",
+                                        "Directional Light",
+                                    )
+                                    .clicked()
+                                {
+                                    self.selected_object = "Directional Light";
+                                }
+
+                                if ui
+                                    .selectable_label(
+                                        self.selected_object == "Main Camera",
+                                        "Main Camera",
+                                    )
+                                    .clicked()
+                                {
+                                    self.selected_object = "Main Camera";
+                                }
+
+                                egui::CollapsingHeader::new("Player")
+                                    .default_open(true)
+                                    .show(ui, |ui| {
+                                        if ui
+                                            .selectable_label(
+                                                self.selected_object == "Mesh",
+                                                "Mesh",
+                                            )
+                                            .clicked()
+                                        {
+                                            self.selected_object = "Mesh";
+                                        }
+                                        if ui
+                                            .selectable_label(
+                                                self.selected_object == "Weapon Socket",
+                                                "Weapon Socket",
+                                            )
+                                            .clicked()
+                                        {
+                                            self.selected_object = "Weapon Socket";
+                                        }
+                                        egui::CollapsingHeader::new("Armature")
+                                            .default_open(true)
+                                            .show(ui, |ui| {
+                                                if ui
+                                                    .selectable_label(
+                                                        self.selected_object == "Spine",
+                                                        "Spine",
+                                                    )
+                                                    .clicked()
+                                                {
+                                                    self.selected_object = "Spine";
+                                                }
+                                                if ui
+                                                    .selectable_label(
+                                                        self.selected_object == "Head",
+                                                        "Head",
+                                                    )
+                                                    .clicked()
+                                                {
+                                                    self.selected_object = "Head";
+                                                }
+                                            });
+                                    });
+
+                                egui::CollapsingHeader::new("Environment")
+                                    .default_open(true)
+                                    .show(ui, |ui| {
+                                        if ui
+                                            .selectable_label(self.selected_object == "Terrain", "Terrain")
+                                            .clicked()
+                                        {
+                                            self.selected_object = "Terrain";
+                                        }
+                                        if ui
+                                            .selectable_label(self.selected_object == "Trees", "Trees")
+                                            .clicked()
+                                        {
+                                            self.selected_object = "Trees";
+                                        }
+                                        if ui
+                                            .selectable_label(self.selected_object == "Fog Volume", "Fog Volume")
+                                            .clicked()
+                                        {
+                                            self.selected_object = "Fog Volume";
+                                        }
+                                    });
+                            });
+                    },
+                );
+
                 let handle_w = 10.0;
                 let handle_rect = match self.dock_side {
                     Some(HierarchyDockSide::Right) => Rect::from_min_max(
@@ -272,19 +384,4 @@ impl HierarchyWindow {
         }
     }
 
-    pub fn docked_left_width(&self) -> f32 {
-        if self.open && matches!(self.dock_side, Some(HierarchyDockSide::Left)) {
-            self.window_width
-        } else {
-            0.0
-        }
-    }
-
-    pub fn docked_right_width(&self) -> f32 {
-        if self.open && matches!(self.dock_side, Some(HierarchyDockSide::Right)) {
-            self.window_width
-        } else {
-            0.0
-        }
-    }
 }
