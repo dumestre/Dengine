@@ -18,6 +18,9 @@ pub struct ProjectWindow {
     arrow_icon_texture: Option<TextureHandle>,
     assets_open: bool,
     packages_open: bool,
+    hover_roll_asset: Option<&'static str>,
+    hover_still_since: f64,
+    pointer_last_move_time: f64,
 }
 
 fn load_png_as_texture(ctx: &egui::Context, png_path: &str) -> Option<TextureHandle> {
@@ -47,6 +50,9 @@ impl ProjectWindow {
             arrow_icon_texture: None,
             assets_open: true,
             packages_open: true,
+            hover_roll_asset: None,
+            hover_still_since: 0.0,
+            pointer_last_move_time: 0.0,
         }
     }
 
@@ -84,26 +90,30 @@ impl ProjectWindow {
         matches!(folder, "Packages" | "TextMeshPro" | "InputSystem")
     }
 
-    fn breadcrumb_text(&self, language: EngineLanguage) -> String {
-        let root = if Self::is_package_folder(self.selected_folder) {
-            self.tr(language, "packages")
+    fn breadcrumb_segments(&self, language: EngineLanguage) -> Vec<(&'static str, String)> {
+        if self.selected_folder == "Packages" {
+            vec![("Packages", self.tr(language, "packages").to_string())]
+        } else if self.selected_folder == "Assets" {
+            vec![("Assets", self.tr(language, "assets").to_string())]
+        } else if Self::is_package_folder(self.selected_folder) {
+            vec![
+                ("Packages", self.tr(language, "packages").to_string()),
+                (self.selected_folder, self.selected_folder.to_string()),
+            ]
         } else {
-            self.tr(language, "assets")
-        };
-
-        if self.selected_folder == "Assets" || self.selected_folder == "Packages" {
-            root.to_string()
-        } else {
-            format!("{} > {}", root, self.selected_folder)
+            vec![
+                ("Assets", self.tr(language, "assets").to_string()),
+                (self.selected_folder, self.selected_folder.to_string()),
+            ]
         }
     }
 
     fn assets_for_folder(&self) -> &'static [&'static str] {
         match self.selected_folder {
             "Assets" => &[
-                "Player.prefab",
-                "Main Camera.prefab",
-                "Environment.prefab",
+                "Player.mold",
+                "Main Camera.mold",
+                "Environment.mold",
                 "UIAtlas.png",
                 "AudioMixer.asset",
                 "LightingSettings.asset",
@@ -111,7 +121,7 @@ impl ProjectWindow {
             "Animations" => &["Idle.anim", "Run.anim", "Jump.anim", "BlendTree.controller"],
             "Materials" => &["Terrain.mat", "Character.mat", "Water.mat"],
             "Meshes" => &["Hero.fbx", "Tree_A.fbx", "Rock_01.fbx"],
-            "Prefabs" => &["Enemy.prefab", "HUD.prefab", "Spawner.prefab"],
+            "Mold" => &["Enemy.mold", "HUD.mold", "Spawner.mold"],
             "Scripts" => &["PlayerController.cs", "EnemyAI.cs", "GameBootstrap.cs"],
             "Packages" => &["manifest.json", "packages-lock.json"],
             "TextMeshPro" => &["TMP Settings.asset", "TMP Essentials"],
@@ -121,7 +131,7 @@ impl ProjectWindow {
     }
 
     fn icon_style(asset: &str) -> (Color32, &'static str) {
-        if asset.ends_with(".prefab") {
+        if asset.ends_with(".mold") {
             (Color32::from_rgb(56, 95, 166), "PF")
         } else if asset.ends_with(".cs") {
             (Color32::from_rgb(184, 104, 51), "C#")
@@ -174,6 +184,40 @@ impl ProjectWindow {
         }
 
         ellipsis.to_owned()
+    }
+
+    fn draw_icon_size_slider(&mut self, ui: &mut egui::Ui, rect: Rect) {
+        let min = 56.0;
+        let max = 98.0;
+        let t = ((self.icon_scale - min) / (max - min)).clamp(0.0, 1.0);
+
+        let resp = ui.interact(rect, ui.id().with("project_icon_size_slider"), Sense::click_and_drag());
+        if resp.clicked() || resp.dragged() {
+            if let Some(pos) = ui.ctx().input(|i| i.pointer.interact_pos()) {
+                let k = ((pos.x - rect.left()) / rect.width()).clamp(0.0, 1.0);
+                self.icon_scale = min + k * (max - min);
+            }
+        }
+
+        let track_rect = Rect::from_center_size(rect.center(), egui::vec2(rect.width(), 4.0));
+        ui.painter()
+            .rect_filled(track_rect, 6.0, Color32::from_rgb(74, 74, 74));
+
+        let fill_rect = Rect::from_min_max(
+            track_rect.min,
+            egui::pos2(track_rect.left() + track_rect.width() * t, track_rect.bottom()),
+        );
+        ui.painter()
+            .rect_filled(fill_rect, 6.0, Color32::from_rgb(15, 232, 121));
+
+        let knob_center = egui::pos2(track_rect.left() + track_rect.width() * t, track_rect.center().y);
+        ui.painter()
+            .circle_filled(knob_center, 5.0, Color32::from_rgb(34, 34, 34));
+        ui.painter().circle_stroke(
+            knob_center,
+            5.0,
+            Stroke::new(1.4, Color32::from_rgb(15, 232, 121)),
+        );
     }
 
     fn draw_tree_leaf_row(
@@ -334,33 +378,87 @@ impl ProjectWindow {
                     Rect::from_min_max(inner.min, egui::pos2(inner.max.x, inner.min.y + 24.0));
                 let splitter_y = header_rect.bottom() + 4.0;
                 let search_hint = self.tr(language, "search");
-                let breadcrumb = self.breadcrumb_text(language);
+                let breadcrumb = self.breadcrumb_segments(language);
+                let search_rect = Rect::from_min_max(
+                    egui::pos2(header_rect.right() - 226.0, header_rect.top()),
+                    header_rect.right_bottom(),
+                );
+                let left_header_rect = Rect::from_min_max(
+                    header_rect.min,
+                    egui::pos2(search_rect.left() - 6.0, header_rect.bottom()),
+                );
+
+                ui.painter().rect_filled(
+                    left_header_rect.shrink2(egui::vec2(0.0, 1.0)),
+                    4.0,
+                    Color32::from_rgb(41, 41, 41),
+                );
 
                 ui.scope_builder(
                     egui::UiBuilder::new()
-                        .max_rect(header_rect)
+                        .max_rect(left_header_rect)
                         .layout(egui::Layout::left_to_right(egui::Align::Center)),
                     |ui| {
-                        ui.add_space(2.0);
+                        ui.add_space(6.0);
                         ui.label(
                             egui::RichText::new(self.tr(language, "title"))
                                 .size(12.0)
-                                .color(Color32::from_gray(200)),
+                                .color(Color32::from_gray(210)),
                         );
                         ui.add_space(8.0);
-                        ui.label(
-                            egui::RichText::new(format!("> {}", breadcrumb))
-                                .size(11.0)
-                                .color(Color32::from_gray(155)),
-                        );
 
-                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                            ui.add(
-                                egui::TextEdit::singleline(&mut self.search_query)
-                                    .desired_width(220.0)
-                                    .hint_text(search_hint),
+                        for (idx, (folder_id, folder_label)) in breadcrumb.iter().enumerate() {
+                            let is_current = *folder_id == self.selected_folder;
+                            let crumb = ui.add(
+                                egui::Label::new(
+                                    egui::RichText::new(folder_label)
+                                        .size(12.0)
+                                        .color(Color32::from_gray(if is_current { 220 } else { 190 })),
+                                )
+                                .sense(Sense::click()),
                             );
-                        });
+                            if crumb.hovered() {
+                                ui.output_mut(|o| o.cursor_icon = egui::CursorIcon::PointingHand);
+                                ui.painter().line_segment(
+                                    [
+                                        egui::pos2(crumb.rect.left(), crumb.rect.bottom() + 1.0),
+                                        egui::pos2(crumb.rect.right(), crumb.rect.bottom() + 1.0),
+                                    ],
+                                    Stroke::new(1.0, Color32::from_rgb(15, 232, 121)),
+                                );
+                            }
+                            if crumb.clicked() {
+                                self.selected_folder = *folder_id;
+                                self.selected_asset = None;
+                                if self.selected_folder == "Assets" {
+                                    self.assets_open = true;
+                                } else if self.selected_folder == "Packages" {
+                                    self.packages_open = true;
+                                }
+                            }
+
+                            if idx + 1 < breadcrumb.len() {
+                                ui.label(
+                                    egui::RichText::new(">").size(12.0).color(Color32::from_gray(150)),
+                                );
+                            }
+                        }
+                    },
+                );
+
+                ui.scope_builder(
+                    egui::UiBuilder::new()
+                        .max_rect(search_rect)
+                        .layout(
+                            egui::Layout::left_to_right(egui::Align::Center)
+                                .with_main_align(egui::Align::Center),
+                        ),
+                    |ui| {
+                        ui.add(
+                            egui::TextEdit::singleline(&mut self.search_query)
+                                .desired_width(220.0)
+                                .hint_text(search_hint),
+                        );
                     },
                 );
 
@@ -420,7 +518,7 @@ impl ProjectWindow {
                                 }
 
                                 if self.assets_open {
-                                    for folder in ["Animations", "Materials", "Meshes", "Prefabs", "Scripts"] {
+                                    for folder in ["Animations", "Materials", "Meshes", "Mold", "Scripts"] {
                                         let leaf = Self::draw_tree_leaf_row(
                                             ui,
                                             folder,
@@ -486,6 +584,13 @@ impl ProjectWindow {
                             .show(ui, |ui| {
                                 ui.horizontal_wrapped(|ui| {
                                     ui.spacing_mut().item_spacing = egui::vec2(8.0, 8.0);
+                                    let pointer_delta = ui.ctx().input(|i| i.pointer.delta());
+                                    let pointer_is_moving = pointer_delta.length_sq() > 0.64;
+                                    let now = ui.ctx().input(|i| i.time);
+                                    if pointer_is_moving {
+                                        self.pointer_last_move_time = now;
+                                    }
+                                    let mut hovered_any = false;
 
                                     for asset in assets {
                                         if self.deleted_assets.contains(asset) {
@@ -534,7 +639,7 @@ impl ProjectWindow {
                                             FontId::proportional(10.0),
                                             Color32::from_gray(245),
                                         );
-                                        let name_font = FontId::proportional(10.0);
+                                        let name_font = FontId::proportional(11.0);
                                         let name_color = Color32::from_gray(210);
                                         let name_rect = Rect::from_min_max(
                                             egui::pos2(tile_rect.left() + 5.0, tile_rect.bottom() - 16.0),
@@ -549,35 +654,65 @@ impl ProjectWindow {
 
                                         if full_w <= name_rect.width() {
                                             clipped_painter.text(
-                                                egui::pos2(name_rect.left(), name_rect.center().y),
-                                                egui::Align2::LEFT_CENTER,
+                                                name_rect.center(),
+                                                egui::Align2::CENTER_CENTER,
                                                 asset,
                                                 name_font.clone(),
                                                 name_color,
                                             );
                                         } else if tile_resp.hovered() {
-                                            let overflow = full_w - name_rect.width();
-                                            let speed = 28.0;
-                                            let pause = 0.45;
+                                            hovered_any = true;
+                                            if self.hover_roll_asset != Some(asset) {
+                                                self.hover_roll_asset = Some(asset);
+                                                self.hover_still_since = now;
+                                            }
+
+                                            let stable_since =
+                                                self.hover_still_since.max(self.pointer_last_move_time);
+                                            let stable_hover = self.hover_roll_asset == Some(asset)
+                                                && (now - stable_since) >= 0.28;
+                                            if !stable_hover {
+                                                let short = Self::truncate_with_ellipsis(
+                                                    ui.painter(),
+                                                    asset,
+                                                    &name_font,
+                                                    name_rect.width(),
+                                                );
+                                                clipped_painter.text(
+                                                    name_rect.center(),
+                                                    egui::Align2::CENTER_CENTER,
+                                                    short,
+                                                    name_font.clone(),
+                                                    name_color,
+                                                );
+                                            } else {
+                                                ui.ctx().request_repaint();
+                                                let anim_time = (now - stable_since - 0.28) as f32;
+                                                let tail_pad = 8.0;
+                                                let overflow = (full_w - name_rect.width() + tail_pad).max(0.0);
+                                                let speed = 12.0;
+                                                let start_pause = 0.65;
+                                            let end_pause = 1.0;
                                             let run_time = overflow / speed;
-                                            let cycle = pause + run_time + pause;
-                                            let time = ui.ctx().input(|i| i.time) as f32;
-                                            let phase = time % cycle;
-                                            let scroll_x = if phase < pause {
+                                            let cycle = start_pause + run_time + end_pause;
+                                                let phase = anim_time % cycle;
+                                            let scroll_x = if phase < start_pause {
                                                 0.0
-                                            } else if phase < pause + run_time {
-                                                (phase - pause) * speed
+                                            } else if phase < start_pause + run_time {
+                                                (phase - start_pause) * speed
                                             } else {
                                                 overflow
                                             };
+                                            let base_x = name_rect.center().x - full_w * 0.5;
 
                                             clipped_painter.text(
-                                                egui::pos2(name_rect.left() - scroll_x, name_rect.center().y),
+                                                egui::pos2(base_x - scroll_x, name_rect.center().y),
                                                 egui::Align2::LEFT_CENTER,
                                                 asset,
                                                 name_font.clone(),
                                                 name_color,
                                             );
+                                            }
                                         } else {
                                             let short = Self::truncate_with_ellipsis(
                                                 ui.painter(),
@@ -586,8 +721,8 @@ impl ProjectWindow {
                                                 name_rect.width(),
                                             );
                                             clipped_painter.text(
-                                                egui::pos2(name_rect.left(), name_rect.center().y),
-                                                egui::Align2::LEFT_CENTER,
+                                                name_rect.center(),
+                                                egui::Align2::CENTER_CENTER,
                                                 short,
                                                 name_font.clone(),
                                                 name_color,
@@ -642,6 +777,10 @@ impl ProjectWindow {
                                             self.status_text = asset.to_string();
                                         }
                                     }
+
+                                    if !hovered_any {
+                                        self.hover_roll_asset = None;
+                                    }
                                 });
                             });
                     },
@@ -674,12 +813,9 @@ impl ProjectWindow {
                                 .color(Color32::from_gray(165)),
                         );
                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                            ui.add_sized(
-                                [140.0, 14.0],
-                                egui::Slider::new(&mut self.icon_scale, 56.0..=98.0)
-                                    .show_value(false)
-                                    .text(""),
-                            );
+                            let (slider_rect, _) =
+                                ui.allocate_exact_size(egui::vec2(140.0, 14.0), Sense::hover());
+                            self.draw_icon_size_slider(ui, slider_rect);
                         });
                     },
                 );
