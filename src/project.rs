@@ -17,6 +17,7 @@ pub struct ProjectWindow {
     deleted_assets: HashSet<&'static str>,
     status_text: String,
     arrow_icon_texture: Option<TextureHandle>,
+    files_icon_texture: Option<TextureHandle>,
     assets_open: bool,
     packages_open: bool,
     hover_roll_asset: Option<&'static str>,
@@ -49,6 +50,7 @@ impl ProjectWindow {
             deleted_assets: HashSet::new(),
             status_text: String::new(),
             arrow_icon_texture: None,
+            files_icon_texture: None,
             assets_open: true,
             packages_open: true,
             hover_roll_asset: None,
@@ -319,6 +321,9 @@ impl ProjectWindow {
         if self.arrow_icon_texture.is_none() {
             self.arrow_icon_texture = load_png_as_texture(ctx, "src/assets/icons/seta.png");
         }
+        if self.files_icon_texture.is_none() {
+            self.files_icon_texture = load_png_as_texture(ctx, "src/assets/icons/files.png");
+        }
 
         let dock_rect = ctx.available_rect();
         let pointer_down = ctx.input(|i| i.pointer.primary_down());
@@ -387,42 +392,39 @@ impl ProjectWindow {
                     egui::pos2(header_rect.right() - 10.0, header_rect.center().y),
                     egui::vec2(16.0, 16.0),
                 );
-                let collapse_resp = ui.interact(
-                    collapse_btn_rect,
-                    ui.id().with("project_minimize"),
-                    Sense::click(),
-                );
-                if collapse_resp.hovered() {
-                    ui.output_mut(|o| o.cursor_icon = egui::CursorIcon::PointingHand);
-                    ui.painter().rect_filled(
-                        collapse_btn_rect.expand(2.0),
-                        3.0,
-                        Color32::from_rgb(58, 58, 58),
-                    );
-                }
-                if collapse_resp.clicked() {
-                    self.minimized = !self.minimized;
-                }
-                if let Some(arrow_tex) = &self.arrow_icon_texture {
-                    let angle = if self.minimized {
-                        -std::f32::consts::FRAC_PI_2
-                    } else {
-                        std::f32::consts::FRAC_PI_2
-                    };
-                    let _ = ui.put(
+                if !self.minimized {
+                    let collapse_resp = ui.interact(
                         collapse_btn_rect,
-                        egui::Image::new(arrow_tex)
-                            .fit_to_exact_size(egui::vec2(10.0, 10.0))
-                            .rotate(angle, Vec2::splat(0.5)),
+                        ui.id().with("project_minimize"),
+                        Sense::click(),
                     );
-                } else {
-                    ui.painter().text(
-                        collapse_btn_rect.center(),
-                        Align2::CENTER_CENTER,
-                        if self.minimized { "▴" } else { "▾" },
-                        FontId::new(11.0, FontFamily::Proportional),
-                        Color32::from_gray(190),
-                    );
+                    if collapse_resp.hovered() {
+                        ui.output_mut(|o| o.cursor_icon = egui::CursorIcon::PointingHand);
+                        ui.painter().rect_filled(
+                            collapse_btn_rect.expand(2.0),
+                            3.0,
+                            Color32::from_rgb(58, 58, 58),
+                        );
+                    }
+                    if collapse_resp.clicked() {
+                        self.minimized = true;
+                    }
+                    if let Some(arrow_tex) = &self.arrow_icon_texture {
+                        let _ = ui.put(
+                            collapse_btn_rect,
+                            egui::Image::new(arrow_tex)
+                                .fit_to_exact_size(egui::vec2(10.0, 10.0))
+                                .rotate(std::f32::consts::FRAC_PI_2, Vec2::splat(0.5)),
+                        );
+                    } else {
+                        ui.painter().text(
+                            collapse_btn_rect.center(),
+                            Align2::CENTER_CENTER,
+                            "▾",
+                            FontId::new(11.0, FontFamily::Proportional),
+                            Color32::from_gray(190),
+                        );
+                    }
                 }
 
                 let left_header_rect = Rect::from_min_max(
@@ -435,50 +437,88 @@ impl ProjectWindow {
                         .max_rect(left_header_rect)
                         .layout(egui::Layout::left_to_right(egui::Align::Center)),
                     |ui| {
-                        ui.add_space(6.0);
-                        ui.label(
-                            egui::RichText::new(self.tr(language, "title"))
-                                .size(12.0)
-                                .color(Color32::from_gray(175)),
-                        );
-                        ui.add_space(6.0);
-                        ui.label(egui::RichText::new("|").size(12.0).color(Color32::from_gray(110)));
-                        ui.add_space(8.0);
-
-                        for (idx, (folder_id, folder_label)) in breadcrumb.iter().enumerate() {
-                            let is_current = *folder_id == self.selected_folder;
-                            let crumb = ui.add(
-                                egui::Label::new(
-                                    egui::RichText::new(folder_label)
-                                        .size(12.0)
-                                        .color(Color32::from_gray(if is_current { 220 } else { 190 })),
-                                )
-                                .sense(Sense::click()),
+                        if self.minimized {
+                            let folder_btn_rect = Rect::from_center_size(
+                                egui::pos2(left_header_rect.left() + 16.0, header_rect.center().y),
+                                egui::vec2(28.0, 22.0),
                             );
-                            if crumb.hovered() {
+                            let folder_resp = ui.interact(
+                                folder_btn_rect,
+                                ui.id().with("project_restore_folder"),
+                                Sense::click(),
+                            );
+                            if folder_resp.hovered() {
                                 ui.output_mut(|o| o.cursor_icon = egui::CursorIcon::PointingHand);
-                                ui.painter().line_segment(
-                                    [
-                                        egui::pos2(crumb.rect.left(), crumb.rect.bottom() + 1.0),
-                                        egui::pos2(crumb.rect.right(), crumb.rect.bottom() + 1.0),
-                                    ],
-                                    Stroke::new(1.0, Color32::from_rgb(15, 232, 121)),
+                                ui.painter().rect_filled(
+                                    folder_btn_rect.expand(2.0),
+                                    3.0,
+                                    Color32::from_rgb(58, 58, 58),
                                 );
                             }
-                            if crumb.clicked() {
-                                self.selected_folder = *folder_id;
-                                self.selected_asset = None;
-                                if self.selected_folder == "Assets" {
-                                    self.assets_open = true;
-                                } else if self.selected_folder == "Packages" {
-                                    self.packages_open = true;
-                                }
+                            if folder_resp.clicked() {
+                                self.minimized = false;
                             }
+                            if let Some(files_tex) = &self.files_icon_texture {
+                                let _ = ui.put(
+                                    folder_btn_rect,
+                                    egui::Image::new(files_tex)
+                                        .fit_to_exact_size(egui::vec2(20.0, 20.0)),
+                                );
+                            } else {
+                                ui.painter().text(
+                                    folder_btn_rect.center(),
+                                    Align2::CENTER_CENTER,
+                                    "F",
+                                    FontId::new(11.0, FontFamily::Proportional),
+                                    Color32::from_gray(210),
+                                );
+                            }
+                        } else {
+                            ui.add_space(6.0);
+                            ui.label(
+                                egui::RichText::new(self.tr(language, "title"))
+                                    .size(12.0)
+                                    .color(Color32::from_gray(175)),
+                            );
+                            ui.add_space(6.0);
+                            ui.label(egui::RichText::new("|").size(12.0).color(Color32::from_gray(110)));
+                            ui.add_space(8.0);
 
-                            if idx + 1 < breadcrumb.len() {
-                                ui.label(
-                                    egui::RichText::new(">").size(12.0).color(Color32::from_gray(150)),
+                            for (idx, (folder_id, folder_label)) in breadcrumb.iter().enumerate() {
+                                let is_current = *folder_id == self.selected_folder;
+                                let crumb = ui.add(
+                                    egui::Label::new(
+                                        egui::RichText::new(folder_label)
+                                            .size(12.0)
+                                            .color(Color32::from_gray(if is_current { 220 } else { 190 })),
+                                    )
+                                    .sense(Sense::click()),
                                 );
+                                if crumb.hovered() {
+                                    ui.output_mut(|o| o.cursor_icon = egui::CursorIcon::PointingHand);
+                                    ui.painter().line_segment(
+                                        [
+                                            egui::pos2(crumb.rect.left(), crumb.rect.bottom() + 1.0),
+                                            egui::pos2(crumb.rect.right(), crumb.rect.bottom() + 1.0),
+                                        ],
+                                        Stroke::new(1.0, Color32::from_rgb(15, 232, 121)),
+                                    );
+                                }
+                                if crumb.clicked() {
+                                    self.selected_folder = *folder_id;
+                                    self.selected_asset = None;
+                                    if self.selected_folder == "Assets" {
+                                        self.assets_open = true;
+                                    } else if self.selected_folder == "Packages" {
+                                        self.packages_open = true;
+                                    }
+                                }
+
+                                if idx + 1 < breadcrumb.len() {
+                                    ui.label(
+                                        egui::RichText::new(">").size(12.0).color(Color32::from_gray(150)),
+                                    );
+                                }
                             }
                         }
                     },
