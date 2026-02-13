@@ -71,12 +71,14 @@ struct GpuResources {
     index_count: u32,
     uploaded_mesh_id: u64,
     pending_mesh_upload: Option<PendingMeshUpload>,
+    staged_vertices: Vec<[f32; 3]>,
+    staged_triangles: Vec<[u32; 3]>,
 }
 
 struct PendingMeshUpload {
     mesh_id: u64,
-    vertices: Vec<[f32; 3]>,
-    triangles: Vec<[u32; 3]>,
+    vertex_len: usize,
+    tri_len: usize,
     vertex_cursor: usize,
     tri_cursor: usize,
     vertex_buffer: wgpu::Buffer,
@@ -228,6 +230,8 @@ impl Draw3dCallback {
             index_count: 0,
             uploaded_mesh_id: 0,
             pending_mesh_upload: None,
+            staged_vertices: Vec::new(),
+            staged_triangles: Vec::new(),
         }
     }
 }
@@ -236,18 +240,24 @@ fn push_f32(buf: &mut [u8], offset: usize, value: f32) {
     buf[offset..offset + 4].copy_from_slice(&value.to_le_bytes());
 }
 
-fn upload_pending_mesh_chunk(queue: &wgpu::Queue, pending: &mut PendingMeshUpload, budget_left: &mut usize) {
+fn upload_pending_mesh_chunk(
+    queue: &wgpu::Queue,
+    pending: &mut PendingMeshUpload,
+    vertices: &[[f32; 3]],
+    triangles: &[[u32; 3]],
+    budget_left: &mut usize,
+) {
     if *budget_left == 0 {
         return;
     }
 
-    if pending.vertex_cursor < pending.vertices.len() {
+    if pending.vertex_cursor < pending.vertex_len {
         let stride = std::mem::size_of::<[f32; 3]>();
         let max_count = (*budget_left / stride).max(1);
-        let end = (pending.vertex_cursor + max_count).min(pending.vertices.len());
+        let end = (pending.vertex_cursor + max_count).min(pending.vertex_len);
         let chunk_len = end - pending.vertex_cursor;
         let mut bytes = Vec::with_capacity(chunk_len * stride);
-        for v in &pending.vertices[pending.vertex_cursor..end] {
+        for v in &vertices[pending.vertex_cursor..end] {
             bytes.extend_from_slice(&v[0].to_le_bytes());
             bytes.extend_from_slice(&v[1].to_le_bytes());
             bytes.extend_from_slice(&v[2].to_le_bytes());
@@ -261,13 +271,13 @@ fn upload_pending_mesh_chunk(queue: &wgpu::Queue, pending: &mut PendingMeshUploa
         }
     }
 
-    if pending.tri_cursor < pending.triangles.len() {
+    if pending.tri_cursor < pending.tri_len {
         let stride = std::mem::size_of::<[u32; 3]>();
         let max_count = (*budget_left / stride).max(1);
-        let end = (pending.tri_cursor + max_count).min(pending.triangles.len());
+        let end = (pending.tri_cursor + max_count).min(pending.tri_len);
         let chunk_len = end - pending.tri_cursor;
         let mut bytes = Vec::with_capacity(chunk_len * stride);
-        for tri in &pending.triangles[pending.tri_cursor..end] {
+        for tri in &triangles[pending.tri_cursor..end] {
             bytes.extend_from_slice(&tri[0].to_le_bytes());
             bytes.extend_from_slice(&tri[1].to_le_bytes());
             bytes.extend_from_slice(&tri[2].to_le_bytes());
@@ -316,10 +326,15 @@ impl egui_wgpu::CallbackTrait for Draw3dCallback {
                     mapped_at_creation: false,
                 });
 
+                resources.staged_vertices.clear();
+                resources.staged_vertices.extend_from_slice(&scene.vertices);
+                resources.staged_triangles.clear();
+                resources.staged_triangles.extend_from_slice(&scene.triangles);
+
                 resources.pending_mesh_upload = Some(PendingMeshUpload {
                     mesh_id: scene.mesh_id,
-                    vertices: scene.vertices.clone(),
-                    triangles: scene.triangles.clone(),
+                    vertex_len: resources.staged_vertices.len(),
+                    tri_len: resources.staged_triangles.len(),
                     vertex_cursor: 0,
                     tri_cursor: 0,
                     vertex_buffer,
@@ -347,14 +362,22 @@ impl egui_wgpu::CallbackTrait for Draw3dCallback {
 
         let mut budget = GPU_UPLOAD_BUDGET_BYTES;
         if let Some(mut pending) = resources.pending_mesh_upload.take() {
-            upload_pending_mesh_chunk(queue, &mut pending, &mut budget);
-            let done = pending.vertex_cursor >= pending.vertices.len()
-                && pending.tri_cursor >= pending.triangles.len();
+            upload_pending_mesh_chunk(
+                queue,
+                &mut pending,
+                &resources.staged_vertices,
+                &resources.staged_triangles,
+                &mut budget,
+            );
+            let done = pending.vertex_cursor >= pending.vertex_len
+                && pending.tri_cursor >= pending.tri_len;
             if done {
                 resources.vertex_buffer = Some(pending.vertex_buffer);
                 resources.index_buffer = Some(pending.index_buffer);
                 resources.index_count = pending.index_count;
                 resources.uploaded_mesh_id = pending.mesh_id;
+                resources.staged_vertices.clear();
+                resources.staged_triangles.clear();
             } else {
                 resources.pending_mesh_upload = Some(pending);
             }

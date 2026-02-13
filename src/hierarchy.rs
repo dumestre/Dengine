@@ -11,25 +11,27 @@ pub struct HierarchyWindow {
     arrow_icon_texture: Option<TextureHandle>,
     view_icon_texture: Option<TextureHandle>,
     no_view_icon_texture: Option<TextureHandle>,
+    camera_icon_texture: Option<TextureHandle>,
+    sun_icon_texture: Option<TextureHandle>,
     dock_side: Option<HierarchyDockSide>,
     window_pos: Option<Pos2>,
     window_width: f32,
     dragging_from_header: bool,
     resizing_width: bool,
-    selected_object: &'static str,
+    selected_object: String,
     player_open: bool,
     armature_open: bool,
     environment_open: bool,
-    object_colors: HashMap<&'static str, Color32>,
-    object_visibility: HashMap<&'static str, bool>,
-    deleted_objects: HashSet<&'static str>,
-    top_level_order: Vec<&'static str>,
-    player_order: Vec<&'static str>,
-    armature_order: Vec<&'static str>,
-    environment_order: Vec<&'static str>,
-    dragging_object: Option<&'static str>,
+    object_colors: HashMap<String, Color32>,
+    object_visibility: HashMap<String, bool>,
+    deleted_objects: HashSet<String>,
+    top_level_order: Vec<String>,
+    player_order: Vec<String>,
+    armature_order: Vec<String>,
+    environment_order: Vec<String>,
+    dragging_object: Option<String>,
     drop_target: Option<HierarchyDropTarget>,
-    drag_hover_parent: Option<(&'static str, f64)>,
+    drag_hover_parent: Option<(String, f64)>,
     color_picker_open: bool,
     picker_color: Color32,
     language: EngineLanguage,
@@ -50,10 +52,10 @@ enum HierarchyContainer {
     Environment,
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 enum HierarchyDropTarget {
     Row {
-        target: &'static str,
+        target: String,
         after: bool,
     },
     Container(HierarchyContainer),
@@ -72,6 +74,39 @@ fn load_png_as_texture(ctx: &egui::Context, png_path: &str) -> Option<TextureHan
 }
 
 impl HierarchyWindow {
+    fn truncate_with_ellipsis(
+        painter: &egui::Painter,
+        text: &str,
+        font: &FontId,
+        max_width: f32,
+    ) -> String {
+        let full = painter.layout_no_wrap(text.to_owned(), font.clone(), Color32::WHITE);
+        if full.size().x <= max_width {
+            return text.to_owned();
+        }
+        let ellipsis = "...";
+        let ellipsis_w = painter
+            .layout_no_wrap(ellipsis.to_owned(), font.clone(), Color32::WHITE)
+            .size()
+            .x;
+        if ellipsis_w >= max_width {
+            return ellipsis.to_owned();
+        }
+        let chars: Vec<char> = text.chars().collect();
+        for keep in (0..chars.len()).rev() {
+            let mut candidate: String = chars.iter().take(keep).collect();
+            candidate.push_str(ellipsis);
+            let w = painter
+                .layout_no_wrap(candidate.clone(), font.clone(), Color32::WHITE)
+                .size()
+                .x;
+            if w <= max_width {
+                return candidate;
+            }
+        }
+        ellipsis.to_owned()
+    }
+
     pub fn new() -> Self {
         Self {
             open: true,
@@ -79,22 +114,27 @@ impl HierarchyWindow {
             arrow_icon_texture: None,
             view_icon_texture: None,
             no_view_icon_texture: None,
+            camera_icon_texture: None,
+            sun_icon_texture: None,
             dock_side: Some(HierarchyDockSide::Right),
             window_pos: None,
             window_width: 220.0,
             dragging_from_header: false,
             resizing_width: false,
-            selected_object: "Main Camera",
+            selected_object: "Main Camera".to_string(),
             player_open: true,
             armature_open: true,
             environment_open: true,
             object_colors: HashMap::new(),
             object_visibility: HashMap::new(),
             deleted_objects: HashSet::new(),
-            top_level_order: vec!["Directional Light", "Main Camera", "Player", "Environment"],
-            player_order: vec!["Mesh", "Weapon Socket", "Armature"],
-            armature_order: vec!["Spine", "Head"],
-            environment_order: vec!["Terrain", "Trees", "Fog Volume"],
+            top_level_order: vec![
+                "Directional Light".to_string(),
+                "Main Camera".to_string(),
+            ],
+            player_order: vec![],
+            armature_order: vec![],
+            environment_order: vec![],
             dragging_object: None,
             drop_target: None,
             drag_hover_parent: None,
@@ -113,21 +153,31 @@ impl HierarchyWindow {
         self.last_panel_rect
     }
 
-    pub fn on_asset_dropped(&mut self, asset_name: &str) {
+    pub fn on_asset_dropped(&mut self, asset_name: &str) -> String {
         let stem = std::path::Path::new(asset_name)
             .file_stem()
             .and_then(|s| s.to_str())
             .unwrap_or("Imported Mesh");
         let mut object_name = format!("{stem} (Mesh)");
         let mut idx = 1;
-        while self.top_level_order.iter().any(|n| *n == object_name) {
+        while self.top_level_order.iter().any(|n| n == &object_name) {
             idx += 1;
             object_name = format!("{stem} (Mesh {idx})");
         }
-        let leaked: &'static str = Box::leak(object_name.into_boxed_str());
-        self.top_level_order.push(leaked);
-        self.selected_object = leaked;
-        self.deleted_objects.remove(leaked);
+        self.top_level_order.push(object_name.clone());
+        self.selected_object = object_name.clone();
+        self.deleted_objects.remove(&object_name);
+        object_name
+    }
+
+    pub fn selected_object_name(&self) -> &str {
+        &self.selected_object
+    }
+
+    pub fn set_selected_object(&mut self, object_name: &str) {
+        if self.top_level_order.iter().any(|n| n == object_name) && !self.is_deleted(object_name) {
+            self.selected_object = object_name.to_string();
+        }
     }
 
     fn tr(&self, key: &'static str) -> &'static str {
@@ -154,60 +204,60 @@ impl HierarchyWindow {
         }
     }
 
-    fn object_label(&self, object_id: &'static str) -> &'static str {
+    fn object_label(&self, object_id: &str) -> String {
         match (self.language, object_id) {
-            (EngineLanguage::Pt, "Directional Light") => "Luz Direcional",
-            (EngineLanguage::En, "Directional Light") => "Directional Light",
-            (EngineLanguage::Es, "Directional Light") => "Luz Direccional",
+            (EngineLanguage::Pt, "Directional Light") => "Luz Direcional".to_string(),
+            (EngineLanguage::En, "Directional Light") => "Directional Light".to_string(),
+            (EngineLanguage::Es, "Directional Light") => "Luz Direccional".to_string(),
 
-            (EngineLanguage::Pt, "Main Camera") => "Câmera Principal",
-            (EngineLanguage::En, "Main Camera") => "Main Camera",
-            (EngineLanguage::Es, "Main Camera") => "Cámara Principal",
+            (EngineLanguage::Pt, "Main Camera") => "Câmera Principal".to_string(),
+            (EngineLanguage::En, "Main Camera") => "Main Camera".to_string(),
+            (EngineLanguage::Es, "Main Camera") => "Cámara Principal".to_string(),
 
-            (EngineLanguage::Pt, "Player") => "Jogador",
-            (EngineLanguage::En, "Player") => "Player",
-            (EngineLanguage::Es, "Player") => "Jugador",
+            (EngineLanguage::Pt, "Player") => "Jogador".to_string(),
+            (EngineLanguage::En, "Player") => "Player".to_string(),
+            (EngineLanguage::Es, "Player") => "Jugador".to_string(),
 
-            (EngineLanguage::Pt, "Mesh") => "Malha",
-            (EngineLanguage::En, "Mesh") => "Mesh",
-            (EngineLanguage::Es, "Mesh") => "Malla",
+            (EngineLanguage::Pt, "Mesh") => "Malha".to_string(),
+            (EngineLanguage::En, "Mesh") => "Mesh".to_string(),
+            (EngineLanguage::Es, "Mesh") => "Malla".to_string(),
 
-            (EngineLanguage::Pt, "Weapon Socket") => "Encaixe de Arma",
-            (EngineLanguage::En, "Weapon Socket") => "Weapon Socket",
-            (EngineLanguage::Es, "Weapon Socket") => "Anclaje de Arma",
+            (EngineLanguage::Pt, "Weapon Socket") => "Encaixe de Arma".to_string(),
+            (EngineLanguage::En, "Weapon Socket") => "Weapon Socket".to_string(),
+            (EngineLanguage::Es, "Weapon Socket") => "Anclaje de Arma".to_string(),
 
-            (EngineLanguage::Pt, "Armature") => "Armadura",
-            (EngineLanguage::En, "Armature") => "Armature",
-            (EngineLanguage::Es, "Armature") => "Armadura",
+            (EngineLanguage::Pt, "Armature") => "Armadura".to_string(),
+            (EngineLanguage::En, "Armature") => "Armature".to_string(),
+            (EngineLanguage::Es, "Armature") => "Armadura".to_string(),
 
-            (EngineLanguage::Pt, "Spine") => "Espinha",
-            (EngineLanguage::En, "Spine") => "Spine",
-            (EngineLanguage::Es, "Spine") => "Columna",
+            (EngineLanguage::Pt, "Spine") => "Espinha".to_string(),
+            (EngineLanguage::En, "Spine") => "Spine".to_string(),
+            (EngineLanguage::Es, "Spine") => "Columna".to_string(),
 
-            (EngineLanguage::Pt, "Head") => "Cabeça",
-            (EngineLanguage::En, "Head") => "Head",
-            (EngineLanguage::Es, "Head") => "Cabeza",
+            (EngineLanguage::Pt, "Head") => "Cabeça".to_string(),
+            (EngineLanguage::En, "Head") => "Head".to_string(),
+            (EngineLanguage::Es, "Head") => "Cabeza".to_string(),
 
-            (EngineLanguage::Pt, "Environment") => "Ambiente",
-            (EngineLanguage::En, "Environment") => "Environment",
-            (EngineLanguage::Es, "Environment") => "Entorno",
+            (EngineLanguage::Pt, "Environment") => "Ambiente".to_string(),
+            (EngineLanguage::En, "Environment") => "Environment".to_string(),
+            (EngineLanguage::Es, "Environment") => "Entorno".to_string(),
 
-            (EngineLanguage::Pt, "Terrain") => "Terreno",
-            (EngineLanguage::En, "Terrain") => "Terrain",
-            (EngineLanguage::Es, "Terrain") => "Terreno",
+            (EngineLanguage::Pt, "Terrain") => "Terreno".to_string(),
+            (EngineLanguage::En, "Terrain") => "Terrain".to_string(),
+            (EngineLanguage::Es, "Terrain") => "Terreno".to_string(),
 
-            (EngineLanguage::Pt, "Trees") => "Árvores",
-            (EngineLanguage::En, "Trees") => "Trees",
-            (EngineLanguage::Es, "Trees") => "Árboles",
+            (EngineLanguage::Pt, "Trees") => "Árvores".to_string(),
+            (EngineLanguage::En, "Trees") => "Trees".to_string(),
+            (EngineLanguage::Es, "Trees") => "Árboles".to_string(),
 
-            (EngineLanguage::Pt, "Fog Volume") => "Volume de Névoa",
-            (EngineLanguage::En, "Fog Volume") => "Fog Volume",
-            (EngineLanguage::Es, "Fog Volume") => "Volumen de Niebla",
-            _ => object_id,
+            (EngineLanguage::Pt, "Fog Volume") => "Volume de Névoa".to_string(),
+            (EngineLanguage::En, "Fog Volume") => "Fog Volume".to_string(),
+            (EngineLanguage::Es, "Fog Volume") => "Volumen de Niebla".to_string(),
+            _ => object_id.to_string(),
         }
     }
 
-    fn is_parent_open(&self, object_id: &'static str) -> Option<bool> {
+    fn is_parent_open(&self, object_id: &str) -> Option<bool> {
         match object_id {
             "Player" => Some(self.player_open),
             "Armature" => Some(self.armature_open),
@@ -216,7 +266,7 @@ impl HierarchyWindow {
         }
     }
 
-    fn set_parent_open(&mut self, object_id: &'static str, open: bool) {
+    fn set_parent_open(&mut self, object_id: &str, open: bool) {
         match object_id {
             "Player" => self.player_open = open,
             "Armature" => self.armature_open = open,
@@ -225,21 +275,21 @@ impl HierarchyWindow {
         }
     }
 
-    fn container_of(&self, object_id: &'static str) -> Option<HierarchyContainer> {
-        if self.top_level_order.contains(&object_id) {
+    fn container_of(&self, object_id: &str) -> Option<HierarchyContainer> {
+        if self.top_level_order.iter().any(|n| n == object_id) {
             Some(HierarchyContainer::Top)
-        } else if self.player_order.contains(&object_id) {
+        } else if self.player_order.iter().any(|n| n == object_id) {
             Some(HierarchyContainer::Player)
-        } else if self.armature_order.contains(&object_id) {
+        } else if self.armature_order.iter().any(|n| n == object_id) {
             Some(HierarchyContainer::Armature)
-        } else if self.environment_order.contains(&object_id) {
+        } else if self.environment_order.iter().any(|n| n == object_id) {
             Some(HierarchyContainer::Environment)
         } else {
             None
         }
     }
 
-    fn order_mut(&mut self, container: HierarchyContainer) -> &mut Vec<&'static str> {
+    fn order_mut(&mut self, container: HierarchyContainer) -> &mut Vec<String> {
         match container {
             HierarchyContainer::Top => &mut self.top_level_order,
             HierarchyContainer::Player => &mut self.player_order,
@@ -257,14 +307,14 @@ impl HierarchyWindow {
         }
     }
 
-    fn parent_of_current(&self, name: &'static str) -> Option<&'static str> {
+    fn parent_of_current(&self, name: &str) -> Option<&'static str> {
         match self.container_of(name) {
             Some(container) => Self::container_parent_object(container),
             None => None,
         }
     }
 
-    fn is_descendant_of(&self, node: &'static str, maybe_ancestor: &'static str) -> bool {
+    fn is_descendant_of(&self, node: &str, maybe_ancestor: &str) -> bool {
         let mut cursor = self.parent_of_current(node);
         while let Some(current) = cursor {
             if current == maybe_ancestor {
@@ -275,7 +325,7 @@ impl HierarchyWindow {
         false
     }
 
-    fn can_move_to_container(&self, dragged: &'static str, to_container: HierarchyContainer) -> bool {
+    fn can_move_to_container(&self, dragged: &str, to_container: HierarchyContainer) -> bool {
         if let Some(parent_obj) = Self::container_parent_object(to_container) {
             if parent_obj == dragged {
                 return false;
@@ -287,14 +337,14 @@ impl HierarchyWindow {
         true
     }
 
-    fn remove_from_container(&mut self, obj: &'static str, container: HierarchyContainer) {
+    fn remove_from_container(&mut self, obj: &str, container: HierarchyContainer) {
         let order = self.order_mut(container);
-        if let Some(idx) = order.iter().position(|x| *x == obj) {
+        if let Some(idx) = order.iter().position(|x| x == obj) {
             order.remove(idx);
         }
     }
 
-    fn move_to_target(&mut self, dragged: &'static str, target: HierarchyDropTarget) {
+    fn move_to_target(&mut self, dragged: &str, target: HierarchyDropTarget) {
         let Some(from_container) = self.container_of(dragged) else { return };
 
         match target {
@@ -307,29 +357,29 @@ impl HierarchyWindow {
                 }
                 self.remove_from_container(dragged, from_container);
                 let to_order = self.order_mut(to_container);
-                if !to_order.contains(&dragged) {
-                    to_order.push(dragged);
+                if !to_order.iter().any(|x| x == dragged) {
+                    to_order.push(dragged.to_string());
                 }
             }
             HierarchyDropTarget::Row { target, after } => {
-                let Some(to_container) = self.container_of(target) else { return };
+                let Some(to_container) = self.container_of(&target) else { return };
                 if !self.can_move_to_container(dragged, to_container) {
                     return;
                 }
 
                 self.remove_from_container(dragged, from_container);
                 let to_order = self.order_mut(to_container);
-                let Some(target_idx) = to_order.iter().position(|x| *x == target) else { return };
+                let Some(target_idx) = to_order.iter().position(|x| x == &target) else { return };
                 let insert_idx = if after { target_idx + 1 } else { target_idx };
                 let idx = insert_idx.min(to_order.len());
-                if !to_order.contains(&dragged) {
-                    to_order.insert(idx, dragged);
+                if !to_order.iter().any(|x| x == dragged) {
+                    to_order.insert(idx, dragged.to_string());
                 }
             }
         }
     }
 
-    fn effective_color(&self, name: &'static str) -> Option<Color32> {
+    fn effective_color(&self, name: &str) -> Option<Color32> {
         let mut cursor = Some(name);
         while let Some(current) = cursor {
             if let Some(color) = self.object_colors.get(current) {
@@ -340,7 +390,7 @@ impl HierarchyWindow {
         None
     }
 
-    fn is_deleted(&self, name: &'static str) -> bool {
+    fn is_deleted(&self, name: &str) -> bool {
         let mut cursor = Some(name);
         while let Some(current) = cursor {
             if self.deleted_objects.contains(current) {
@@ -351,7 +401,7 @@ impl HierarchyWindow {
         false
     }
 
-    fn children_of(name: &'static str) -> &'static [&'static str] {
+    fn children_of(name: &str) -> &'static [&'static str] {
         match name {
             "Player" => &["Mesh", "Weapon Socket", "Armature"],
             "Armature" => &["Spine", "Head"],
@@ -360,15 +410,15 @@ impl HierarchyWindow {
         }
     }
 
-    fn delete_object_recursive(&mut self, name: &'static str) {
-        self.deleted_objects.insert(name);
+    fn delete_object_recursive(&mut self, name: &str) {
+        self.deleted_objects.insert(name.to_string());
         self.object_colors.remove(name);
         self.object_visibility.remove(name);
         for &child in Self::children_of(name) {
             self.delete_object_recursive(child);
         }
         if self.selected_object == name {
-            self.selected_object = "Main Camera";
+            self.selected_object = "Main Camera".to_string();
         }
     }
 
@@ -376,7 +426,7 @@ impl HierarchyWindow {
         &mut self,
         ui: &mut egui::Ui,
         indent: f32,
-        object_id: &'static str,
+        object_id: &str,
         label: &str,
         selected: bool,
     ) -> egui::Response {
@@ -389,7 +439,7 @@ impl HierarchyWindow {
         let (row_rect, _) =
             ui.allocate_exact_size(egui::vec2(ui.available_width(), 18.0), egui::Sense::hover());
 
-        let controls_w = 36.0;
+        let controls_w = 56.0;
         let left_rect = Rect::from_min_max(
             row_rect.min,
             egui::pos2((row_rect.max.x - controls_w).max(row_rect.min.x), row_rect.max.y),
@@ -401,12 +451,19 @@ impl HierarchyWindow {
                 .layout(egui::Layout::left_to_right(egui::Align::Center)),
             |ui| {
                 ui.add_space(indent);
-                row_resp = ui.selectable_label(selected, label);
+                let font = FontId::new(12.0, FontFamily::Proportional);
+                let max_label_w = (left_rect.width() - indent - 4.0).max(8.0);
+                let short = Self::truncate_with_ellipsis(ui.painter(), label, &font, max_label_w);
+                row_resp = ui.selectable_label(selected, short);
             },
         );
 
         let vis_rect = Rect::from_center_size(
             egui::pos2(row_rect.max.x - 20.0, row_rect.center().y),
+            egui::vec2(16.0, 16.0),
+        );
+        let object_icon_rect = Rect::from_center_size(
+            egui::pos2(row_rect.max.x - 38.0, row_rect.center().y),
             egui::vec2(16.0, 16.0),
         );
         let dot_center = egui::pos2(row_rect.max.x - 4.0, row_rect.center().y);
@@ -438,7 +495,24 @@ impl HierarchyWindow {
             );
         }
         if vis_resp.clicked() {
-            self.object_visibility.insert(object_id, !is_visible);
+            self.object_visibility
+                .insert(object_id.to_string(), !is_visible);
+        }
+
+        let object_icon_tex = if object_id == "Main Camera" {
+            self.camera_icon_texture.as_ref()
+        } else if object_id == "Directional Light" {
+            self.sun_icon_texture.as_ref()
+        } else {
+            None
+        };
+        if let Some(tex) = object_icon_tex {
+            ui.painter().image(
+                tex.id(),
+                object_icon_rect.shrink(0.0),
+                Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
+                Color32::WHITE,
+            );
         }
 
         if let Some(color) = color_dot {
@@ -452,18 +526,18 @@ impl HierarchyWindow {
         &mut self,
         ui: &mut egui::Ui,
         indent: f32,
-        object_id: &'static str,
-        label: &str,
+        object_id: &str,
+        label: String,
     ) {
-        let resp = self.draw_object_row(ui, indent, object_id, label, self.selected_object == object_id);
-        self.apply_row_interactions(ui, &resp, object_id, label);
+        let resp = self.draw_object_row(ui, indent, object_id, &label, self.selected_object == object_id);
+        self.apply_row_interactions(ui, &resp, object_id, &label);
     }
 
     fn apply_row_interactions(
         &mut self,
         ui: &mut egui::Ui,
         resp: &egui::Response,
-        object_id: &'static str,
+        object_id: &str,
         label: &str,
     ) {
         if !self.is_deleted(object_id) {
@@ -493,13 +567,13 @@ impl HierarchyWindow {
             egui::Sense::click_and_drag(),
         );
         if resp.clicked() || drag_resp.clicked() {
-            self.selected_object = object_id;
+            self.selected_object = object_id.to_string();
         }
         if drag_resp.drag_started() {
-            self.dragging_object = Some(object_id);
+            self.dragging_object = Some(object_id.to_string());
             self.drop_target = None;
         }
-        if let Some(dragging) = self.dragging_object {
+        if let Some(dragging) = self.dragging_object.as_deref() {
             let hover_pos = ui.ctx().input(|i| i.pointer.hover_pos());
             let hovering_row = hover_pos.map(|p| resp.rect.contains(p)).unwrap_or(false);
             if dragging != object_id && hovering_row {
@@ -527,15 +601,15 @@ impl HierarchyWindow {
                             egui::StrokeKind::Outside,
                         );
                         if self.is_parent_open(object_id) == Some(false) {
-                            match self.drag_hover_parent {
+                            match &self.drag_hover_parent {
                                 Some((id, start)) if id == object_id => {
-                                    if now - start >= 0.45 {
+                                    if now - *start >= 0.45 {
                                         self.set_parent_open(object_id, true);
                                         self.drag_hover_parent = None;
                                     }
                                 }
                                 _ => {
-                                    self.drag_hover_parent = Some((object_id, now));
+                                    self.drag_hover_parent = Some((object_id.to_string(), now));
                                 }
                             }
                         } else {
@@ -544,7 +618,7 @@ impl HierarchyWindow {
                     } else {
                         let after = hover_y > resp.rect.center().y;
                         self.drop_target = Some(HierarchyDropTarget::Row {
-                            target: object_id,
+                            target: object_id.to_string(),
                             after,
                         });
                         let y = if after { resp.rect.bottom() } else { resp.rect.top() };
@@ -557,7 +631,7 @@ impl HierarchyWindow {
                 } else {
                     let after = hover_y > resp.rect.center().y;
                     self.drop_target = Some(HierarchyDropTarget::Row {
-                        target: object_id,
+                        target: object_id.to_string(),
                         after,
                     });
                     let y = if after { resp.rect.bottom() } else { resp.rect.top() };
@@ -575,18 +649,18 @@ impl HierarchyWindow {
         &mut self,
         ui: &mut egui::Ui,
         indent: f32,
-        object_id: &'static str,
-        label: &str,
+        object_id: &str,
+        label: String,
         is_open: &mut bool,
     ) {
         let resp = self.draw_object_row(
             ui,
             indent + 16.0,
             object_id,
-            label,
+            &label,
             self.selected_object == object_id,
         );
-        self.apply_row_interactions(ui, &resp, object_id, label);
+        self.apply_row_interactions(ui, &resp, object_id, &label);
 
         let arrow_rect = Rect::from_center_size(
             egui::pos2(resp.rect.left() - 8.0, resp.rect.center().y),
@@ -649,6 +723,12 @@ impl HierarchyWindow {
         }
         if self.no_view_icon_texture.is_none() {
             self.no_view_icon_texture = load_png_as_texture(ctx, "src/assets/icons/noview.png");
+        }
+        if self.camera_icon_texture.is_none() {
+            self.camera_icon_texture = load_png_as_texture(ctx, "src/assets/icons/camera.png");
+        }
+        if self.sun_icon_texture.is_none() {
+            self.sun_icon_texture = load_png_as_texture(ctx, "src/assets/icons/sol.png");
         }
 
         let dock_rect = ctx.available_rect();
@@ -764,9 +844,9 @@ impl HierarchyWindow {
                         self.color_picker_open = !self.color_picker_open;
                         self.picker_color = self
                             .object_colors
-                            .get(self.selected_object)
+                            .get(&self.selected_object)
                             .copied()
-                            .or_else(|| self.effective_color(self.selected_object))
+                            .or_else(|| self.effective_color(&self.selected_object))
                             .unwrap_or(Color32::from_rgb(15, 232, 121));
                     }
                 }
@@ -801,7 +881,7 @@ impl HierarchyWindow {
 
                                 let top_order = self.top_level_order.clone();
                                 for object in top_order {
-                                    match object {
+                                    match object.as_str() {
                                         "Directional Light" => {
                                             self.draw_object_row_with_context(
                                                 ui,
@@ -832,7 +912,7 @@ impl HierarchyWindow {
                                             if self.player_open {
                                                 let player_children = self.player_order.clone();
                                                 for child in player_children {
-                                                    match child {
+                                                    match child.as_str() {
                                                         "Mesh" => {
                                                             self.draw_object_row_with_context(
                                                                 ui,
@@ -863,7 +943,7 @@ impl HierarchyWindow {
                                                                 let arm_children =
                                                                     self.armature_order.clone();
                                                                 for arm_child in arm_children {
-                                                                    match arm_child {
+                                                                    match arm_child.as_str() {
                                                                         "Spine" => self
                                                                             .draw_object_row_with_context(
                                                                                 ui,
@@ -901,7 +981,7 @@ impl HierarchyWindow {
                                             if self.environment_open {
                                                 let env_children = self.environment_order.clone();
                                                 for env_child in env_children {
-                                                    match env_child {
+                                                    match env_child.as_str() {
                                                         "Terrain" => self.draw_object_row_with_context(
                                                             ui,
                                                             18.0,
@@ -926,7 +1006,14 @@ impl HierarchyWindow {
                                                 }
                                             }
                                         }
-                                        _ => {}
+                                        _ => {
+                                            self.draw_object_row_with_context(
+                                                ui,
+                                                0.0,
+                                                &object,
+                                                object.clone(),
+                                            );
+                                        }
                                     }
                                 }
 
@@ -1015,7 +1102,8 @@ impl HierarchyWindow {
                         let mut color = self.picker_color;
                         if ui.color_edit_button_srgba(&mut color).changed() {
                             self.picker_color = color;
-                            self.object_colors.insert(self.selected_object, color);
+                            self.object_colors
+                                .insert(self.selected_object.clone(), color);
                             self.color_picker_open = false;
                         }
                     });
@@ -1098,15 +1186,17 @@ impl HierarchyWindow {
         }
 
         if self.dragging_object.is_some() && !pointer_down {
-            if let (Some(dragged), Some(target)) = (self.dragging_object, self.drop_target) {
-                self.move_to_target(dragged, target);
+            if let (Some(dragged), Some(target)) =
+                (self.dragging_object.clone(), self.drop_target.clone())
+            {
+                self.move_to_target(&dragged, target);
             }
             self.dragging_object = None;
             self.drop_target = None;
             self.drag_hover_parent = None;
         }
 
-        if let Some(dragging) = self.dragging_object {
+        if let Some(dragging) = self.dragging_object.as_deref() {
             if let Some(pos) = ctx.input(|i| i.pointer.hover_pos()) {
                 let preview_rect =
                     Rect::from_min_size(pos + egui::vec2(12.0, 12.0), egui::vec2(124.0, 22.0));

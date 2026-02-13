@@ -263,6 +263,7 @@ impl App for EditorApp {
                                     ui.close();
                                 }
                                 if ui.button(self.tr("save")).clicked() {
+                                    self.project.save_project_dialog(self.language);
                                     ui.close();
                                 }
                                 if ui.button(self.tr("import")).clicked() {
@@ -270,6 +271,7 @@ impl App for EditorApp {
                                     ui.close();
                                 }
                                 if ui.button(self.tr("exit")).clicked() {
+                                    ui.ctx().send_viewport_cmd(egui::ViewportCommand::Close);
                                     ui.close();
                                 }
                             });
@@ -634,6 +636,8 @@ impl App for EditorApp {
         } else {
             "Game"
         };
+        let hierarchy_selected = self.hierarchy.selected_object_name().to_string();
+        self.viewport.set_selected_object(&hierarchy_selected);
         self.viewport
             .show(
                 ctx,
@@ -651,6 +655,9 @@ impl App for EditorApp {
         let i_right = self.inspector.docked_right_width();
         self.hierarchy
             .show(ctx, i_left, i_right, project_bottom, self.language);
+        if let Some(selected_in_viewport) = self.viewport.selected_object_name() {
+            self.hierarchy.set_selected_object(selected_in_viewport);
+        }
 
         let engine_busy = self.is_playing;
 
@@ -740,12 +747,12 @@ impl App for EditorApp {
         if !pointer_down {
             if let (Some(asset_name), Some(pos)) = (self.project.dragging_asset_name(), drop_pos) {
                 if self.viewport.contains_point(pos) {
+                    let object_name = self.hierarchy.on_asset_dropped(asset_name);
                     if let Some(path) = self.project.dragging_asset_path() {
-                        self.viewport.on_asset_file_dropped(&path);
+                        self.viewport.on_asset_file_dropped_named(&path, &object_name);
                     } else {
-                        self.viewport.on_asset_dropped(asset_name);
+                        self.viewport.on_asset_dropped(&object_name);
                     }
-                    self.hierarchy.on_asset_dropped(asset_name);
                 } else if self.hierarchy.contains_point(pos) {
                     self.hierarchy.on_asset_dropped(asset_name);
                 }
@@ -773,11 +780,12 @@ impl App for EditorApp {
                     }
                     if self.viewport.contains_point(pos) {
                         if let Some(path) = &file.path {
-                            self.viewport.on_asset_file_dropped(path);
+                            let object_name = self.hierarchy.on_asset_dropped(&asset_name);
+                            self.viewport.on_asset_file_dropped_named(path, &object_name);
                         } else {
-                            self.viewport.on_asset_dropped(&asset_name);
+                            let object_name = self.hierarchy.on_asset_dropped(&asset_name);
+                            self.viewport.on_asset_dropped(&object_name);
                         }
-                        self.hierarchy.on_asset_dropped(&asset_name);
                     } else if self.hierarchy.contains_point(pos) {
                         self.hierarchy.on_asset_dropped(&asset_name);
                     }
@@ -786,12 +794,12 @@ impl App for EditorApp {
                 for file in dropped_files {
                     if let Some(path) = &file.path {
                         self.project.import_file_path(path, self.language);
-                        self.viewport.on_asset_file_dropped(path);
                         let asset_name = path
                             .file_name()
                             .and_then(|n| n.to_str())
                             .unwrap_or("Imported");
-                        self.hierarchy.on_asset_dropped(asset_name);
+                        let object_name = self.hierarchy.on_asset_dropped(asset_name);
+                        self.viewport.on_asset_file_dropped_named(path, &object_name);
                     }
                 }
             }

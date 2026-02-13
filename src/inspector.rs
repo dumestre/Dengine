@@ -17,6 +17,7 @@ pub struct InspectorWindow {
     window_width: f32,
     dragging_from_header: bool,
     resizing_width: bool,
+    fonts_initialized: bool,
 }
 
 #[derive(Clone, Copy)]
@@ -67,6 +68,7 @@ impl InspectorWindow {
             window_width: 190.0,
             dragging_from_header: false,
             resizing_width: false,
+            fonts_initialized: false,
         }
     }
 
@@ -100,17 +102,20 @@ impl InspectorWindow {
             );
         }
 
-        let mut fonts = egui::FontDefinitions::default();
-        fonts.font_data.insert(
-            "Roboto".to_owned(),
-            Arc::new(egui::FontData::from_static(include_bytes!(
-                "assets/fonts/roboto.ttf"
-            ))),
-        );
-        if let Some(family) = fonts.families.get_mut(&FontFamily::Proportional) {
-            family.insert(0, "Roboto".to_owned());
+        if !self.fonts_initialized {
+            let mut fonts = egui::FontDefinitions::default();
+            fonts.font_data.insert(
+                "Roboto".to_owned(),
+                Arc::new(egui::FontData::from_static(include_bytes!(
+                    "assets/fonts/roboto.ttf"
+                ))),
+            );
+            if let Some(family) = fonts.families.get_mut(&FontFamily::Proportional) {
+                family.insert(0, "Roboto".to_owned());
+            }
+            ctx.set_fonts(fonts);
+            self.fonts_initialized = true;
         }
-        ctx.set_fonts(fonts);
 
         let dock_rect = ctx.available_rect();
         let usable_bottom = (dock_rect.bottom() - bottom_reserved).max(dock_rect.top() + 120.0);

@@ -32,20 +32,28 @@ pub struct ViewportPanel {
     camera_distance: f32,
     camera_target: Vec3,
     object_selected: bool,
+    scene_entries: Vec<SceneEntry>,
+    selected_scene_object: Option<String>,
+    pending_mesh_name: Option<String>,
     rotation_icon: Option<TextureHandle>,
     scale_icon: Option<TextureHandle>,
     transform_icon: Option<TextureHandle>,
+    move_icon: Option<TextureHandle>,
+    move_view_mode: bool,
     last_viewport_rect: Option<Rect>,
     dropped_asset_label: Option<String>,
-    active_mesh_full: Option<MeshData>,
-    active_mesh_full_id: u64,
-    active_mesh_proxy: Option<MeshData>,
-    active_mesh_proxy_id: u64,
     mesh_status: Option<String>,
     mesh_loading: bool,
     import_pipeline: AssetImportPipeline,
     pending_mesh_job: Option<u64>,
     next_import_job_id: u64,
+}
+
+struct SceneEntry {
+    name: String,
+    transform: Mat4,
+    full: MeshData,
+    proxy: MeshData,
 }
 
 struct MeshData {
@@ -130,15 +138,16 @@ impl ViewportPanel {
             camera_distance: 4.8,
             camera_target: Vec3::ZERO,
             object_selected: false,
+            scene_entries: Vec::new(),
+            selected_scene_object: None,
+            pending_mesh_name: None,
             rotation_icon: None,
             scale_icon: None,
             transform_icon: None,
+            move_icon: None,
+            move_view_mode: false,
             last_viewport_rect: None,
             dropped_asset_label: None,
-            active_mesh_full: None,
-            active_mesh_full_id: 0,
-            active_mesh_proxy: None,
-            active_mesh_proxy_id: 0,
             mesh_status: None,
             mesh_loading: false,
             import_pipeline,
@@ -161,11 +170,34 @@ impl ViewportPanel {
         self.last_viewport_rect
     }
 
+    pub fn selected_object_name(&self) -> Option<&str> {
+        self.selected_scene_object.as_deref()
+    }
+
+    pub fn set_selected_object(&mut self, object_name: &str) {
+        if self.scene_entries.iter().any(|o| o.name == object_name) {
+            self.selected_scene_object = Some(object_name.to_string());
+            self.object_selected = true;
+        } else {
+            self.selected_scene_object = None;
+            self.object_selected = false;
+        }
+    }
+
     pub fn on_asset_dropped(&mut self, asset_name: &str) {
-        if asset_name.ends_with(".fbx") || asset_name.ends_with(".obj") || asset_name.ends_with(".glb") {
+        if asset_name.ends_with(".fbx")
+            || asset_name.ends_with(".obj")
+            || asset_name.ends_with(".glb")
+            || asset_name.ends_with(".gltf")
+        {
             self.object_selected = true;
             self.dropped_asset_label = Some(asset_name.to_string());
         }
+    }
+
+    pub fn on_asset_file_dropped_named(&mut self, path: &Path, object_name: &str) {
+        self.pending_mesh_name = Some(object_name.to_string());
+        self.on_asset_file_dropped(path);
     }
 
     pub fn on_asset_file_dropped(&mut self, path: &Path) {
@@ -198,6 +230,14 @@ impl ViewportPanel {
                 self.pending_mesh_job = Some(job_id);
                 self.mesh_loading = true;
                 self.mesh_status = Some("Carregando proxy...".to_string());
+                if self.pending_mesh_name.is_none() {
+                    self.pending_mesh_name = Some(
+                        path.file_stem()
+                            .and_then(|n| n.to_str())
+                            .unwrap_or("Imported Mesh")
+                            .to_string(),
+                    );
+                }
                 self.import_pipeline.enqueue_mesh(job_id, path.to_path_buf());
             }
             "png" | "jpg" | "jpeg" | "webp" => {
@@ -217,6 +257,9 @@ impl ViewportPanel {
         if self.transform_icon.is_none() {
             self.transform_icon = load_png_as_texture(ctx, "src/assets/icons/transform.png");
         }
+        if self.move_icon.is_none() {
+            self.move_icon = load_png_as_texture(ctx, "src/assets/icons/move.png");
+        }
     }
 
     fn poll_import_pipeline(&mut self) {
@@ -227,9 +270,7 @@ impl ViewportPanel {
                         continue;
                     }
                     match event {
-                        MeshLoadEvent::Proxy(mesh) => {
-                            self.active_mesh_proxy = Some(mesh);
-                            self.active_mesh_proxy_id = self.active_mesh_proxy_id.wrapping_add(1);
+                        MeshLoadEvent::Proxy(_mesh) => {
                             self.mesh_status = Some("Proxy carregada... finalizando".to_string());
                         }
                         MeshLoadEvent::Full(Ok(mesh)) => {
@@ -238,10 +279,26 @@ impl ViewportPanel {
                             let full = make_proxy_mesh(&mesh, MAX_RUNTIME_TRIANGLES, MAX_RUNTIME_VERTICES);
                             let nav_proxy =
                                 make_proxy_mesh(&full, VIEWPORT_NAV_TRIANGLES, VIEWPORT_NAV_VERTICES);
-                            self.active_mesh_full = Some(full);
-                            self.active_mesh_full_id = self.active_mesh_full_id.wrapping_add(1);
-                            self.active_mesh_proxy = Some(nav_proxy);
-                            self.active_mesh_proxy_id = self.active_mesh_proxy_id.wrapping_add(1);
+                            let name = self
+                                .pending_mesh_name
+                                .take()
+                                .unwrap_or_else(|| mesh.name.clone());
+                            let idx = self.scene_entries.len();
+                            let col = (idx % 4) as f32;
+                            let row = (idx / 4) as f32;
+                            let spacing = 1.9_f32;
+                            let tx = (col - 1.5) * spacing;
+                            let tz = row * spacing;
+                            let transform = Mat4::from_translation(Vec3::new(tx, 0.0, tz));
+                            self.scene_entries.push(SceneEntry {
+                                name: name.clone(),
+                                transform,
+                                full,
+                                proxy: nav_proxy,
+                            });
+                            self.selected_scene_object = Some(name.clone());
+                            self.dropped_asset_label = Some(name);
+                            self.object_selected = true;
                             self.mesh_status = Some(if is_heavy {
                                 "Mesh carregada com otimização automática".to_string()
                             } else {
@@ -251,8 +308,7 @@ impl ViewportPanel {
                             self.pending_mesh_job = None;
                         }
                         MeshLoadEvent::Full(Err(err)) => {
-                            self.active_mesh_full = None;
-                            self.active_mesh_proxy = None;
+                            self.pending_mesh_name = None;
                             self.mesh_status = Some(format!("Falha ao carregar malha: {err}"));
                             self.mesh_loading = false;
                             self.pending_mesh_job = None;
@@ -445,11 +501,21 @@ impl ViewportPanel {
 
                         if Self::gizmo_icon_button(
                             ui,
+                            self.move_icon.as_ref(),
+                            "M",
+                            self.move_view_mode,
+                            "Move View",
+                        ) {
+                            self.move_view_mode = true;
+                        }
+                        if Self::gizmo_icon_button(
+                            ui,
                             self.transform_icon.as_ref(),
                             "T",
-                            self.gizmo_mode == GizmoMode::Translate,
+                            self.gizmo_mode == GizmoMode::Translate && !self.move_view_mode,
                             "Transform",
                         ) {
+                            self.move_view_mode = false;
                             self.gizmo_mode = GizmoMode::Translate;
                             self.object_selected = true;
                         }
@@ -457,9 +523,10 @@ impl ViewportPanel {
                             ui,
                             self.scale_icon.as_ref(),
                             "S",
-                            self.gizmo_mode == GizmoMode::Scale,
+                            self.gizmo_mode == GizmoMode::Scale && !self.move_view_mode,
                             "Scale",
                         ) {
+                            self.move_view_mode = false;
                             self.gizmo_mode = GizmoMode::Scale;
                             self.object_selected = true;
                         }
@@ -467,9 +534,10 @@ impl ViewportPanel {
                             ui,
                             self.rotation_icon.as_ref(),
                             "R",
-                            self.gizmo_mode == GizmoMode::Rotate,
+                            self.gizmo_mode == GizmoMode::Rotate && !self.move_view_mode,
                             "Rotation",
                         ) {
+                            self.move_view_mode = false;
                             self.gizmo_mode = GizmoMode::Rotate;
                             self.object_selected = true;
                         }
@@ -533,15 +601,35 @@ impl ViewportPanel {
                         viewport_resp.hovered() && !pointer_over_controls && !pointer_over_view_gizmo;
                     let is_navigating = can_navigate_camera
                         && ((alt_down && primary_down)
+                            || (self.move_view_mode && primary_down)
                             || (secondary_down && !alt_down)
                             || middle_down
                             || (alt_down && secondary_down && pointer_delta.y.abs() > 0.0)
                             || scroll_delta.length_sq() > 0.0
                             || (pinch_zoom - 1.0).abs() > 1e-4);
 
+                    if can_navigate_camera && self.move_view_mode {
+                        ui.output_mut(|o| {
+                            o.cursor_icon = if primary_down {
+                                egui::CursorIcon::Grabbing
+                            } else {
+                                egui::CursorIcon::Grab
+                            };
+                        });
+                    }
+
                     if can_navigate_camera {
+                        if self.move_view_mode && primary_down {
+                            let right = Vec3::new(self.camera_yaw.sin(), 0.0, -self.camera_yaw.cos());
+                            let up = Vec3::Y;
+                            let pan_scale = self.camera_distance * 0.0022;
+                            self.camera_target += (-pointer_delta.x * pan_scale) * right;
+                            self.camera_target += (pointer_delta.y * pan_scale) * up;
+                            ui.ctx().request_repaint();
+                        }
+
                         // Unity-like orbit: Alt + LMB.
-                        if alt_down && primary_down {
+                        if alt_down && primary_down && !self.move_view_mode {
                             self.camera_yaw -= pointer_delta.x * 0.012;
                             self.camera_pitch =
                                 (self.camera_pitch - pointer_delta.y * 0.009).clamp(-1.45, 1.45);
@@ -619,62 +707,98 @@ impl ViewportPanel {
                         && !pointer_over_controls
                         && !pointer_over_view_gizmo
                         && !alt_down
+                        && !self.move_view_mode
                     {
                         let hover_pos = ctx.input(|i| i.pointer.hover_pos());
-                        let object_screen = project_point(viewport_rect, mvp, Vec3::ZERO);
-                        self.object_selected = if let (Some(cursor), Some(center)) = (hover_pos, object_screen) {
-                            cursor.distance(center) <= 18.0
-                        } else {
-                            false
-                        };
+                        if let Some(cursor) = hover_pos {
+                            let mut best: Option<(f32, String)> = None;
+                            for entry in &self.scene_entries {
+                                let center = entry.transform.transform_point3(Vec3::ZERO);
+                                if let Some(screen) = project_point(viewport_rect, proj * view, center) {
+                                    let dist = cursor.distance(screen);
+                                    if dist <= 22.0 {
+                                        match &best {
+                                            Some((best_d, _)) if dist >= *best_d => {}
+                                            _ => best = Some((dist, entry.name.clone())),
+                                        }
+                                    }
+                                }
+                            }
+                            if let Some((_, name)) = best {
+                                self.selected_scene_object = Some(name.clone());
+                                self.dropped_asset_label = Some(name);
+                                self.object_selected = true;
+                            } else {
+                                self.selected_scene_object = None;
+                                self.object_selected = false;
+                            }
+                        }
                     }
 
-                    let mesh_choice = if is_navigating {
-                        self.active_mesh_proxy
-                            .as_ref()
-                            .map(|m| (m, self.active_mesh_proxy_id))
-                            .or_else(|| {
-                                self.active_mesh_full
-                                    .as_ref()
-                                    .map(|m| (m, self.active_mesh_full_id))
-                            })
-                    } else {
-                        self.active_mesh_full
-                            .as_ref()
-                            .map(|m| (m, self.active_mesh_full_id))
-                            .or_else(|| {
-                                self.active_mesh_proxy
-                                    .as_ref()
-                                    .map(|m| (m, self.active_mesh_proxy_id))
-                            })
-                    };
-
-                    if let Some((mesh, mesh_id)) = mesh_choice {
-                        let mut gpu_drawn = false;
-                        if let Some(gpu) = gpu_renderer {
-                            gpu.update_scene(mesh_id, &mesh.vertices, &mesh.triangles, mvp);
-                            let cb = gpu.paint_callback(viewport_rect);
-                            ui.painter().add(egui::Shape::Callback(cb));
-                            gpu_drawn = true;
-                        }
-                        if !gpu_drawn {
-                            draw_solid_mesh(ui, viewport_rect, mvp, mesh);
+                    if !self.scene_entries.is_empty() {
+                        if self.scene_entries.len() == 1 {
+                            let entry = &self.scene_entries[0];
+                            let model = entry.transform;
+                            let mvp_one = proj * view * model;
+                            let mesh = if is_navigating {
+                                &entry.proxy
+                            } else {
+                                &entry.full
+                            };
+                            let mut gpu_drawn = false;
+                            if let Some(gpu) = gpu_renderer {
+                                gpu.update_scene(1, &mesh.vertices, &mesh.triangles, mvp_one);
+                                let cb = gpu.paint_callback(viewport_rect);
+                                ui.painter().add(egui::Shape::Callback(cb));
+                                gpu_drawn = true;
+                            }
+                            if !gpu_drawn {
+                                draw_solid_mesh(ui, viewport_rect, mvp_one, mesh);
+                            }
+                        } else {
+                            for entry in &self.scene_entries {
+                                let model = entry.transform;
+                                let mvp_obj = proj * view * model;
+                                let mesh = if is_navigating {
+                                    &entry.proxy
+                                } else {
+                                    &entry.full
+                                };
+                                draw_solid_mesh(ui, viewport_rect, mvp_obj, mesh);
+                            }
                         }
                     } else {
                         draw_wire_cube(ui, viewport_rect, mvp, self.object_selected);
                     }
 
                     if self.object_selected {
+                        let selected_name = self.selected_scene_object.clone();
+                        let selected_transform = selected_name
+                            .as_ref()
+                            .and_then(|name| {
+                                self.scene_entries
+                                    .iter()
+                                    .find(|o| &o.name == name)
+                                    .map(|o| o.transform)
+                            })
+                            .unwrap_or(self.model_matrix);
                         let gizmo = Gizmo::new("scene_transform_gizmo")
                             .view_matrix(view.to_cols_array_2d().into())
                             .projection_matrix(proj.to_cols_array_2d().into())
-                            .model_matrix(self.model_matrix.to_cols_array_2d().into())
+                            .model_matrix(selected_transform.to_cols_array_2d().into())
                             .mode(self.gizmo_mode)
                             .orientation(self.gizmo_orientation)
                             .viewport(viewport_rect);
 
                         if let Some(result) = gizmo.interact(ui) {
-                            self.model_matrix = Mat4::from(result.transform());
+                            let new_transform = Mat4::from(result.transform());
+                            if let Some(name) = selected_name {
+                                if let Some(entry) = self.scene_entries.iter_mut().find(|o| o.name == name) {
+                                    entry.transform = new_transform;
+                                }
+                            } else {
+                                self.model_matrix = new_transform;
+                            }
                         }
                     }
                 }

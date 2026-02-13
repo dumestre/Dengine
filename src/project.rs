@@ -3,7 +3,9 @@ use std::fs::{self, File};
 use std::hash::{Hash, Hasher};
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender};
+use std::sync::Arc;
 
 use eframe::egui::{self, Align2, Color32, FontFamily, FontId, Id, Order, Rect, Sense, Stroke, TextureHandle, Vec2};
 use epaint::ColorImage;
@@ -27,9 +29,7 @@ pub struct ProjectWindow {
     hover_still_since: f64,
     imported_assets: BTreeMap<&'static str, Vec<String>>,
     preview_cache: BTreeMap<String, TextureHandle>,
-    mesh_preview_cache: BTreeMap<String, MeshPreview>,
     preview_lru: VecDeque<String>,
-    mesh_preview_lru: VecDeque<String>,
     dragging_asset: Option<String>,
     image_preview_tx: Sender<ImagePreviewDecoded>,
     image_preview_rx: Receiver<ImagePreviewDecoded>,
@@ -37,6 +37,8 @@ pub struct ProjectWindow {
     mesh_preview_rx: Receiver<MeshPreviewDecoded>,
     image_preview_pending: HashSet<String>,
     mesh_preview_pending: HashSet<String>,
+    image_preview_workers: Arc<AtomicUsize>,
+    mesh_preview_workers: Arc<AtomicUsize>,
 }
 
 struct MeshPreview {
@@ -45,13 +47,12 @@ struct MeshPreview {
 
 struct ImagePreviewDecoded {
     key: String,
-    size: [usize; 2],
-    rgba: Vec<u8>,
+    image: Option<([usize; 2], Vec<u8>)>,
 }
 
 struct MeshPreviewDecoded {
     key: String,
-    preview: MeshPreview,
+    image: Option<([usize; 2], Vec<u8>)>,
 }
 
 fn load_png_as_texture(ctx: &egui::Context, png_path: &str) -> Option<TextureHandle> {
@@ -68,11 +69,15 @@ fn load_png_as_texture(ctx: &egui::Context, png_path: &str) -> Option<TextureHan
 
 impl ProjectWindow {
     const MAX_IMAGE_PREVIEWS: usize = 128;
-    const MAX_MESH_PREVIEWS: usize = 96;
+    const MAX_IMAGE_PREVIEW_WORKERS: usize = 4;
+    const MAX_MESH_PREVIEW_WORKERS: usize = 2;
+    const MESH_THUMB_SIZE: [usize; 2] = [176, 124];
 
     pub fn new() -> Self {
         let (img_tx, img_rx) = mpsc::channel();
         let (mesh_tx, mesh_rx) = mpsc::channel();
+        let image_preview_workers = Arc::new(AtomicUsize::new(0));
+        let mesh_preview_workers = Arc::new(AtomicUsize::new(0));
         Self {
             open: true,
             panel_height: 260.0,
@@ -90,9 +95,7 @@ impl ProjectWindow {
             hover_still_since: 0.0,
             imported_assets: BTreeMap::new(),
             preview_cache: BTreeMap::new(),
-            mesh_preview_cache: BTreeMap::new(),
             preview_lru: VecDeque::new(),
-            mesh_preview_lru: VecDeque::new(),
             dragging_asset: None,
             image_preview_tx: img_tx,
             image_preview_rx: img_rx,
@@ -100,6 +103,8 @@ impl ProjectWindow {
             mesh_preview_rx: mesh_rx,
             image_preview_pending: HashSet::new(),
             mesh_preview_pending: HashSet::new(),
+            image_preview_workers,
+            mesh_preview_workers,
         }
     }
 
@@ -119,34 +124,34 @@ impl ProjectWindow {
         }
     }
 
-    fn evict_mesh_preview_cache_if_needed(&mut self) {
-        while self.mesh_preview_cache.len() > Self::MAX_MESH_PREVIEWS {
-            let Some(old_key) = self.mesh_preview_lru.pop_front() else {
-                break;
-            };
-            self.mesh_preview_cache.remove(&old_key);
-        }
-    }
-
     fn poll_preview_jobs(&mut self, ctx: &egui::Context) {
         while let Ok(decoded) = self.image_preview_rx.try_recv() {
-            let color_image = ColorImage::from_rgba_unmultiplied(decoded.size, &decoded.rgba);
-            let tex = ctx.load_texture(
-                decoded.key.clone(),
-                color_image,
-                egui::TextureOptions::LINEAR,
-            );
-            self.preview_cache.insert(decoded.key.clone(), tex);
+            if let Some((size, rgba)) = decoded.image {
+                let color_image = ColorImage::from_rgba_unmultiplied(size, &rgba);
+                let tex = ctx.load_texture(
+                    decoded.key.clone(),
+                    color_image,
+                    egui::TextureOptions::LINEAR,
+                );
+                self.preview_cache.insert(decoded.key.clone(), tex);
+                Self::lru_touch(&mut self.preview_lru, &decoded.key);
+                self.evict_preview_cache_if_needed();
+            }
             self.image_preview_pending.remove(&decoded.key);
-            Self::lru_touch(&mut self.preview_lru, &decoded.key);
-            self.evict_preview_cache_if_needed();
         }
         while let Ok(decoded) = self.mesh_preview_rx.try_recv() {
-            self.mesh_preview_cache
-                .insert(decoded.key.clone(), decoded.preview);
+            if let Some((size, rgba)) = decoded.image {
+                let color_image = ColorImage::from_rgba_unmultiplied(size, &rgba);
+                let tex = ctx.load_texture(
+                    decoded.key.clone(),
+                    color_image,
+                    egui::TextureOptions::LINEAR,
+                );
+                self.preview_cache.insert(decoded.key.clone(), tex);
+                Self::lru_touch(&mut self.preview_lru, &decoded.key);
+                self.evict_preview_cache_if_needed();
+            }
             self.mesh_preview_pending.remove(&decoded.key);
-            Self::lru_touch(&mut self.mesh_preview_lru, &decoded.key);
-            self.evict_mesh_preview_cache_if_needed();
         }
     }
 
@@ -179,6 +184,9 @@ impl ProjectWindow {
             (EngineLanguage::Pt, "import") => "Importar",
             (EngineLanguage::En, "import") => "Import",
             (EngineLanguage::Es, "import") => "Importar",
+            (EngineLanguage::Pt, "save") => "Salvar",
+            (EngineLanguage::En, "save") => "Save",
+            (EngineLanguage::Es, "save") => "Guardar",
             _ => key,
         }
     }
@@ -206,51 +214,50 @@ impl ProjectWindow {
     }
 
     fn assets_for_folder(&self) -> Vec<String> {
-        let mut out: Vec<String> = match self.selected_folder {
-            "Assets" => vec![
-                "Player.mold".to_string(),
-                "Main Camera.mold".to_string(),
-                "Environment.mold".to_string(),
-                "UIAtlas.png".to_string(),
-                "AudioMixer.asset".to_string(),
-                "LightingSettings.asset".to_string(),
-            ],
-            "Animations" => vec![
-                "Idle.anim".to_string(),
-                "Run.anim".to_string(),
-                "Jump.anim".to_string(),
-                "BlendTree.controller".to_string(),
-            ],
-            "Materials" => vec![
-                "Terrain.mat".to_string(),
-                "Character.mat".to_string(),
-                "Water.mat".to_string(),
-            ],
-            "Meshes" => vec![
-                "Hero.fbx".to_string(),
-                "Tree_A.fbx".to_string(),
-                "Rock_01.fbx".to_string(),
-            ],
-            "Mold" => vec![
-                "Enemy.mold".to_string(),
-                "HUD.mold".to_string(),
-                "Spawner.mold".to_string(),
-            ],
-            "Scripts" => vec![
-                "PlayerController.cs".to_string(),
-                "EnemyAI.cs".to_string(),
-                "GameBootstrap.cs".to_string(),
-            ],
-            "Packages" => vec!["manifest.json".to_string(), "packages-lock.json".to_string()],
-            "TextMeshPro" => vec!["TMP Settings.asset".to_string(), "TMP Essentials".to_string()],
-            "InputSystem" => vec!["InputActions.inputactions".to_string()],
-            _ => vec![],
-        };
+        let mut out: Vec<String> = Vec::new();
+        if let Some(folder_path) = self.selected_folder_path() {
+            if let Ok(entries) = fs::read_dir(folder_path) {
+                for entry in entries.flatten() {
+                    let Some(name) = entry.file_name().to_str().map(|s| s.to_string()) else {
+                        continue;
+                    };
+                    if name.starts_with('.') {
+                        continue;
+                    }
+                    out.push(name);
+                }
+            }
+        }
 
         if let Some(extra) = self.imported_assets.get(self.selected_folder) {
-            out.extend(extra.iter().cloned());
+            for name in extra {
+                if !out.iter().any(|n| n == name) {
+                    out.push(name.clone());
+                }
+            }
         }
+        out.sort_by_key(|s| s.to_ascii_lowercase());
         out
+    }
+
+    fn should_show_folder(&self, folder: &'static str) -> bool {
+        if let Some(path) = match folder {
+            "Animations" => Some(PathBuf::from("Assets/Animations")),
+            "Materials" => Some(PathBuf::from("Assets/Materials")),
+            "Meshes" => Some(PathBuf::from("Assets/Meshes")),
+            "Mold" => Some(PathBuf::from("Assets/Mold")),
+            "Scripts" => Some(PathBuf::from("Assets/Scripts")),
+            "TextMeshPro" => Some(PathBuf::from("Packages/TextMeshPro")),
+            "InputSystem" => Some(PathBuf::from("Packages/InputSystem")),
+            _ => None,
+        } {
+            if path.exists() {
+                return true;
+            }
+        }
+        self.imported_assets
+            .get(folder)
+            .is_some_and(|v| !v.is_empty())
     }
 
     fn import_target_folder_for_ext(ext: &str) -> &'static str {
@@ -331,8 +338,11 @@ impl ProjectWindow {
         if !imported.iter().any(|n| n == &imported_name) {
             imported.push(imported_name.clone());
         }
-        self.selected_folder = target_folder;
-        self.selected_asset = Some(imported_name.clone());
+        if self.selected_folder == target_folder {
+            self.selected_asset = Some(imported_name.clone());
+        } else {
+            self.selected_asset = None;
+        }
         self.deleted_assets.remove(&imported_name);
         self.status_text = format!("{}: {}", self.tr(language, "import"), imported_name);
     }
@@ -347,6 +357,49 @@ impl ProjectWindow {
         if let Some(path) = file {
             self.import_model_path(&path, language);
         }
+    }
+
+    pub fn save_project_dialog(&mut self, language: EngineLanguage) {
+        let picked = rfd::FileDialog::new()
+            .add_filter("Dengine Project", &["deng"])
+            .set_file_name("project.deng")
+            .save_file();
+
+        let Some(mut path) = picked else {
+            return;
+        };
+        if path
+            .extension()
+            .and_then(|e| e.to_str())
+            .map(|e| e.eq_ignore_ascii_case("deng"))
+            != Some(true)
+        {
+            path.set_extension("deng");
+        }
+
+        match self.save_project_file(&path) {
+            Ok(()) => {
+                let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("project.deng");
+                self.status_text = format!("{}: {}", self.tr(language, "save"), name);
+            }
+            Err(err) => {
+                self.status_text = format!("{}: erro ao salvar ({err})", self.tr(language, "save"));
+            }
+        }
+    }
+
+    fn save_project_file(&self, path: &Path) -> Result<(), String> {
+        let mut files = Vec::<String>::new();
+        collect_project_files_recursive(Path::new("Assets"), Path::new("Assets"), &mut files)?;
+        files.sort_by_key(|s| s.to_ascii_lowercase());
+
+        let mut f = File::create(path).map_err(|e| e.to_string())?;
+        f.write_all(b"DENG1\n").map_err(|e| e.to_string())?;
+        for rel in files {
+            let line = format!("asset={rel}\n");
+            f.write_all(line.as_bytes()).map_err(|e| e.to_string())?;
+        }
+        Ok(())
     }
 
     fn icon_style(asset: &str) -> (Color32, &'static str) {
@@ -387,6 +440,9 @@ impl ProjectWindow {
             "Meshes" => Some(PathBuf::from("Assets/Meshes")),
             "Mold" => Some(PathBuf::from("Assets/Mold")),
             "Scripts" => Some(PathBuf::from("Assets/Scripts")),
+            "Packages" => Some(PathBuf::from("Packages")),
+            "TextMeshPro" => Some(PathBuf::from("Packages/TextMeshPro")),
+            "InputSystem" => Some(PathBuf::from("Packages/InputSystem")),
             _ => None,
         }
     }
@@ -406,7 +462,9 @@ impl ProjectWindow {
             .and_then(|e| e.to_str())
             .map(|e| e.to_ascii_lowercase())
             .unwrap_or_default();
-        if ext != "png" && ext != "jpg" && ext != "jpeg" && ext != "webp" {
+        let is_image = ext == "png" || ext == "jpg" || ext == "jpeg" || ext == "webp";
+        let is_mesh = ext == "obj" || ext == "glb" || ext == "gltf" || ext == "fbx";
+        if !is_image && !is_mesh {
             return None;
         }
         if !asset_path.exists() {
@@ -414,65 +472,66 @@ impl ProjectWindow {
         }
 
         let key = asset_path.to_string_lossy().to_string();
-        if !self.preview_cache.contains_key(&key) && !self.image_preview_pending.contains(&key) {
-            self.image_preview_pending.insert(key.clone());
-            let tx = self.image_preview_tx.clone();
-            let key_clone = key.clone();
-            std::thread::spawn(move || {
-                let Ok(bytes) = std::fs::read(&asset_path) else {
-                    return;
-                };
-                let Ok(rgba) = image::load_from_memory(&bytes).map(|img| img.to_rgba8()) else {
-                    return;
-                };
-                let decoded = ImagePreviewDecoded {
-                    key: key_clone,
-                    size: [rgba.width() as usize, rgba.height() as usize],
-                    rgba: rgba.into_raw(),
-                };
-                let _ = tx.send(decoded);
-            });
+        if !self.preview_cache.contains_key(&key) {
+            if is_image && !self.image_preview_pending.contains(&key) {
+                let active = self.image_preview_workers.load(Ordering::Relaxed);
+                if active >= Self::MAX_IMAGE_PREVIEW_WORKERS {
+                    return None;
+                }
+                self.image_preview_pending.insert(key.clone());
+                let tx = self.image_preview_tx.clone();
+                let key_clone = key.clone();
+                let workers = Arc::clone(&self.image_preview_workers);
+                workers.fetch_add(1, Ordering::Relaxed);
+                std::thread::spawn(move || {
+                    let decoded = match std::fs::read(&asset_path)
+                        .ok()
+                        .and_then(|bytes| image::load_from_memory(&bytes).ok())
+                        .map(|img| img.to_rgba8())
+                    {
+                        Some(rgba) => ImagePreviewDecoded {
+                            key: key_clone,
+                            image: Some(([rgba.width() as usize, rgba.height() as usize], rgba.into_raw())),
+                        },
+                        None => ImagePreviewDecoded {
+                            key: key_clone,
+                            image: None,
+                        },
+                    };
+                    let _ = tx.send(decoded);
+                    workers.fetch_sub(1, Ordering::Relaxed);
+                });
+            } else if is_mesh && !self.mesh_preview_pending.contains(&key) {
+                let active = self.mesh_preview_workers.load(Ordering::Relaxed);
+                if active >= Self::MAX_MESH_PREVIEW_WORKERS {
+                    return None;
+                }
+                self.mesh_preview_pending.insert(key.clone());
+                let tx = self.mesh_preview_tx.clone();
+                let key_clone = key.clone();
+                let workers = Arc::clone(&self.mesh_preview_workers);
+                workers.fetch_add(1, Ordering::Relaxed);
+                std::thread::spawn(move || {
+                    let image = build_mesh_preview(&asset_path)
+                        .ok()
+                        .map(|preview| {
+                            let size = Self::MESH_THUMB_SIZE;
+                            let rgba = rasterize_mesh_preview(&preview, size);
+                            (size, rgba)
+                        });
+                    let _ = tx.send(MeshPreviewDecoded {
+                        key: key_clone,
+                        image,
+                    });
+                    workers.fetch_sub(1, Ordering::Relaxed);
+                });
+            }
         }
         if self.preview_cache.contains_key(&key) {
             Self::lru_touch(&mut self.preview_lru, &key);
             self.evict_preview_cache_if_needed();
         }
         self.preview_cache.get(&key)
-    }
-
-    fn asset_mesh_preview<'a>(&'a mut self, asset_name: &str) -> Option<&'a MeshPreview> {
-        let asset_path = self.asset_path_in_selected_folder(asset_name)?;
-        let ext = asset_path
-            .extension()
-            .and_then(|e| e.to_str())
-            .map(|e| e.to_ascii_lowercase())
-            .unwrap_or_default();
-        if ext != "obj" && ext != "glb" && ext != "gltf" && ext != "fbx" {
-            return None;
-        }
-        if !asset_path.exists() {
-            return None;
-        }
-        let key = asset_path.to_string_lossy().to_string();
-        if !self.mesh_preview_cache.contains_key(&key) && !self.mesh_preview_pending.contains(&key) {
-            self.mesh_preview_pending.insert(key.clone());
-            let tx = self.mesh_preview_tx.clone();
-            let key_clone = key.clone();
-            std::thread::spawn(move || {
-                let Ok(preview) = build_mesh_preview(&asset_path) else {
-                    return;
-                };
-                let _ = tx.send(MeshPreviewDecoded {
-                    key: key_clone,
-                    preview,
-                });
-            });
-        }
-        if self.mesh_preview_cache.contains_key(&key) {
-            Self::lru_touch(&mut self.mesh_preview_lru, &key);
-            self.evict_mesh_preview_cache_if_needed();
-        }
-        self.mesh_preview_cache.get(&key)
     }
 
     pub fn dragging_asset_name(&self) -> Option<&str> {
@@ -816,35 +875,47 @@ impl ProjectWindow {
 
                 let splitter_y = header_rect.bottom() + 4.0;
                     let search_hint = self.tr(language, "search");
-                    let search_w = 220.0;
+                    let desired_search_w: f32 = 220.0;
+                    let min_search_w: f32 = 80.0;
                     let import_w = 88.0;
                     let search_right = collapse_btn_rect.left() - 10.0 - import_w;
-                    let search_x = (header_rect.center().x - search_w * 0.5 - 36.0)
-                        .clamp(header_rect.left() + 6.0, search_right - search_w);
+                    let search_min_x = header_rect.left() + 6.0;
+                    let search_space = (search_right - search_min_x).max(0.0);
+                    let search_w = desired_search_w.min(search_space).max(min_search_w.min(search_space));
+                    let search_x = if search_w <= 0.0 {
+                        search_min_x
+                    } else {
+                        let search_max_x = (search_right - search_w).max(search_min_x);
+                        (header_rect.center().x - search_w * 0.5 - 36.0).clamp(search_min_x, search_max_x)
+                    };
                     let search_rect = Rect::from_min_max(
                         egui::pos2(search_x, header_rect.top()),
                         egui::pos2(search_x + search_w, header_rect.bottom()),
                     );
+                    let import_left = (collapse_btn_rect.left() - 8.0 - import_w).max(search_rect.right() + 6.0);
+                    let import_right = (collapse_btn_rect.left() - 8.0).max(import_left);
                     let import_rect = Rect::from_min_max(
-                        egui::pos2(collapse_btn_rect.left() - 8.0 - import_w, header_rect.top()),
-                        egui::pos2(collapse_btn_rect.left() - 8.0, header_rect.bottom()),
+                        egui::pos2(import_left, header_rect.top()),
+                        egui::pos2(import_right, header_rect.bottom()),
                     );
 
-                    ui.scope_builder(
-                        egui::UiBuilder::new()
-                            .max_rect(search_rect)
-                            .layout(
-                                egui::Layout::left_to_right(egui::Align::Center)
-                                    .with_main_align(egui::Align::Center),
-                            ),
-                        |ui| {
-                            ui.add(
-                                egui::TextEdit::singleline(&mut self.search_query)
-                                    .desired_width(search_w)
-                                    .hint_text(search_hint),
-                            );
-                        },
-                    );
+                    if search_w > 0.0 {
+                        ui.scope_builder(
+                            egui::UiBuilder::new()
+                                .max_rect(search_rect)
+                                .layout(
+                                    egui::Layout::left_to_right(egui::Align::Center)
+                                        .with_main_align(egui::Align::Center),
+                                ),
+                            |ui| {
+                                ui.add(
+                                    egui::TextEdit::singleline(&mut self.search_query)
+                                        .desired_width(search_w)
+                                        .hint_text(search_hint),
+                                );
+                            },
+                        );
+                    }
                     ui.scope_builder(
                         egui::UiBuilder::new()
                             .max_rect(import_rect)
@@ -924,6 +995,9 @@ impl ProjectWindow {
 
                                 if self.assets_open {
                                     for folder in ["Animations", "Materials", "Meshes", "Mold", "Scripts"] {
+                                        if !self.should_show_folder(folder) {
+                                            continue;
+                                        }
                                         let leaf = Self::draw_tree_leaf_row(
                                             ui,
                                             folder,
@@ -958,6 +1032,9 @@ impl ProjectWindow {
 
                                 if self.packages_open {
                                     for folder in ["TextMeshPro", "InputSystem"] {
+                                        if !self.should_show_folder(folder) {
+                                            continue;
+                                        }
                                         let leaf = Self::draw_tree_leaf_row(
                                             ui,
                                             folder,
@@ -977,6 +1054,13 @@ impl ProjectWindow {
 
                     let assets = self.assets_for_folder();
                     let filter = self.search_query.to_lowercase();
+                    let filtered_assets: Vec<&String> = assets
+                        .iter()
+                        .filter(|asset| {
+                            !self.deleted_assets.contains(*asset)
+                                && (filter.is_empty() || asset.to_lowercase().contains(&filter))
+                        })
+                        .collect();
 
                     ui.scope_builder(
                     egui::UiBuilder::new()
@@ -987,20 +1071,22 @@ impl ProjectWindow {
                             .id_salt("project_grid")
                             .auto_shrink([false, false])
                             .show(ui, |ui| {
-                                ui.horizontal_wrapped(|ui| {
-                                    ui.spacing_mut().item_spacing = egui::vec2(8.0, 8.0);
-                                    let now = ui.ctx().input(|i| i.time);
-                                    let mut hovered_any = false;
+                                let spacing = egui::vec2(8.0, 8.0);
+                                ui.spacing_mut().item_spacing = spacing;
+                                let tile_w = self.icon_scale.clamp(56.0, 98.0);
+                                let tile_size = Vec2::new(tile_w, tile_w + 20.0);
+                                let cols = (((ui.available_width() + spacing.x) / (tile_size.x + spacing.x))
+                                    .floor() as usize)
+                                    .max(1);
+                                let now = ui.ctx().input(|i| i.time);
+                                let mut hovered_any = false;
 
-                                    for asset in &assets {
-                                        if self.deleted_assets.contains(asset) {
-                                            continue;
-                                        }
-                                        if !filter.is_empty() && !asset.to_lowercase().contains(&filter) {
-                                            continue;
-                                        }
-
-                                        let tile_w = self.icon_scale.clamp(56.0, 98.0);
+                                egui::Grid::new("project_asset_grid_fixed")
+                                    .num_columns(cols)
+                                    .spacing(spacing)
+                                    .show(ui, |ui| {
+                                        for (idx, asset) in filtered_assets.iter().enumerate() {
+                                        let asset = *asset;
                                         let tile_size = Vec2::new(tile_w, tile_w + 20.0);
                                         let selected = self.selected_asset.as_ref() == Some(asset);
                                         let (tile_rect, tile_resp) =
@@ -1039,25 +1125,6 @@ impl ProjectWindow {
                                                 preview_rect,
                                                 2.0,
                                                 Stroke::new(1.0, Color32::from_rgba_unmultiplied(255, 255, 255, 26)),
-                                                egui::StrokeKind::Outside,
-                                            );
-                                        } else if let Some(mesh_preview) = self.asset_mesh_preview(asset) {
-                                            ui.painter().rect_filled(preview_rect, 2.0, Color32::from_rgb(33, 39, 46));
-                                            let c = preview_rect.center();
-                                            let sx = preview_rect.width() * 0.42;
-                                            let sy = preview_rect.height() * 0.42;
-                                            for (a, b) in &mesh_preview.lines {
-                                                let pa = egui::pos2(c.x + a[0] * sx, c.y - a[1] * sy);
-                                                let pb = egui::pos2(c.x + b[0] * sx, c.y - b[1] * sy);
-                                                ui.painter().line_segment(
-                                                    [pa, pb],
-                                                    Stroke::new(1.0, Color32::from_rgb(145, 198, 236)),
-                                                );
-                                            }
-                                            ui.painter().rect_stroke(
-                                                preview_rect,
-                                                2.0,
-                                                Stroke::new(1.0, Color32::from_rgb(82, 112, 136)),
                                                 egui::StrokeKind::Outside,
                                             );
                                         } else {
@@ -1213,12 +1280,15 @@ impl ProjectWindow {
                                         {
                                             self.dragging_asset = Some(asset.clone());
                                         }
+                                            if (idx + 1) % cols == 0 {
+                                                ui.end_row();
+                                            }
                                     }
+                                    });
 
                                     if !hovered_any {
                                         self.hover_roll_asset = None;
                                     }
-                                });
                             });
                     },
                 );
@@ -1232,13 +1302,7 @@ impl ProjectWindow {
                         .max_rect(footer_rect)
                         .layout(egui::Layout::left_to_right(egui::Align::Center)),
                     |ui| {
-                        let count = assets
-                            .iter()
-                            .filter(|asset| {
-                                !self.deleted_assets.contains(*asset)
-                                    && (filter.is_empty() || asset.to_lowercase().contains(&filter))
-                            })
-                            .count();
+                        let count = filtered_assets.len();
                         let status = if self.status_text.is_empty() {
                             format!("{} {}", count, self.tr(language, "count"))
                         } else {
@@ -1324,6 +1388,141 @@ fn build_mesh_preview(path: &Path) -> Result<MeshPreview, String> {
         return Err("sem arestas para preview".to_string());
     }
     Ok(MeshPreview { lines })
+}
+
+fn rasterize_mesh_preview(preview: &MeshPreview, size: [usize; 2]) -> Vec<u8> {
+    let w = size[0].max(1);
+    let h = size[1].max(1);
+    let mut rgba = vec![0_u8; w * h * 4];
+
+    for px in rgba.chunks_exact_mut(4) {
+        px[0] = 33;
+        px[1] = 39;
+        px[2] = 46;
+        px[3] = 255;
+    }
+
+    let cx = w as f32 * 0.5;
+    let cy = h as f32 * 0.5;
+    let sx = w as f32 * 0.42;
+    let sy = h as f32 * 0.42;
+
+    for (a, b) in &preview.lines {
+        let x0 = (cx + a[0] * sx).round() as i32;
+        let y0 = (cy - a[1] * sy).round() as i32;
+        let x1 = (cx + b[0] * sx).round() as i32;
+        let y1 = (cy - b[1] * sy).round() as i32;
+        draw_line_rgba(
+            &mut rgba,
+            w,
+            h,
+            x0,
+            y0,
+            x1,
+            y1,
+            [145, 198, 236, 255],
+        );
+    }
+
+    // Outer border to improve readability on dark tiles.
+    for x in 0..w {
+        put_pixel_rgba(&mut rgba, w, h, x as i32, 0, [82, 112, 136, 255]);
+        put_pixel_rgba(&mut rgba, w, h, x as i32, h as i32 - 1, [82, 112, 136, 255]);
+    }
+    for y in 0..h {
+        put_pixel_rgba(&mut rgba, w, h, 0, y as i32, [82, 112, 136, 255]);
+        put_pixel_rgba(&mut rgba, w, h, w as i32 - 1, y as i32, [82, 112, 136, 255]);
+    }
+
+    rgba
+}
+
+fn put_pixel_rgba(
+    rgba: &mut [u8],
+    w: usize,
+    h: usize,
+    x: i32,
+    y: i32,
+    color: [u8; 4],
+) {
+    if x < 0 || y < 0 {
+        return;
+    }
+    let xu = x as usize;
+    let yu = y as usize;
+    if xu >= w || yu >= h {
+        return;
+    }
+    let idx = (yu * w + xu) * 4;
+    rgba[idx] = color[0];
+    rgba[idx + 1] = color[1];
+    rgba[idx + 2] = color[2];
+    rgba[idx + 3] = color[3];
+}
+
+fn draw_line_rgba(
+    rgba: &mut [u8],
+    w: usize,
+    h: usize,
+    mut x0: i32,
+    mut y0: i32,
+    x1: i32,
+    y1: i32,
+    color: [u8; 4],
+) {
+    let dx = (x1 - x0).abs();
+    let sx = if x0 < x1 { 1 } else { -1 };
+    let dy = -(y1 - y0).abs();
+    let sy = if y0 < y1 { 1 } else { -1 };
+    let mut err = dx + dy;
+
+    loop {
+        put_pixel_rgba(rgba, w, h, x0, y0, color);
+        if x0 == x1 && y0 == y1 {
+            break;
+        }
+        let e2 = err * 2;
+        if e2 >= dy {
+            err += dy;
+            x0 += sx;
+        }
+        if e2 <= dx {
+            err += dx;
+            y0 += sy;
+        }
+    }
+}
+
+fn collect_project_files_recursive(
+    root: &Path,
+    current: &Path,
+    out: &mut Vec<String>,
+) -> Result<(), String> {
+    if !current.exists() {
+        return Ok(());
+    }
+    for entry in fs::read_dir(current).map_err(|e| e.to_string())? {
+        let entry = entry.map_err(|e| e.to_string())?;
+        let path = entry.path();
+        let Some(name) = path.file_name().and_then(|n| n.to_str()) else {
+            continue;
+        };
+        if name.starts_with('.') {
+            continue;
+        }
+        if path.is_dir() {
+            collect_project_files_recursive(root, &path, out)?;
+        } else if path.is_file() {
+            let rel = path
+                .strip_prefix(root)
+                .ok()
+                .and_then(|p| p.to_str())
+                .unwrap_or(name)
+                .replace('\\', "/");
+            out.push(format!("Assets/{rel}"));
+        }
+    }
+    Ok(())
 }
 
 fn load_preview_mesh_cached(path: &Path) -> Result<(Vec<glam::Vec3>, Vec<[u32; 3]>), String> {
