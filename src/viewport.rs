@@ -1,4 +1,4 @@
-use eframe::egui::{self, Align2, Color32, FontId, PointerButton, Pos2, Rect, Sense, Stroke, TextureHandle, TextureOptions};
+use eframe::egui::{self, Align2, Color32, FontId, PointerButton, Pos2, Rect, Sense, Stroke, TextureHandle, TextureOptions, Vec2};
 use egui_gizmo::{Gizmo, GizmoMode, GizmoOrientation};
 use epaint::ColorImage;
 use glam::{Mat4, Vec3};
@@ -212,7 +212,7 @@ impl ViewportPanel {
                 ui.painter().text(
                     egui::pos2(viewport_rect.left() + 12.0, viewport_rect.bottom() - 10.0),
                     Align2::LEFT_BOTTOM,
-                    "Mouse (Unity): Alt+LMB orbitar | RMB arrastar orbitar (3a pessoa) | MMB pan | Alt+RMB zoom | Scroll zoom | LMB selecionar | Touchpad: clique selecionar | 2 dedos pan | Pinch zoom | Shift+2 dedos orbitar",
+                    "Mouse (Unity): Alt+LMB orbitar | RMB arrastar olhar (camera fixa) | MMB pan | Alt+RMB zoom | Scroll zoom | LMB selecionar | Touchpad: clique selecionar | 2 dedos pan | Pinch zoom | Shift+2 dedos orbitar",
                     FontId::proportional(11.0),
                     Color32::from_gray(170),
                 );
@@ -231,7 +231,39 @@ impl ViewportPanel {
                             .hover_pos()
                             .is_some_and(|p| controls_rect.contains(p))
                     });
-                    let can_navigate_camera = viewport_resp.hovered() && !pointer_over_controls;
+                    let view_gizmo_rect = Rect::from_min_size(
+                        egui::pos2(viewport_rect.right() - 66.0, controls_rect.bottom() + 8.0),
+                        egui::vec2(56.0, 56.0),
+                    );
+
+                    let aspect = (viewport_rect.width() / viewport_rect.height()).max(0.1);
+                    let orbit = Vec3::new(
+                        self.camera_yaw.cos() * self.camera_pitch.cos(),
+                        self.camera_pitch.sin(),
+                        self.camera_yaw.sin() * self.camera_pitch.cos(),
+                    );
+                    let eye = self.camera_target + orbit * self.camera_distance;
+                    let view = Mat4::look_at_rh(eye, self.camera_target, Vec3::Y);
+                    let proj = if self.is_ortho {
+                        Mat4::orthographic_rh_gl(-2.0 * aspect, 2.0 * aspect, -2.0, 2.0, 0.1, 50.0)
+                    } else {
+                        Mat4::perspective_rh_gl(45.0_f32.to_radians(), aspect, 0.1, 50.0)
+                    };
+                    let mvp = proj * view * self.model_matrix;
+
+                    if let Some((next_yaw, next_pitch)) = draw_view_orientation_gizmo(ui, view_gizmo_rect, view) {
+                        self.camera_yaw = next_yaw;
+                        self.camera_pitch = next_pitch;
+                        ui.ctx().request_repaint();
+                    }
+
+                    let pointer_over_view_gizmo = ctx.input(|i| {
+                        i.pointer
+                            .hover_pos()
+                            .is_some_and(|p| view_gizmo_rect.contains(p))
+                    });
+                    let can_navigate_camera =
+                        viewport_resp.hovered() && !pointer_over_controls && !pointer_over_view_gizmo;
 
                     if can_navigate_camera {
                         // Unity-like orbit: Alt + LMB.
@@ -242,11 +274,23 @@ impl ViewportPanel {
                             ui.ctx().request_repaint();
                         }
 
-                        // Third-person orbit: RMB drag (without Alt).
+                        // Free-look: RMB drag rotates view, keeping camera position fixed.
                         if secondary_down && !alt_down {
+                            let old_orbit = Vec3::new(
+                                self.camera_yaw.cos() * self.camera_pitch.cos(),
+                                self.camera_pitch.sin(),
+                                self.camera_yaw.sin() * self.camera_pitch.cos(),
+                            );
+                            let eye = self.camera_target + old_orbit * self.camera_distance;
                             self.camera_yaw -= pointer_delta.x * 0.012;
                             self.camera_pitch =
                                 (self.camera_pitch - pointer_delta.y * 0.009).clamp(-1.45, 1.45);
+                            let new_orbit = Vec3::new(
+                                self.camera_yaw.cos() * self.camera_pitch.cos(),
+                                self.camera_pitch.sin(),
+                                self.camera_yaw.sin() * self.camera_pitch.cos(),
+                            );
+                            self.camera_target = eye - new_orbit * self.camera_distance;
                             ui.ctx().request_repaint();
                         }
 
@@ -297,23 +341,9 @@ impl ViewportPanel {
                         }
                     }
 
-                    let aspect = (viewport_rect.width() / viewport_rect.height()).max(0.1);
-                    let orbit = Vec3::new(
-                        self.camera_yaw.cos() * self.camera_pitch.cos(),
-                        self.camera_pitch.sin(),
-                        self.camera_yaw.sin() * self.camera_pitch.cos(),
-                    );
-                    let eye = self.camera_target + orbit * self.camera_distance;
-                    let view = Mat4::look_at_rh(eye, self.camera_target, Vec3::Y);
-                    let proj = if self.is_ortho {
-                        Mat4::orthographic_rh_gl(-2.0 * aspect, 2.0 * aspect, -2.0, 2.0, 0.1, 50.0)
-                    } else {
-                        Mat4::perspective_rh_gl(45.0_f32.to_radians(), aspect, 0.1, 50.0)
-                    };
-                    let mvp = proj * view * self.model_matrix;
-
                     if viewport_resp.clicked_by(PointerButton::Primary)
                         && !pointer_over_controls
+                        && !pointer_over_view_gizmo
                         && !alt_down
                     {
                         let hover_pos = ctx.input(|i| i.pointer.hover_pos());
@@ -351,6 +381,70 @@ fn load_png_as_texture(ctx: &egui::Context, png_path: &str) -> Option<TextureHan
     let size = [rgba.width() as usize, rgba.height() as usize];
     let color_image = ColorImage::from_rgba_unmultiplied(size, rgba.as_raw());
     Some(ctx.load_texture(png_path.to_owned(), color_image, TextureOptions::LINEAR))
+}
+
+fn draw_view_orientation_gizmo(ui: &mut egui::Ui, rect: Rect, view: Mat4) -> Option<(f32, f32)> {
+    let id = ui.id().with("viewport_view_orientation_gizmo");
+    let resp = ui.interact(rect, id, Sense::click());
+    let painter = ui.painter();
+    let center = rect.center();
+    let radius = rect.width().min(rect.height()) * 0.5;
+
+    painter.circle_filled(
+        center,
+        radius,
+        Color32::from_rgba_unmultiplied(28, 31, 36, if resp.hovered() { 230 } else { 205 }),
+    );
+    painter.circle_stroke(center, radius, Stroke::new(1.0, Color32::from_rgb(74, 82, 95)));
+
+    let axes = [
+        (Vec3::X, Color32::from_rgb(228, 78, 88), 0.0_f32, 0.0_f32),
+        (Vec3::NEG_X, Color32::from_rgb(124, 50, 57), std::f32::consts::PI, 0.0_f32),
+        (Vec3::Y, Color32::from_rgb(98, 206, 110), 0.0_f32, 1.45_f32),
+        (Vec3::NEG_Y, Color32::from_rgb(54, 110, 62), 0.0_f32, -1.45_f32),
+        (
+            Vec3::Z,
+            Color32::from_rgb(84, 153, 236),
+            std::f32::consts::FRAC_PI_2,
+            0.0_f32,
+        ),
+        (
+            Vec3::NEG_Z,
+            Color32::from_rgb(52, 92, 138),
+            -std::f32::consts::FRAC_PI_2,
+            0.0_f32,
+        ),
+    ];
+
+    let mut projected: Vec<(f32, Pos2, Color32, f32, f32)> = axes
+        .iter()
+        .map(|(axis, color, yaw, pitch)| {
+            let cam = view.transform_vector3(*axis);
+            let pos = center + Vec2::new(cam.x, -cam.y) * (radius * 0.68);
+            (cam.z, pos, *color, *yaw, *pitch)
+        })
+        .collect();
+    projected.sort_by(|a, b| a.0.total_cmp(&b.0));
+
+    for (depth, pos, color, _yaw, _pitch) in projected {
+        let thickness = if depth > 0.0 { 2.1 } else { 1.4 };
+        let alpha = if depth > 0.0 { 255 } else { 155 };
+        let draw_color = Color32::from_rgba_unmultiplied(color.r(), color.g(), color.b(), alpha);
+
+        painter.line_segment([center, pos], Stroke::new(thickness, draw_color));
+        painter.circle_filled(pos, if depth > 0.0 { 4.2 } else { 3.2 }, draw_color);
+
+        let hit_rect = Rect::from_center_size(pos, egui::vec2(14.0, 14.0));
+        let hit_resp = ui.interact(hit_rect, id.with((pos.x as i32, pos.y as i32)), Sense::click());
+        if hit_resp.hovered() {
+            painter.circle_stroke(pos, 6.0, Stroke::new(1.0, Color32::WHITE));
+        }
+        if hit_resp.clicked() {
+            return Some((_yaw, _pitch));
+        }
+    }
+
+    None
 }
 
 fn project_point(viewport: Rect, mvp: Mat4, point: Vec3) -> Option<Pos2> {

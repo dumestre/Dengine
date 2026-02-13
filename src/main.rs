@@ -114,6 +114,10 @@ impl EditorApp {
             (EngineLanguage::En, "save") => "Save",
             (EngineLanguage::Es, "save") => "Guardar",
 
+            (EngineLanguage::Pt, "import") => "Importar",
+            (EngineLanguage::En, "import") => "Import",
+            (EngineLanguage::Es, "import") => "Importar",
+
             (EngineLanguage::Pt, "exit") => "Sair",
             (EngineLanguage::En, "exit") => "Exit",
             (EngineLanguage::Es, "exit") => "Salir",
@@ -255,6 +259,10 @@ impl App for EditorApp {
                                     ui.close();
                                 }
                                 if ui.button(self.tr("save")).clicked() {
+                                    ui.close();
+                                }
+                                if ui.button(self.tr("import")).clicked() {
+                                    self.project.import_asset_dialog(self.language);
                                     ui.close();
                                 }
                                 if ui.button(self.tr("exit")).clicked() {

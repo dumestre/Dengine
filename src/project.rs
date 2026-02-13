@@ -1,4 +1,5 @@
-use std::collections::HashSet;
+use std::collections::{BTreeMap, HashSet};
+use std::path::{Path, PathBuf};
 
 use eframe::egui::{self, Align2, Color32, FontFamily, FontId, Id, Order, Rect, Sense, Stroke, TextureHandle, Vec2};
 use epaint::ColorImage;
@@ -10,16 +11,17 @@ pub struct ProjectWindow {
     panel_height: f32,
     resizing_height: bool,
     selected_folder: &'static str,
-    selected_asset: Option<&'static str>,
+    selected_asset: Option<String>,
     search_query: String,
     icon_scale: f32,
-    deleted_assets: HashSet<&'static str>,
+    deleted_assets: HashSet<String>,
     status_text: String,
     arrow_icon_texture: Option<TextureHandle>,
     assets_open: bool,
     packages_open: bool,
-    hover_roll_asset: Option<&'static str>,
+    hover_roll_asset: Option<String>,
     hover_still_since: f64,
+    imported_assets: BTreeMap<&'static str, Vec<String>>,
 }
 
 fn load_png_as_texture(ctx: &egui::Context, png_path: &str) -> Option<TextureHandle> {
@@ -51,6 +53,7 @@ impl ProjectWindow {
             packages_open: true,
             hover_roll_asset: None,
             hover_still_since: 0.0,
+            imported_assets: BTreeMap::new(),
         }
     }
 
@@ -80,6 +83,9 @@ impl ProjectWindow {
             (EngineLanguage::Pt, "delete") => "Excluir",
             (EngineLanguage::En, "delete") => "Delete",
             (EngineLanguage::Es, "delete") => "Eliminar",
+            (EngineLanguage::Pt, "import") => "Importar",
+            (EngineLanguage::En, "import") => "Import",
+            (EngineLanguage::Es, "import") => "Importar",
             _ => key,
         }
     }
@@ -106,25 +112,150 @@ impl ProjectWindow {
         }
     }
 
-    fn assets_for_folder(&self) -> &'static [&'static str] {
-        match self.selected_folder {
-            "Assets" => &[
-                "Player.mold",
-                "Main Camera.mold",
-                "Environment.mold",
-                "UIAtlas.png",
-                "AudioMixer.asset",
-                "LightingSettings.asset",
+    fn assets_for_folder(&self) -> Vec<String> {
+        let mut out: Vec<String> = match self.selected_folder {
+            "Assets" => vec![
+                "Player.mold".to_string(),
+                "Main Camera.mold".to_string(),
+                "Environment.mold".to_string(),
+                "UIAtlas.png".to_string(),
+                "AudioMixer.asset".to_string(),
+                "LightingSettings.asset".to_string(),
             ],
-            "Animations" => &["Idle.anim", "Run.anim", "Jump.anim", "BlendTree.controller"],
-            "Materials" => &["Terrain.mat", "Character.mat", "Water.mat"],
-            "Meshes" => &["Hero.fbx", "Tree_A.fbx", "Rock_01.fbx"],
-            "Mold" => &["Enemy.mold", "HUD.mold", "Spawner.mold"],
-            "Scripts" => &["PlayerController.cs", "EnemyAI.cs", "GameBootstrap.cs"],
-            "Packages" => &["manifest.json", "packages-lock.json"],
-            "TextMeshPro" => &["TMP Settings.asset", "TMP Essentials"],
-            "InputSystem" => &["InputActions.inputactions"],
-            _ => &[],
+            "Animations" => vec![
+                "Idle.anim".to_string(),
+                "Run.anim".to_string(),
+                "Jump.anim".to_string(),
+                "BlendTree.controller".to_string(),
+            ],
+            "Materials" => vec![
+                "Terrain.mat".to_string(),
+                "Character.mat".to_string(),
+                "Water.mat".to_string(),
+            ],
+            "Meshes" => vec![
+                "Hero.fbx".to_string(),
+                "Tree_A.fbx".to_string(),
+                "Rock_01.fbx".to_string(),
+            ],
+            "Mold" => vec![
+                "Enemy.mold".to_string(),
+                "HUD.mold".to_string(),
+                "Spawner.mold".to_string(),
+            ],
+            "Scripts" => vec![
+                "PlayerController.cs".to_string(),
+                "EnemyAI.cs".to_string(),
+                "GameBootstrap.cs".to_string(),
+            ],
+            "Packages" => vec!["manifest.json".to_string(), "packages-lock.json".to_string()],
+            "TextMeshPro" => vec!["TMP Settings.asset".to_string(), "TMP Essentials".to_string()],
+            "InputSystem" => vec!["InputActions.inputactions".to_string()],
+            _ => vec![],
+        };
+
+        if let Some(extra) = self.imported_assets.get(self.selected_folder) {
+            out.extend(extra.iter().cloned());
+        }
+        out
+    }
+
+    fn import_target_folder_for_ext(ext: &str) -> Option<&'static str> {
+        match ext {
+            "fbx" => Some("Meshes"),
+            "obj" => Some("Meshes"),
+            "glb" => Some("Meshes"),
+            _ => None,
+        }
+    }
+
+    fn unique_destination_path(dest_dir: &Path, base_name: &str) -> PathBuf {
+        let candidate = dest_dir.join(base_name);
+        if !candidate.exists() {
+            return candidate;
+        }
+
+        let stem = Path::new(base_name)
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .unwrap_or("asset");
+        let ext = Path::new(base_name)
+            .extension()
+            .and_then(|s| s.to_str())
+            .unwrap_or("");
+
+        for idx in 1..10_000 {
+            let file_name = if ext.is_empty() {
+                format!("{stem}_{idx}")
+            } else {
+                format!("{stem}_{idx}.{ext}")
+            };
+            let path = dest_dir.join(&file_name);
+            if !path.exists() {
+                return path;
+            }
+        }
+
+        dest_dir.join(base_name)
+    }
+
+    fn import_fbx_path(&mut self, src_path: &Path, language: EngineLanguage) {
+        let Some(file_name) = src_path.file_name().and_then(|n| n.to_str()) else {
+            self.status_text = format!("{}: caminho inválido", self.tr(language, "import"));
+            return;
+        };
+
+        let ext = src_path
+            .extension()
+            .and_then(|e| e.to_str())
+            .map(|e| e.to_lowercase())
+            .unwrap_or_default();
+
+        let Some(target_folder) = Self::import_target_folder_for_ext(&ext) else {
+            self.status_text = format!("{}: formato não suportado", self.tr(language, "import"));
+            return;
+        };
+
+        if ext != "fbx" {
+            self.status_text = format!("{}: suporte inicial disponível para .fbx", self.tr(language, "import"));
+            return;
+        }
+
+        let dest_dir = Path::new("Assets").join(target_folder);
+        if let Err(err) = std::fs::create_dir_all(&dest_dir) {
+            self.status_text = format!("{}: erro ao criar pasta ({err})", self.tr(language, "import"));
+            return;
+        }
+
+        let dest_path = Self::unique_destination_path(&dest_dir, file_name);
+        if let Err(err) = std::fs::copy(src_path, &dest_path) {
+            self.status_text = format!("{}: erro ao copiar arquivo ({err})", self.tr(language, "import"));
+            return;
+        }
+
+        let imported_name = dest_path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or(file_name)
+            .to_string();
+        let imported = self.imported_assets.entry(target_folder).or_default();
+        if !imported.iter().any(|n| n == &imported_name) {
+            imported.push(imported_name.clone());
+        }
+        self.selected_folder = target_folder;
+        self.selected_asset = Some(imported_name.clone());
+        self.deleted_assets.remove(&imported_name);
+        self.status_text = format!("{}: {}", self.tr(language, "import"), imported_name);
+    }
+
+    pub fn import_asset_dialog(&mut self, language: EngineLanguage) {
+        let file = rfd::FileDialog::new()
+            .add_filter("3D Models", &["fbx", "obj", "glb"])
+            .add_filter("FBX", &["fbx"])
+            .pick_file();
+
+        if let Some(path) = file {
+            self.import_fbx_path(&path, language);
         }
     }
 
@@ -331,6 +462,7 @@ impl ProjectWindow {
         );
 
         let mut request_collapse = false;
+        let mut request_import = false;
         let mut resize_started = false;
         let mut resize_stopped = false;
 
@@ -475,12 +607,17 @@ impl ProjectWindow {
                 let splitter_y = header_rect.bottom() + 4.0;
                     let search_hint = self.tr(language, "search");
                     let search_w = 220.0;
-                    let search_right = collapse_btn_rect.left() - 8.0;
+                    let import_w = 88.0;
+                    let search_right = collapse_btn_rect.left() - 10.0 - import_w;
                     let search_x = (header_rect.center().x - search_w * 0.5 - 36.0)
                         .clamp(header_rect.left() + 6.0, search_right - search_w);
                     let search_rect = Rect::from_min_max(
                         egui::pos2(search_x, header_rect.top()),
                         egui::pos2(search_x + search_w, header_rect.bottom()),
+                    );
+                    let import_rect = Rect::from_min_max(
+                        egui::pos2(collapse_btn_rect.left() - 8.0 - import_w, header_rect.top()),
+                        egui::pos2(collapse_btn_rect.left() - 8.0, header_rect.bottom()),
                     );
 
                     ui.scope_builder(
@@ -496,6 +633,27 @@ impl ProjectWindow {
                                     .desired_width(search_w)
                                     .hint_text(search_hint),
                             );
+                        },
+                    );
+                    ui.scope_builder(
+                        egui::UiBuilder::new()
+                            .max_rect(import_rect)
+                            .layout(
+                                egui::Layout::left_to_right(egui::Align::Center)
+                                    .with_main_align(egui::Align::Center),
+                            ),
+                        |ui| {
+                            if ui
+                                .add_sized(
+                                    [import_w, 22.0],
+                                    egui::Button::new(self.tr(language, "import"))
+                                        .corner_radius(6)
+                                        .stroke(Stroke::new(1.0, Color32::from_rgb(15, 232, 121))),
+                                )
+                                .clicked()
+                            {
+                                request_import = true;
+                            }
                         },
                     );
 
@@ -624,7 +782,7 @@ impl ProjectWindow {
                                     let now = ui.ctx().input(|i| i.time);
                                     let mut hovered_any = false;
 
-                                    for asset in assets {
+                                    for asset in &assets {
                                         if self.deleted_assets.contains(asset) {
                                             continue;
                                         }
@@ -634,7 +792,7 @@ impl ProjectWindow {
 
                                         let tile_w = self.icon_scale.clamp(56.0, 98.0);
                                         let tile_size = Vec2::new(tile_w, tile_w + 20.0);
-                                        let selected = self.selected_asset == Some(asset);
+                                        let selected = self.selected_asset.as_ref() == Some(asset);
                                         let (tile_rect, tile_resp) =
                                             ui.allocate_exact_size(tile_size, Sense::click());
 
@@ -680,7 +838,7 @@ impl ProjectWindow {
                                         let clipped_painter = ui.painter().with_clip_rect(name_rect);
                                         let full_w = ui
                                             .painter()
-                                            .layout_no_wrap((*asset).to_string(), name_font.clone(), name_color)
+                                            .layout_no_wrap(asset.to_string(), name_font.clone(), name_color)
                                             .size()
                                             .x;
 
@@ -694,8 +852,8 @@ impl ProjectWindow {
                                             );
                                         } else if tile_resp.hovered() {
                                             hovered_any = true;
-                                            if self.hover_roll_asset != Some(asset) {
-                                                self.hover_roll_asset = Some(asset);
+                                            if self.hover_roll_asset.as_ref() != Some(asset) {
+                                                self.hover_roll_asset = Some(asset.clone());
                                                 self.hover_still_since = now;
                                             }
 
@@ -784,7 +942,7 @@ impl ProjectWindow {
                                         });
 
                                         if open_clicked {
-                                            self.selected_asset = Some(asset);
+                                            self.selected_asset = Some(asset.clone());
                                             self.status_text =
                                                 format!("{}: {}", self.tr(language, "open"), asset);
                                         }
@@ -793,8 +951,8 @@ impl ProjectWindow {
                                                 format!("{}: {}", self.tr(language, "reveal"), asset);
                                         }
                                         if delete_clicked {
-                                            self.deleted_assets.insert(asset);
-                                            if self.selected_asset == Some(asset) {
+                                            self.deleted_assets.insert(asset.clone());
+                                            if self.selected_asset.as_ref() == Some(asset) {
                                                 self.selected_asset = None;
                                             }
                                             self.status_text =
@@ -802,7 +960,7 @@ impl ProjectWindow {
                                         }
 
                                         if tile_resp.clicked() {
-                                            self.selected_asset = Some(asset);
+                                            self.selected_asset = Some(asset.clone());
                                             self.status_text = asset.to_string();
                                         }
                                     }
@@ -863,6 +1021,9 @@ impl ProjectWindow {
 
         if resize_stopped || (self.resizing_height && !pointer_down) {
             self.resizing_height = false;
+        }
+        if request_import {
+            self.import_asset_dialog(language);
         }
 
         request_collapse
