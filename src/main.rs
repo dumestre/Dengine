@@ -583,11 +583,15 @@ impl App for EditorApp {
                 );
             });
 
+        let project_bottom = self.project.docked_bottom_height();
+
         // Janela Inspetor
-        self.inspector.show(ctx, 0.0, 0.0, self.language);
+        self.inspector
+            .show(ctx, 0.0, 0.0, project_bottom, self.language);
         let i_left = self.inspector.docked_left_width();
         let i_right = self.inspector.docked_right_width();
-        self.hierarchy.show(ctx, i_left, i_right, self.language);
+        self.hierarchy
+            .show(ctx, i_left, i_right, project_bottom, self.language);
         self.project.show(ctx, self.language);
     }
 }

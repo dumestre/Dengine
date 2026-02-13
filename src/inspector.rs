@@ -75,6 +75,7 @@ impl InspectorWindow {
         ctx: &egui::Context,
         left_reserved: f32,
         right_reserved: f32,
+        bottom_reserved: f32,
         language: EngineLanguage,
     ) {
         if !self.open {
@@ -112,12 +113,14 @@ impl InspectorWindow {
         ctx.set_fonts(fonts);
 
         let dock_rect = ctx.available_rect();
+        let usable_bottom = (dock_rect.bottom() - bottom_reserved).max(dock_rect.top() + 120.0);
+        let usable_height = (usable_bottom - dock_rect.top()).max(120.0);
         let pointer_down = ctx.input(|i| i.pointer.primary_down());
 
         let height = if self.dock_side.is_some() {
-            dock_rect.height().max(120.0)
+            usable_height
         } else {
-            (dock_rect.height() * 0.85).max(520.0)
+            (usable_height * 0.85).max(520.0)
         };
         let max_width = (dock_rect.width() - left_reserved - right_reserved - 40.0).max(180.0);
         self.window_width = self.window_width.clamp(180.0, max_width.min(520.0));
@@ -422,12 +425,12 @@ impl InspectorWindow {
             let hint_rect = if near_left {
                 Rect::from_min_max(
                     egui::pos2(left_snap_x, dock_rect.top()),
-                    egui::pos2(left_snap_x + hint_w, dock_rect.bottom()),
+                    egui::pos2(left_snap_x + hint_w, usable_bottom),
                 )
             } else {
                 Rect::from_min_max(
                     egui::pos2(right_snap_right - hint_w, dock_rect.top()),
-                    egui::pos2(right_snap_right, dock_rect.bottom()),
+                    egui::pos2(right_snap_right, usable_bottom),
                 )
             };
             ctx.layer_painter(egui::LayerId::new(Order::Foreground, Id::new("dock_hint")))
