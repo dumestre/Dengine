@@ -15,6 +15,6 @@ raw-window-handle = "0.6.2"
 windows-sys = { version = "0.59", features = ["Win32_Graphics_Dwm"] }
 rfd = "0.15"
 tobj = "4.0"
-gltf = { version = "1.4.1", features = ["import"] }
+gltf = "1.4.1"
 fbxcel-dom = "0.0.10"
 meshopt = "0.6.2"
