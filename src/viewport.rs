@@ -1,4 +1,7 @@
 use std::collections::HashSet;
+use std::fs::{self, File};
+use std::io::{Read, Write};
+use std::hash::{Hash, Hasher};
 use std::path::Path;
 use std::sync::mpsc::{self, Receiver};
 
@@ -26,13 +29,18 @@ pub struct ViewportPanel {
     active_mesh: Option<MeshData>,
     mesh_status: Option<String>,
     mesh_loading: bool,
-    mesh_rx: Option<Receiver<Result<MeshData, String>>>,
+    mesh_rx: Option<Receiver<MeshLoadEvent>>,
 }
 
 struct MeshData {
     name: String,
     vertices: Vec<Vec3>,
     triangles: Vec<[u32; 3]>,
+}
+
+enum MeshLoadEvent {
+    Proxy(MeshData),
+    Full(Result<MeshData, String>),
 }
 
 impl ViewportPanel {
@@ -94,10 +102,19 @@ impl ViewportPanel {
                 let path_buf = path.to_path_buf();
                 let (tx, rx) = mpsc::channel();
                 self.mesh_loading = true;
-                self.mesh_status = Some("Carregando malha...".to_string());
+                self.mesh_status = Some("Carregando proxy...".to_string());
                 self.mesh_rx = Some(rx);
                 std::thread::spawn(move || {
-                    let _ = tx.send(load_mesh_from_path(&path_buf));
+                    match load_mesh_from_path_cached(&path_buf) {
+                        Ok(full) => {
+                            let proxy = make_proxy_mesh(&full, 1800);
+                            let _ = tx.send(MeshLoadEvent::Proxy(proxy));
+                            let _ = tx.send(MeshLoadEvent::Full(Ok(full)));
+                        }
+                        Err(err) => {
+                            let _ = tx.send(MeshLoadEvent::Full(Err(err)));
+                        }
+                    }
                 });
             }
             _ => {}
@@ -167,13 +184,17 @@ impl ViewportPanel {
                 }
                 if let Some(rx) = &self.mesh_rx {
                     match rx.try_recv() {
-                        Ok(Ok(mesh)) => {
+                        Ok(MeshLoadEvent::Proxy(mesh)) => {
+                            self.active_mesh = Some(mesh);
+                            self.mesh_status = Some("Proxy carregada... finalizando".to_string());
+                        }
+                        Ok(MeshLoadEvent::Full(Ok(mesh))) => {
                             self.active_mesh = Some(mesh);
                             self.mesh_status = Some("Mesh carregada".to_string());
                             self.mesh_loading = false;
                             self.mesh_rx = None;
                         }
-                        Ok(Err(err)) => {
+                        Ok(MeshLoadEvent::Full(Err(err))) => {
                             self.active_mesh = None;
                             self.mesh_status = Some(format!("Falha ao carregar malha: {err}"));
                             self.mesh_loading = false;
@@ -494,6 +515,7 @@ impl ViewportPanel {
                     }
 
                     if let Some(mesh) = &self.active_mesh {
+                        draw_solid_mesh(ui, viewport_rect, mvp, mesh);
                         draw_wire_mesh(ui, viewport_rect, mvp, mesh, self.object_selected);
                     } else {
                         draw_wire_cube(ui, viewport_rect, mvp, self.object_selected);
@@ -542,55 +564,191 @@ fn load_mesh_from_path(path: &Path) -> Result<MeshData, String> {
     Ok(mesh)
 }
 
+fn make_proxy_mesh(full: &MeshData, max_tris: usize) -> MeshData {
+    if full.triangles.len() <= max_tris {
+        return MeshData {
+            name: full.name.clone(),
+            vertices: full.vertices.clone(),
+            triangles: full.triangles.clone(),
+        };
+    }
+    let step = ((full.triangles.len() as f32 / max_tris as f32).ceil() as usize).max(1);
+    let mut triangles = Vec::with_capacity(max_tris);
+    for (idx, tri) in full.triangles.iter().enumerate() {
+        if idx % step == 0 {
+            triangles.push(*tri);
+        }
+        if triangles.len() >= max_tris {
+            break;
+        }
+    }
+    MeshData {
+        name: format!("{} [proxy]", full.name),
+        vertices: full.vertices.clone(),
+        triangles,
+    }
+}
+
+fn load_mesh_from_path_cached(path: &Path) -> Result<MeshData, String> {
+    let stamp = source_stamp(path).unwrap_or((0, 0));
+    if let Some(mesh) = read_dmesh_cache(path, stamp).ok().flatten() {
+        return Ok(mesh);
+    }
+    let mesh = load_mesh_from_path(path)?;
+    let _ = write_dmesh_cache(path, &mesh, stamp);
+    Ok(mesh)
+}
+
+fn source_stamp(path: &Path) -> Result<(u64, u64), String> {
+    let meta = fs::metadata(path).map_err(|e| e.to_string())?;
+    let len = meta.len();
+    let mtime = meta
+        .modified()
+        .ok()
+        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    Ok((len, mtime))
+}
+
+fn cache_file_path(source: &Path) -> Result<std::path::PathBuf, String> {
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    source.to_string_lossy().hash(&mut hasher);
+    let key = hasher.finish();
+    let cache_dir = Path::new("Assets").join(".cache").join("meshes");
+    fs::create_dir_all(&cache_dir).map_err(|e| e.to_string())?;
+    Ok(cache_dir.join(format!("{key:016x}.dmesh")))
+}
+
+fn write_dmesh_cache(source: &Path, mesh: &MeshData, stamp: (u64, u64)) -> Result<(), String> {
+    let cache = cache_file_path(source)?;
+    let mut f = File::create(cache).map_err(|e| e.to_string())?;
+    f.write_all(b"DMSH1").map_err(|e| e.to_string())?;
+    f.write_all(&stamp.0.to_le_bytes()).map_err(|e| e.to_string())?;
+    f.write_all(&stamp.1.to_le_bytes()).map_err(|e| e.to_string())?;
+    let vcount = mesh.vertices.len() as u32;
+    let tcount = mesh.triangles.len() as u32;
+    f.write_all(&vcount.to_le_bytes()).map_err(|e| e.to_string())?;
+    f.write_all(&tcount.to_le_bytes()).map_err(|e| e.to_string())?;
+    for v in &mesh.vertices {
+        f.write_all(&v.x.to_le_bytes()).map_err(|e| e.to_string())?;
+        f.write_all(&v.y.to_le_bytes()).map_err(|e| e.to_string())?;
+        f.write_all(&v.z.to_le_bytes()).map_err(|e| e.to_string())?;
+    }
+    for tri in &mesh.triangles {
+        f.write_all(&tri[0].to_le_bytes()).map_err(|e| e.to_string())?;
+        f.write_all(&tri[1].to_le_bytes()).map_err(|e| e.to_string())?;
+        f.write_all(&tri[2].to_le_bytes()).map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
+fn read_dmesh_cache(source: &Path, stamp: (u64, u64)) -> Result<Option<MeshData>, String> {
+    let cache = cache_file_path(source)?;
+    if !cache.exists() {
+        return Ok(None);
+    }
+    let mut f = File::open(cache).map_err(|e| e.to_string())?;
+    let mut magic = [0_u8; 5];
+    f.read_exact(&mut magic).map_err(|e| e.to_string())?;
+    if &magic != b"DMSH1" {
+        return Ok(None);
+    }
+    let mut buf8 = [0_u8; 8];
+    f.read_exact(&mut buf8).map_err(|e| e.to_string())?;
+    let src_len = u64::from_le_bytes(buf8);
+    f.read_exact(&mut buf8).map_err(|e| e.to_string())?;
+    let src_mtime = u64::from_le_bytes(buf8);
+    if src_len != stamp.0 || src_mtime != stamp.1 {
+        return Ok(None);
+    }
+    let mut buf4 = [0_u8; 4];
+    f.read_exact(&mut buf4).map_err(|e| e.to_string())?;
+    let vcount = u32::from_le_bytes(buf4) as usize;
+    f.read_exact(&mut buf4).map_err(|e| e.to_string())?;
+    let tcount = u32::from_le_bytes(buf4) as usize;
+
+    let mut vertices = Vec::with_capacity(vcount);
+    for _ in 0..vcount {
+        let mut fb = [0_u8; 4];
+        f.read_exact(&mut fb).map_err(|e| e.to_string())?;
+        let x = f32::from_le_bytes(fb);
+        f.read_exact(&mut fb).map_err(|e| e.to_string())?;
+        let y = f32::from_le_bytes(fb);
+        f.read_exact(&mut fb).map_err(|e| e.to_string())?;
+        let z = f32::from_le_bytes(fb);
+        vertices.push(Vec3::new(x, y, z));
+    }
+    let mut triangles = Vec::with_capacity(tcount);
+    for _ in 0..tcount {
+        f.read_exact(&mut buf4).map_err(|e| e.to_string())?;
+        let a = u32::from_le_bytes(buf4);
+        f.read_exact(&mut buf4).map_err(|e| e.to_string())?;
+        let b = u32::from_le_bytes(buf4);
+        f.read_exact(&mut buf4).map_err(|e| e.to_string())?;
+        let c = u32::from_le_bytes(buf4);
+        triangles.push([a, b, c]);
+    }
+    let name = source
+        .file_name()
+        .and_then(|s| s.to_str())
+        .unwrap_or("Mesh")
+        .to_string();
+    Ok(Some(MeshData {
+        name,
+        vertices,
+        triangles,
+    }))
+}
+
 fn load_fbx_ascii_mesh(path: &Path) -> Result<MeshData, String> {
-    let text = std::fs::read_to_string(path).map_err(|_| {
-        "FBX binário não suportado neste parser inicial (exporte como ASCII ou use OBJ/GLB)"
-            .to_string()
-    })?;
+    use fbxcel_dom::any::AnyDocument;
+    use fbxcel_dom::v7400::object::{TypedObjectHandle, geometry::TypedGeometryHandle};
+    use std::io::BufReader;
 
-    let verts_blob = extract_fbx_array_blob(&text, "Vertices")
-        .ok_or_else(|| "FBX sem bloco Vertices".to_string())?;
-    let poly_blob = extract_fbx_array_blob(&text, "PolygonVertexIndex")
-        .ok_or_else(|| "FBX sem bloco PolygonVertexIndex".to_string())?;
+    let file = std::fs::File::open(path).map_err(|e| e.to_string())?;
+    let reader = BufReader::new(file);
+    let doc = match AnyDocument::from_seekable_reader(reader).map_err(|e| e.to_string())? {
+        AnyDocument::V7400(_, doc) => doc,
+        _ => return Err("versão FBX não suportada".to_string()),
+    };
 
-    let verts_raw = parse_fbx_f32_array(verts_blob);
-    if verts_raw.len() < 3 {
-        return Err("FBX sem vértices válidos".to_string());
-    }
-    let mut vertices = Vec::with_capacity(verts_raw.len() / 3);
-    for chunk in verts_raw.chunks_exact(3) {
-        vertices.push(Vec3::new(chunk[0], chunk[1], chunk[2]));
-    }
-
-    let poly_idx = parse_fbx_i32_array(poly_blob);
-    if poly_idx.is_empty() {
-        return Err("FBX sem índices válidos".to_string());
-    }
-
+    let mut vertices: Vec<Vec3> = Vec::new();
     let mut triangles: Vec<[u32; 3]> = Vec::new();
-    let mut poly: Vec<u32> = Vec::new();
-    for raw in poly_idx {
-        if raw >= 0 {
-            poly.push(raw as u32);
+    for obj in doc.objects() {
+        let TypedObjectHandle::Geometry(TypedGeometryHandle::Mesh(mesh)) = obj.get_typed() else {
+            continue;
+        };
+        let poly_verts = mesh.polygon_vertices().map_err(|e| e.to_string())?;
+        let cps: Vec<_> = poly_verts
+            .raw_control_points()
+            .map_err(|e| e.to_string())?
+            .collect();
+        if cps.is_empty() {
             continue;
         }
-        let end_idx = (-raw - 1) as u32;
-        poly.push(end_idx);
-        if poly.len() >= 3 {
-            for i in 1..(poly.len() - 1) {
-                triangles.push([poly[0], poly[i], poly[i + 1]]);
+        let base = vertices.len() as u32;
+        vertices.extend(cps.iter().map(|p| Vec3::new(p.x as f32, p.y as f32, p.z as f32)));
+
+        let mut poly: Vec<u32> = Vec::new();
+        for raw in poly_verts.raw_polygon_vertices() {
+            let is_end = *raw < 0;
+            let local_idx = if is_end { (-raw - 1) as u32 } else { *raw as u32 };
+            if (local_idx as usize) < cps.len() {
+                poly.push(base + local_idx);
+            }
+            if is_end {
+                if poly.len() >= 3 {
+                    for i in 1..(poly.len() - 1) {
+                        triangles.push([poly[0], poly[i], poly[i + 1]]);
+                    }
+                }
+                poly.clear();
             }
         }
-        poly.clear();
     }
-
-    triangles.retain(|tri| {
-        (tri[0] as usize) < vertices.len()
-            && (tri[1] as usize) < vertices.len()
-            && (tri[2] as usize) < vertices.len()
-    });
-    if triangles.is_empty() {
-        return Err("FBX sem triângulos válidos".to_string());
+    if vertices.is_empty() || triangles.is_empty() {
+        return Err("FBX sem malha suportada".to_string());
     }
 
     let name = path
@@ -598,35 +756,7 @@ fn load_fbx_ascii_mesh(path: &Path) -> Result<MeshData, String> {
         .and_then(|s| s.to_str())
         .unwrap_or("FBX")
         .to_string();
-    Ok(MeshData {
-        name,
-        vertices,
-        triangles,
-    })
-}
-
-fn extract_fbx_array_blob<'a>(text: &'a str, key: &str) -> Option<&'a str> {
-    let key_pos = text.find(key)?;
-    let after_key = &text[key_pos..];
-    let a_pos_rel = after_key.find("a:")?;
-    let arr_start = key_pos + a_pos_rel + 2;
-    let tail = &text[arr_start..];
-    let end_rel = tail.find('}')?;
-    Some(tail[..end_rel].trim())
-}
-
-fn parse_fbx_f32_array(data: &str) -> Vec<f32> {
-    data.split(|c: char| c == ',' || c.is_ascii_whitespace())
-        .filter(|s| !s.is_empty())
-        .filter_map(|s| s.parse::<f32>().ok())
-        .collect()
-}
-
-fn parse_fbx_i32_array(data: &str) -> Vec<i32> {
-    data.split(|c: char| c == ',' || c.is_ascii_whitespace())
-        .filter(|s| !s.is_empty())
-        .filter_map(|s| s.parse::<i32>().ok())
-        .collect()
+    Ok(MeshData { name, vertices, triangles })
 }
 
 fn load_obj_mesh(path: &Path) -> Result<MeshData, String> {
@@ -844,9 +974,13 @@ fn draw_wire_mesh(ui: &mut egui::Ui, viewport: Rect, mvp: Mat4, mesh: &MeshData,
     };
 
     let mut drawn = HashSet::<(u32, u32)>::new();
+    let max_edges = 12_000usize;
     for tri in &mesh.triangles {
         let edges = [(tri[0], tri[1]), (tri[1], tri[2]), (tri[2], tri[0])];
         for (a, b) in edges {
+            if drawn.len() >= max_edges {
+                break;
+            }
             let key = if a < b { (a, b) } else { (b, a) };
             if !drawn.insert(key) {
                 continue;
@@ -858,6 +992,9 @@ fn draw_wire_mesh(ui: &mut egui::Ui, viewport: Rect, mvp: Mat4, mesh: &MeshData,
                 ui.painter().line_segment([pa, pb], stroke);
             }
         }
+        if drawn.len() >= max_edges {
+            break;
+        }
     }
     ui.painter().text(
         egui::pos2(viewport.left() + 12.0, viewport.top() + 60.0),
@@ -866,6 +1003,48 @@ fn draw_wire_mesh(ui: &mut egui::Ui, viewport: Rect, mvp: Mat4, mesh: &MeshData,
         FontId::proportional(10.0),
         Color32::from_gray(180),
     );
+}
+
+fn draw_solid_mesh(ui: &mut egui::Ui, viewport: Rect, mvp: Mat4, mesh: &MeshData) {
+    let mut solid = egui::epaint::Mesh::default();
+    let max_triangles = 14_000usize;
+
+    for tri in mesh.triangles.iter().take(max_triangles) {
+        let ia = tri[0] as usize;
+        let ib = tri[1] as usize;
+        let ic = tri[2] as usize;
+        if ia >= mesh.vertices.len() || ib >= mesh.vertices.len() || ic >= mesh.vertices.len() {
+            continue;
+        }
+
+        let a3 = mesh.vertices[ia];
+        let b3 = mesh.vertices[ib];
+        let c3 = mesh.vertices[ic];
+        let n = (b3 - a3).cross(c3 - a3);
+        if n.length_squared() <= 1e-8 {
+            continue;
+        }
+        let lum = n.normalize().dot(Vec3::new(0.45, 0.7, 0.55)).abs();
+        let v = (70.0 + lum * 120.0) as u8;
+        let color = Color32::from_rgb(v, v, (v as f32 * 1.07).min(255.0) as u8);
+
+        let pa = project_point(viewport, mvp, a3);
+        let pb = project_point(viewport, mvp, b3);
+        let pc = project_point(viewport, mvp, c3);
+        let (Some(pa), Some(pb), Some(pc)) = (pa, pb, pc) else {
+            continue;
+        };
+
+        let base = solid.vertices.len() as u32;
+        solid.colored_vertex(pa, color);
+        solid.colored_vertex(pb, color);
+        solid.colored_vertex(pc, color);
+        solid.add_triangle(base, base + 1, base + 2);
+    }
+
+    if !solid.vertices.is_empty() {
+        ui.painter().add(egui::Shape::mesh(solid));
+    }
 }
 
 fn draw_wire_cube(ui: &mut egui::Ui, viewport: Rect, mvp: Mat4, selected: bool) {

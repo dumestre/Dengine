@@ -1,5 +1,9 @@
-use std::collections::{BTreeMap, HashSet};
+use std::collections::{BTreeMap, HashSet, VecDeque};
+use std::fs::{self, File};
+use std::hash::{Hash, Hasher};
+use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
+use std::sync::mpsc::{self, Receiver, Sender};
 
 use eframe::egui::{self, Align2, Color32, FontFamily, FontId, Id, Order, Rect, Sense, Stroke, TextureHandle, Vec2};
 use epaint::ColorImage;
@@ -24,11 +28,30 @@ pub struct ProjectWindow {
     imported_assets: BTreeMap<&'static str, Vec<String>>,
     preview_cache: BTreeMap<String, TextureHandle>,
     mesh_preview_cache: BTreeMap<String, MeshPreview>,
+    preview_lru: VecDeque<String>,
+    mesh_preview_lru: VecDeque<String>,
     dragging_asset: Option<String>,
+    image_preview_tx: Sender<ImagePreviewDecoded>,
+    image_preview_rx: Receiver<ImagePreviewDecoded>,
+    mesh_preview_tx: Sender<MeshPreviewDecoded>,
+    mesh_preview_rx: Receiver<MeshPreviewDecoded>,
+    image_preview_pending: HashSet<String>,
+    mesh_preview_pending: HashSet<String>,
 }
 
 struct MeshPreview {
     lines: Vec<([f32; 2], [f32; 2])>,
+}
+
+struct ImagePreviewDecoded {
+    key: String,
+    size: [usize; 2],
+    rgba: Vec<u8>,
+}
+
+struct MeshPreviewDecoded {
+    key: String,
+    preview: MeshPreview,
 }
 
 fn load_png_as_texture(ctx: &egui::Context, png_path: &str) -> Option<TextureHandle> {
@@ -44,7 +67,12 @@ fn load_png_as_texture(ctx: &egui::Context, png_path: &str) -> Option<TextureHan
 }
 
 impl ProjectWindow {
+    const MAX_IMAGE_PREVIEWS: usize = 128;
+    const MAX_MESH_PREVIEWS: usize = 96;
+
     pub fn new() -> Self {
+        let (img_tx, img_rx) = mpsc::channel();
+        let (mesh_tx, mesh_rx) = mpsc::channel();
         Self {
             open: true,
             panel_height: 260.0,
@@ -63,7 +91,62 @@ impl ProjectWindow {
             imported_assets: BTreeMap::new(),
             preview_cache: BTreeMap::new(),
             mesh_preview_cache: BTreeMap::new(),
+            preview_lru: VecDeque::new(),
+            mesh_preview_lru: VecDeque::new(),
             dragging_asset: None,
+            image_preview_tx: img_tx,
+            image_preview_rx: img_rx,
+            mesh_preview_tx: mesh_tx,
+            mesh_preview_rx: mesh_rx,
+            image_preview_pending: HashSet::new(),
+            mesh_preview_pending: HashSet::new(),
+        }
+    }
+
+    fn lru_touch(queue: &mut VecDeque<String>, key: &str) {
+        if let Some(idx) = queue.iter().position(|k| k == key) {
+            queue.remove(idx);
+        }
+        queue.push_back(key.to_string());
+    }
+
+    fn evict_preview_cache_if_needed(&mut self) {
+        while self.preview_cache.len() > Self::MAX_IMAGE_PREVIEWS {
+            let Some(old_key) = self.preview_lru.pop_front() else {
+                break;
+            };
+            self.preview_cache.remove(&old_key);
+        }
+    }
+
+    fn evict_mesh_preview_cache_if_needed(&mut self) {
+        while self.mesh_preview_cache.len() > Self::MAX_MESH_PREVIEWS {
+            let Some(old_key) = self.mesh_preview_lru.pop_front() else {
+                break;
+            };
+            self.mesh_preview_cache.remove(&old_key);
+        }
+    }
+
+    fn poll_preview_jobs(&mut self, ctx: &egui::Context) {
+        while let Ok(decoded) = self.image_preview_rx.try_recv() {
+            let color_image = ColorImage::from_rgba_unmultiplied(decoded.size, &decoded.rgba);
+            let tex = ctx.load_texture(
+                decoded.key.clone(),
+                color_image,
+                egui::TextureOptions::LINEAR,
+            );
+            self.preview_cache.insert(decoded.key.clone(), tex);
+            self.image_preview_pending.remove(&decoded.key);
+            Self::lru_touch(&mut self.preview_lru, &decoded.key);
+            self.evict_preview_cache_if_needed();
+        }
+        while let Ok(decoded) = self.mesh_preview_rx.try_recv() {
+            self.mesh_preview_cache
+                .insert(decoded.key.clone(), decoded.preview);
+            self.mesh_preview_pending.remove(&decoded.key);
+            Self::lru_touch(&mut self.mesh_preview_lru, &decoded.key);
+            self.evict_mesh_preview_cache_if_needed();
         }
     }
 
@@ -314,7 +397,7 @@ impl ProjectWindow {
 
     fn asset_preview_texture<'a>(
         &'a mut self,
-        ctx: &egui::Context,
+        _ctx: &egui::Context,
         asset_name: &str,
     ) -> Option<&'a TextureHandle> {
         let asset_path = self.asset_path_in_selected_folder(asset_name)?;
@@ -331,13 +414,28 @@ impl ProjectWindow {
         }
 
         let key = asset_path.to_string_lossy().to_string();
-        if !self.preview_cache.contains_key(&key) {
-            let bytes = std::fs::read(&asset_path).ok()?;
-            let rgba = image::load_from_memory(&bytes).ok()?.to_rgba8();
-            let size = [rgba.width() as usize, rgba.height() as usize];
-            let color_image = ColorImage::from_rgba_unmultiplied(size, rgba.as_raw());
-            let tex = ctx.load_texture(key.clone(), color_image, egui::TextureOptions::LINEAR);
-            self.preview_cache.insert(key.clone(), tex);
+        if !self.preview_cache.contains_key(&key) && !self.image_preview_pending.contains(&key) {
+            self.image_preview_pending.insert(key.clone());
+            let tx = self.image_preview_tx.clone();
+            let key_clone = key.clone();
+            std::thread::spawn(move || {
+                let Ok(bytes) = std::fs::read(&asset_path) else {
+                    return;
+                };
+                let Ok(rgba) = image::load_from_memory(&bytes).map(|img| img.to_rgba8()) else {
+                    return;
+                };
+                let decoded = ImagePreviewDecoded {
+                    key: key_clone,
+                    size: [rgba.width() as usize, rgba.height() as usize],
+                    rgba: rgba.into_raw(),
+                };
+                let _ = tx.send(decoded);
+            });
+        }
+        if self.preview_cache.contains_key(&key) {
+            Self::lru_touch(&mut self.preview_lru, &key);
+            self.evict_preview_cache_if_needed();
         }
         self.preview_cache.get(&key)
     }
@@ -356,9 +454,23 @@ impl ProjectWindow {
             return None;
         }
         let key = asset_path.to_string_lossy().to_string();
-        if !self.mesh_preview_cache.contains_key(&key) {
-            let preview = build_mesh_preview(&asset_path).ok()?;
-            self.mesh_preview_cache.insert(key.clone(), preview);
+        if !self.mesh_preview_cache.contains_key(&key) && !self.mesh_preview_pending.contains(&key) {
+            self.mesh_preview_pending.insert(key.clone());
+            let tx = self.mesh_preview_tx.clone();
+            let key_clone = key.clone();
+            std::thread::spawn(move || {
+                let Ok(preview) = build_mesh_preview(&asset_path) else {
+                    return;
+                };
+                let _ = tx.send(MeshPreviewDecoded {
+                    key: key_clone,
+                    preview,
+                });
+            });
+        }
+        if self.mesh_preview_cache.contains_key(&key) {
+            Self::lru_touch(&mut self.mesh_preview_lru, &key);
+            self.evict_mesh_preview_cache_if_needed();
         }
         self.mesh_preview_cache.get(&key)
     }
@@ -545,6 +657,7 @@ impl ProjectWindow {
         if self.arrow_icon_texture.is_none() {
             self.arrow_icon_texture = load_png_as_texture(ctx, "src/assets/icons/seta.png");
         }
+        self.poll_preview_jobs(ctx);
 
         let dock_rect = ctx.available_rect();
         let pointer_down = ctx.input(|i| i.pointer.primary_down());
@@ -1176,18 +1289,7 @@ impl ProjectWindow {
 }
 
 fn build_mesh_preview(path: &Path) -> Result<MeshPreview, String> {
-    let ext = path
-        .extension()
-        .and_then(|e| e.to_str())
-        .map(|e| e.to_ascii_lowercase())
-        .ok_or_else(|| "extensão inválida".to_string())?;
-
-    let (mut vertices, triangles) = match ext.as_str() {
-        "obj" => load_obj_preview_mesh(path)?,
-        "glb" | "gltf" => load_gltf_preview_mesh(path)?,
-        "fbx" => load_fbx_ascii_preview_mesh(path)?,
-        _ => return Err("formato não suportado".to_string()),
-    };
+    let (mut vertices, triangles) = load_preview_mesh_cached(path)?;
     normalize_preview_vertices(&mut vertices);
 
     // Isometric-ish thumbnail projection.
@@ -1222,6 +1324,130 @@ fn build_mesh_preview(path: &Path) -> Result<MeshPreview, String> {
         return Err("sem arestas para preview".to_string());
     }
     Ok(MeshPreview { lines })
+}
+
+fn load_preview_mesh_cached(path: &Path) -> Result<(Vec<glam::Vec3>, Vec<[u32; 3]>), String> {
+    let stamp = source_stamp_preview(path).unwrap_or((0, 0));
+    if let Some(mesh) = read_dmesh_cache_preview(path, stamp).ok().flatten() {
+        return Ok(mesh);
+    }
+
+    let ext = path
+        .extension()
+        .and_then(|e| e.to_str())
+        .map(|e| e.to_ascii_lowercase())
+        .ok_or_else(|| "extensão inválida".to_string())?;
+
+    let mesh = match ext.as_str() {
+        "obj" => load_obj_preview_mesh(path)?,
+        "glb" | "gltf" => load_gltf_preview_mesh(path)?,
+        "fbx" => load_fbx_ascii_preview_mesh(path)?,
+        _ => return Err("formato não suportado".to_string()),
+    };
+    let _ = write_dmesh_cache_preview(path, &mesh, stamp);
+    Ok(mesh)
+}
+
+fn source_stamp_preview(path: &Path) -> Result<(u64, u64), String> {
+    let meta = fs::metadata(path).map_err(|e| e.to_string())?;
+    let len = meta.len();
+    let mtime = meta
+        .modified()
+        .ok()
+        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    Ok((len, mtime))
+}
+
+fn cache_file_path_preview(source: &Path) -> Result<PathBuf, String> {
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    source.to_string_lossy().hash(&mut hasher);
+    let key = hasher.finish();
+    let cache_dir = Path::new("Assets").join(".cache").join("meshes");
+    fs::create_dir_all(&cache_dir).map_err(|e| e.to_string())?;
+    Ok(cache_dir.join(format!("{key:016x}.dmesh")))
+}
+
+fn write_dmesh_cache_preview(
+    source: &Path,
+    mesh: &(Vec<glam::Vec3>, Vec<[u32; 3]>),
+    stamp: (u64, u64),
+) -> Result<(), String> {
+    let cache = cache_file_path_preview(source)?;
+    let mut f = File::create(cache).map_err(|e| e.to_string())?;
+    f.write_all(b"DMSH1").map_err(|e| e.to_string())?;
+    f.write_all(&stamp.0.to_le_bytes()).map_err(|e| e.to_string())?;
+    f.write_all(&stamp.1.to_le_bytes()).map_err(|e| e.to_string())?;
+    let vcount = mesh.0.len() as u32;
+    let tcount = mesh.1.len() as u32;
+    f.write_all(&vcount.to_le_bytes()).map_err(|e| e.to_string())?;
+    f.write_all(&tcount.to_le_bytes()).map_err(|e| e.to_string())?;
+    for v in &mesh.0 {
+        f.write_all(&v.x.to_le_bytes()).map_err(|e| e.to_string())?;
+        f.write_all(&v.y.to_le_bytes()).map_err(|e| e.to_string())?;
+        f.write_all(&v.z.to_le_bytes()).map_err(|e| e.to_string())?;
+    }
+    for tri in &mesh.1 {
+        f.write_all(&tri[0].to_le_bytes()).map_err(|e| e.to_string())?;
+        f.write_all(&tri[1].to_le_bytes()).map_err(|e| e.to_string())?;
+        f.write_all(&tri[2].to_le_bytes()).map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
+fn read_dmesh_cache_preview(
+    source: &Path,
+    stamp: (u64, u64),
+) -> Result<Option<(Vec<glam::Vec3>, Vec<[u32; 3]>)>, String> {
+    let cache = cache_file_path_preview(source)?;
+    if !cache.exists() {
+        return Ok(None);
+    }
+    let mut f = File::open(cache).map_err(|e| e.to_string())?;
+    let mut magic = [0_u8; 5];
+    f.read_exact(&mut magic).map_err(|e| e.to_string())?;
+    if &magic != b"DMSH1" {
+        return Ok(None);
+    }
+
+    let mut buf8 = [0_u8; 8];
+    f.read_exact(&mut buf8).map_err(|e| e.to_string())?;
+    let src_len = u64::from_le_bytes(buf8);
+    f.read_exact(&mut buf8).map_err(|e| e.to_string())?;
+    let src_mtime = u64::from_le_bytes(buf8);
+    if src_len != stamp.0 || src_mtime != stamp.1 {
+        return Ok(None);
+    }
+
+    let mut buf4 = [0_u8; 4];
+    f.read_exact(&mut buf4).map_err(|e| e.to_string())?;
+    let vcount = u32::from_le_bytes(buf4) as usize;
+    f.read_exact(&mut buf4).map_err(|e| e.to_string())?;
+    let tcount = u32::from_le_bytes(buf4) as usize;
+
+    let mut vertices = Vec::with_capacity(vcount);
+    for _ in 0..vcount {
+        let mut fb = [0_u8; 4];
+        f.read_exact(&mut fb).map_err(|e| e.to_string())?;
+        let x = f32::from_le_bytes(fb);
+        f.read_exact(&mut fb).map_err(|e| e.to_string())?;
+        let y = f32::from_le_bytes(fb);
+        f.read_exact(&mut fb).map_err(|e| e.to_string())?;
+        let z = f32::from_le_bytes(fb);
+        vertices.push(glam::Vec3::new(x, y, z));
+    }
+    let mut triangles = Vec::with_capacity(tcount);
+    for _ in 0..tcount {
+        f.read_exact(&mut buf4).map_err(|e| e.to_string())?;
+        let a = u32::from_le_bytes(buf4);
+        f.read_exact(&mut buf4).map_err(|e| e.to_string())?;
+        let b = u32::from_le_bytes(buf4);
+        f.read_exact(&mut buf4).map_err(|e| e.to_string())?;
+        let c = u32::from_le_bytes(buf4);
+        triangles.push([a, b, c]);
+    }
+    Ok(Some((vertices, triangles)))
 }
 
 fn load_obj_preview_mesh(path: &Path) -> Result<(Vec<glam::Vec3>, Vec<[u32; 3]>), String> {
@@ -1290,39 +1516,53 @@ fn load_gltf_preview_mesh(path: &Path) -> Result<(Vec<glam::Vec3>, Vec<[u32; 3]>
 }
 
 fn load_fbx_ascii_preview_mesh(path: &Path) -> Result<(Vec<glam::Vec3>, Vec<[u32; 3]>), String> {
-    let text = std::fs::read_to_string(path).map_err(|_| "FBX binário".to_string())?;
-    let verts_blob =
-        extract_fbx_array_blob_preview(&text, "Vertices").ok_or_else(|| "sem Vertices".to_string())?;
-    let poly_blob = extract_fbx_array_blob_preview(&text, "PolygonVertexIndex")
-        .ok_or_else(|| "sem PolygonVertexIndex".to_string())?;
-    let verts_raw = parse_fbx_f32_preview_array(verts_blob);
-    let mut vertices = Vec::with_capacity(verts_raw.len() / 3);
-    for c in verts_raw.chunks_exact(3) {
-        vertices.push(glam::Vec3::new(c[0], c[1], c[2]));
-    }
-    let poly_idx = parse_fbx_i32_preview_array(poly_blob);
-    let mut triangles = Vec::new();
-    let mut poly: Vec<u32> = Vec::new();
-    for raw in poly_idx {
-        if raw >= 0 {
-            poly.push(raw as u32);
-        } else {
-            poly.push((-raw - 1) as u32);
-            if poly.len() >= 3 {
-                for i in 1..(poly.len() - 1) {
-                    triangles.push([poly[0], poly[i], poly[i + 1]]);
-                }
+    use fbxcel_dom::any::AnyDocument;
+    use fbxcel_dom::v7400::object::{TypedObjectHandle, geometry::TypedGeometryHandle};
+    use std::io::BufReader;
+
+    let file = std::fs::File::open(path).map_err(|e| e.to_string())?;
+    let reader = BufReader::new(file);
+    let doc = match AnyDocument::from_seekable_reader(reader).map_err(|e| e.to_string())? {
+        AnyDocument::V7400(_, doc) => doc,
+        _ => return Err("versão FBX não suportada".to_string()),
+    };
+
+    let mut vertices = Vec::<glam::Vec3>::new();
+    let mut triangles = Vec::<[u32; 3]>::new();
+    for obj in doc.objects() {
+        let TypedObjectHandle::Geometry(TypedGeometryHandle::Mesh(mesh)) = obj.get_typed() else {
+            continue;
+        };
+        let poly_verts = mesh.polygon_vertices().map_err(|e| e.to_string())?;
+        let cps: Vec<_> = poly_verts
+            .raw_control_points()
+            .map_err(|e| e.to_string())?
+            .collect();
+        if cps.is_empty() {
+            continue;
+        }
+        let base = vertices.len() as u32;
+        vertices.extend(cps.iter().map(|p| glam::Vec3::new(p.x as f32, p.y as f32, p.z as f32)));
+
+        let mut poly: Vec<u32> = Vec::new();
+        for raw in poly_verts.raw_polygon_vertices() {
+            let is_end = *raw < 0;
+            let local_idx = if is_end { (-raw - 1) as u32 } else { *raw as u32 };
+            if (local_idx as usize) < cps.len() {
+                poly.push(base + local_idx);
             }
-            poly.clear();
+            if is_end {
+                if poly.len() >= 3 {
+                    for i in 1..(poly.len() - 1) {
+                        triangles.push([poly[0], poly[i], poly[i + 1]]);
+                    }
+                }
+                poly.clear();
+            }
         }
     }
-    triangles.retain(|tri| {
-        (tri[0] as usize) < vertices.len()
-            && (tri[1] as usize) < vertices.len()
-            && (tri[2] as usize) < vertices.len()
-    });
     if vertices.is_empty() || triangles.is_empty() {
-        return Err("FBX ASCII vazio".to_string());
+        return Err("FBX sem malha suportada".to_string());
     }
     Ok((vertices, triangles))
 }
@@ -1340,28 +1580,4 @@ fn normalize_preview_vertices(vertices: &mut [glam::Vec3]) {
     for v in vertices {
         *v = (*v - center) * s;
     }
-}
-
-fn extract_fbx_array_blob_preview<'a>(text: &'a str, key: &str) -> Option<&'a str> {
-    let key_pos = text.find(key)?;
-    let after_key = &text[key_pos..];
-    let a_pos_rel = after_key.find("a:")?;
-    let arr_start = key_pos + a_pos_rel + 2;
-    let tail = &text[arr_start..];
-    let end_rel = tail.find('}')?;
-    Some(tail[..end_rel].trim())
-}
-
-fn parse_fbx_f32_preview_array(data: &str) -> Vec<f32> {
-    data.split(|c: char| c == ',' || c.is_ascii_whitespace())
-        .filter(|s| !s.is_empty())
-        .filter_map(|s| s.parse::<f32>().ok())
-        .collect()
-}
-
-fn parse_fbx_i32_preview_array(data: &str) -> Vec<i32> {
-    data.split(|c: char| c == ',' || c.is_ascii_whitespace())
-        .filter(|s| !s.is_empty())
-        .filter_map(|s| s.parse::<i32>().ok())
-        .collect()
 }
