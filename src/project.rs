@@ -8,6 +8,7 @@ use crate::EngineLanguage;
 pub struct ProjectWindow {
     pub open: bool,
     panel_height: f32,
+    minimized: bool,
     resizing_height: bool,
     selected_folder: &'static str,
     selected_asset: Option<&'static str>,
@@ -39,6 +40,7 @@ impl ProjectWindow {
         Self {
             open: true,
             panel_height: 260.0,
+            minimized: false,
             resizing_height: false,
             selected_folder: "Assets",
             selected_asset: None,
@@ -324,9 +326,15 @@ impl ProjectWindow {
         let min_h = 185.0;
         let max_h = (dock_rect.height() - 120.0).max(min_h);
         self.panel_height = self.panel_height.clamp(min_h, max_h);
+        let collapsed_h = 34.0;
+        let visible_h = if self.minimized {
+            collapsed_h
+        } else {
+            self.panel_height
+        };
 
         let panel_rect = Rect::from_min_max(
-            egui::pos2(dock_rect.left(), dock_rect.bottom() - self.panel_height),
+            egui::pos2(dock_rect.left(), dock_rect.bottom() - visible_h),
             egui::pos2(dock_rect.right(), dock_rect.bottom()),
         );
 
@@ -374,19 +382,52 @@ impl ProjectWindow {
                 let inner = rect.shrink2(egui::vec2(8.0, 6.0));
                 let header_rect =
                     Rect::from_min_max(inner.min, egui::pos2(inner.max.x, inner.min.y + 24.0));
-                let splitter_y = header_rect.bottom() + 4.0;
-                let search_hint = self.tr(language, "search");
                 let breadcrumb = self.breadcrumb_segments(language);
-                let search_w = 220.0;
-                let search_x = (header_rect.center().x - search_w * 0.5 - 36.0)
-                    .clamp(header_rect.left() + 6.0, header_rect.right() - search_w);
-                let search_rect = Rect::from_min_max(
-                    egui::pos2(search_x, header_rect.top()),
-                    egui::pos2(search_x + search_w, header_rect.bottom()),
+                let collapse_btn_rect = Rect::from_center_size(
+                    egui::pos2(header_rect.right() - 10.0, header_rect.center().y),
+                    egui::vec2(16.0, 16.0),
                 );
+                let collapse_resp = ui.interact(
+                    collapse_btn_rect,
+                    ui.id().with("project_minimize"),
+                    Sense::click(),
+                );
+                if collapse_resp.hovered() {
+                    ui.output_mut(|o| o.cursor_icon = egui::CursorIcon::PointingHand);
+                    ui.painter().rect_filled(
+                        collapse_btn_rect.expand(2.0),
+                        3.0,
+                        Color32::from_rgb(58, 58, 58),
+                    );
+                }
+                if collapse_resp.clicked() {
+                    self.minimized = !self.minimized;
+                }
+                if let Some(arrow_tex) = &self.arrow_icon_texture {
+                    let angle = if self.minimized {
+                        -std::f32::consts::FRAC_PI_2
+                    } else {
+                        std::f32::consts::FRAC_PI_2
+                    };
+                    let _ = ui.put(
+                        collapse_btn_rect,
+                        egui::Image::new(arrow_tex)
+                            .fit_to_exact_size(egui::vec2(10.0, 10.0))
+                            .rotate(angle, Vec2::splat(0.5)),
+                    );
+                } else {
+                    ui.painter().text(
+                        collapse_btn_rect.center(),
+                        Align2::CENTER_CENTER,
+                        if self.minimized { "▴" } else { "▾" },
+                        FontId::new(11.0, FontFamily::Proportional),
+                        Color32::from_gray(190),
+                    );
+                }
+
                 let left_header_rect = Rect::from_min_max(
                     header_rect.min,
-                    egui::pos2(search_rect.left() - 6.0, header_rect.bottom()),
+                    egui::pos2(collapse_btn_rect.left() - 8.0, header_rect.bottom()),
                 );
 
                 ui.scope_builder(
@@ -443,43 +484,55 @@ impl ProjectWindow {
                     },
                 );
 
-                ui.scope_builder(
-                    egui::UiBuilder::new()
-                        .max_rect(search_rect)
-                        .layout(
-                            egui::Layout::left_to_right(egui::Align::Center)
-                                .with_main_align(egui::Align::Center),
-                        ),
-                    |ui| {
-                        ui.add(
-                            egui::TextEdit::singleline(&mut self.search_query)
-                                .desired_width(search_w)
-                                .hint_text(search_hint),
-                        );
-                    },
-                );
+                if !self.minimized {
+                    let splitter_y = header_rect.bottom() + 4.0;
+                    let search_hint = self.tr(language, "search");
+                    let search_w = 220.0;
+                    let search_right = collapse_btn_rect.left() - 8.0;
+                    let search_x = (header_rect.center().x - search_w * 0.5 - 36.0)
+                        .clamp(header_rect.left() + 6.0, search_right - search_w);
+                    let search_rect = Rect::from_min_max(
+                        egui::pos2(search_x, header_rect.top()),
+                        egui::pos2(search_x + search_w, header_rect.bottom()),
+                    );
 
-                ui.painter().line_segment(
-                    [
-                        egui::pos2(inner.left(), splitter_y),
-                        egui::pos2(inner.right(), splitter_y),
-                    ],
-                    Stroke::new(1.0, Color32::from_rgb(62, 62, 62)),
-                );
+                    ui.scope_builder(
+                        egui::UiBuilder::new()
+                            .max_rect(search_rect)
+                            .layout(
+                                egui::Layout::left_to_right(egui::Align::Center)
+                                    .with_main_align(egui::Align::Center),
+                            ),
+                        |ui| {
+                            ui.add(
+                                egui::TextEdit::singleline(&mut self.search_query)
+                                    .desired_width(search_w)
+                                    .hint_text(search_hint),
+                            );
+                        },
+                    );
 
-                let content_rect = Rect::from_min_max(
-                    egui::pos2(inner.left(), splitter_y + 6.0),
-                    egui::pos2(inner.right(), inner.bottom() - 20.0),
-                );
-                let sidebar_w = 212.0;
-                let sidebar_rect = Rect::from_min_max(
-                    content_rect.min,
-                    egui::pos2(content_rect.left() + sidebar_w, content_rect.bottom()),
-                );
-                let grid_rect = Rect::from_min_max(
-                    egui::pos2(sidebar_rect.right() + 8.0, content_rect.top()),
-                    content_rect.max,
-                );
+                    ui.painter().line_segment(
+                        [
+                            egui::pos2(inner.left(), splitter_y),
+                            egui::pos2(inner.right(), splitter_y),
+                        ],
+                        Stroke::new(1.0, Color32::from_rgb(62, 62, 62)),
+                    );
+
+                    let content_rect = Rect::from_min_max(
+                        egui::pos2(inner.left(), splitter_y + 6.0),
+                        egui::pos2(inner.right(), inner.bottom() - 20.0),
+                    );
+                    let sidebar_w = 212.0;
+                    let sidebar_rect = Rect::from_min_max(
+                        content_rect.min,
+                        egui::pos2(content_rect.left() + sidebar_w, content_rect.bottom()),
+                    );
+                    let grid_rect = Rect::from_min_max(
+                        egui::pos2(sidebar_rect.right() + 8.0, content_rect.top()),
+                        content_rect.max,
+                    );
 
                 ui.painter().line_segment(
                     [
@@ -489,7 +542,7 @@ impl ProjectWindow {
                     Stroke::new(1.0, Color32::from_rgb(60, 60, 60)),
                 );
 
-                ui.scope_builder(
+                    ui.scope_builder(
                     egui::UiBuilder::new()
                         .max_rect(sidebar_rect)
                         .layout(egui::Layout::top_down(egui::Align::Min)),
@@ -567,10 +620,10 @@ impl ProjectWindow {
                     },
                 );
 
-                let assets = self.assets_for_folder();
-                let filter = self.search_query.to_lowercase();
+                    let assets = self.assets_for_folder();
+                    let filter = self.search_query.to_lowercase();
 
-                ui.scope_builder(
+                    ui.scope_builder(
                     egui::UiBuilder::new()
                         .max_rect(grid_rect)
                         .layout(egui::Layout::top_down(egui::Align::Min)),
@@ -775,11 +828,11 @@ impl ProjectWindow {
                     },
                 );
 
-                let footer_rect = Rect::from_min_max(
-                    egui::pos2(inner.left(), inner.bottom() - 18.0),
-                    inner.max,
-                );
-                ui.scope_builder(
+                    let footer_rect = Rect::from_min_max(
+                        egui::pos2(inner.left(), inner.bottom() - 18.0),
+                        inner.max,
+                    );
+                    ui.scope_builder(
                     egui::UiBuilder::new()
                         .max_rect(footer_rect)
                         .layout(egui::Layout::left_to_right(egui::Align::Center)),
@@ -807,28 +860,37 @@ impl ProjectWindow {
                             self.draw_icon_size_slider(ui, slider_rect);
                         });
                     },
-                );
+                    );
+                }
             });
 
-        if resize_started {
-            self.resizing_height = true;
-        }
-
-        if self.resizing_height && pointer_down {
-            let delta = ctx.input(|i| i.pointer.delta());
-            if delta.y != 0.0 {
-                self.panel_height = (self.panel_height - delta.y).clamp(min_h, max_h);
-            }
-        }
-
-        if resize_stopped || (self.resizing_height && !pointer_down) {
+        if self.minimized {
             self.resizing_height = false;
+        } else {
+            if resize_started {
+                self.resizing_height = true;
+            }
+
+            if self.resizing_height && pointer_down {
+                let delta = ctx.input(|i| i.pointer.delta());
+                if delta.y != 0.0 {
+                    self.panel_height = (self.panel_height - delta.y).clamp(min_h, max_h);
+                }
+            }
+
+            if resize_stopped || (self.resizing_height && !pointer_down) {
+                self.resizing_height = false;
+            }
         }
     }
 
     pub fn docked_bottom_height(&self) -> f32 {
         if self.open {
-            self.panel_height
+            if self.minimized {
+                34.0
+            } else {
+                self.panel_height
+            }
         } else {
             0.0
         }
