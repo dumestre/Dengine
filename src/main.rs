@@ -161,6 +161,10 @@ impl EditorApp {
 }
 
 impl App for EditorApp {
+    fn clear_color(&self, _visuals: &egui::Visuals) -> [f32; 4] {
+        [0.0, 0.0, 0.0, 0.0]
+    }
+
     fn update(&mut self, ctx: &egui::Context, _: &mut Frame) {
         // Dark theme
         ctx.set_visuals(egui::Visuals::dark());
@@ -171,10 +175,10 @@ impl App for EditorApp {
             .exact_height(30.0)
             .frame(
                 egui::Frame::new()
-                    .fill(egui::Color32::from_rgba_unmultiplied(22, 22, 22, 120))
+                    .fill(egui::Color32::from_rgba_unmultiplied(22, 22, 22, 78))
                     .stroke(egui::Stroke::new(
                         1.0,
-                        egui::Color32::from_rgba_unmultiplied(90, 90, 90, 70),
+                        egui::Color32::from_rgba_unmultiplied(90, 90, 90, 48),
                     )),
             )
             .show(ctx, |ui| {
@@ -689,6 +693,7 @@ fn main() -> eframe::Result<()> {
         viewport: egui::ViewportBuilder::default()
             .with_title("Dengine Editor")
             .with_decorations(false)
+            .with_transparent(true)
             .with_maximized(true)
             .with_icon(
                 app_icon.unwrap_or_else(|| {
