@@ -47,8 +47,11 @@ pub struct ViewportPanel {
     import_pipeline: AssetImportPipeline,
     pending_mesh_job: Option<u64>,
     next_import_job_id: u64,
+    undo_stack: Vec<ViewportSnapshot>,
+    redo_stack: Vec<ViewportSnapshot>,
 }
 
+#[derive(Clone, PartialEq)]
 struct SceneEntry {
     name: String,
     transform: Mat4,
@@ -56,10 +59,19 @@ struct SceneEntry {
     proxy: MeshData,
 }
 
+#[derive(Clone, PartialEq)]
 struct MeshData {
     name: String,
     vertices: Vec<Vec3>,
     triangles: Vec<[u32; 3]>,
+}
+
+#[derive(Clone, PartialEq)]
+struct ViewportSnapshot {
+    scene_entries: Vec<SceneEntry>,
+    selected_scene_object: Option<String>,
+    object_selected: bool,
+    dropped_asset_label: Option<String>,
 }
 
 enum MeshLoadEvent {
@@ -127,7 +139,7 @@ impl AssetImportPipeline {
 impl ViewportPanel {
     pub fn new() -> Self {
         let import_pipeline = AssetImportPipeline::new();
-        Self {
+        let mut s = Self {
             is_3d: true,
             is_ortho: false,
             gizmo_mode: GizmoMode::Translate,
@@ -153,7 +165,11 @@ impl ViewportPanel {
             import_pipeline,
             pending_mesh_job: None,
             next_import_job_id: 1,
-        }
+            undo_stack: Vec::new(),
+            redo_stack: Vec::new(),
+        };
+        s.push_undo_snapshot();
+        s
     }
 
     fn alloc_import_job_id(&mut self) -> u64 {
@@ -182,6 +198,59 @@ impl ViewportPanel {
             self.selected_scene_object = None;
             self.object_selected = false;
         }
+    }
+
+    pub fn can_undo(&self) -> bool {
+        !self.undo_stack.is_empty()
+    }
+
+    pub fn can_redo(&self) -> bool {
+        !self.redo_stack.is_empty()
+    }
+
+    pub fn undo(&mut self) {
+        let Some(prev) = self.undo_stack.pop() else {
+            return;
+        };
+        self.redo_stack.push(self.snapshot());
+        self.apply_snapshot(prev);
+    }
+
+    pub fn redo(&mut self) {
+        let Some(next) = self.redo_stack.pop() else {
+            return;
+        };
+        self.undo_stack.push(self.snapshot());
+        self.apply_snapshot(next);
+    }
+
+    fn snapshot(&self) -> ViewportSnapshot {
+        ViewportSnapshot {
+            scene_entries: self.scene_entries.clone(),
+            selected_scene_object: self.selected_scene_object.clone(),
+            object_selected: self.object_selected,
+            dropped_asset_label: self.dropped_asset_label.clone(),
+        }
+    }
+
+    fn apply_snapshot(&mut self, snap: ViewportSnapshot) {
+        self.scene_entries = snap.scene_entries;
+        self.selected_scene_object = snap.selected_scene_object;
+        self.object_selected = snap.object_selected;
+        self.dropped_asset_label = snap.dropped_asset_label;
+        self.mesh_status = Some("Historico aplicado".to_string());
+    }
+
+    fn push_undo_snapshot(&mut self) {
+        let snap = self.snapshot();
+        if self.undo_stack.last().is_some_and(|s| s == &snap) {
+            return;
+        }
+        self.undo_stack.push(snap);
+        if self.undo_stack.len() > 64 {
+            self.undo_stack.remove(0);
+        }
+        self.redo_stack.clear();
     }
 
     pub fn on_asset_dropped(&mut self, asset_name: &str) {
@@ -274,6 +343,7 @@ impl ViewportPanel {
                             self.mesh_status = Some("Proxy carregada... finalizando".to_string());
                         }
                         MeshLoadEvent::Full(Ok(mesh)) => {
+                            self.push_undo_snapshot();
                             let is_heavy = mesh.triangles.len() > MAX_RUNTIME_TRIANGLES
                                 || mesh.vertices.len() > MAX_RUNTIME_VERTICES;
                             let full = make_proxy_mesh(&mesh, MAX_RUNTIME_TRIANGLES, MAX_RUNTIME_VERTICES);
@@ -793,8 +863,12 @@ impl ViewportPanel {
                         if let Some(result) = gizmo.interact(ui) {
                             let new_transform = Mat4::from(result.transform());
                             if let Some(name) = selected_name {
-                                if let Some(entry) = self.scene_entries.iter_mut().find(|o| o.name == name) {
-                                    entry.transform = new_transform;
+                                if let Some(idx) = self.scene_entries.iter().position(|o| o.name == name) {
+                                    let old = self.scene_entries[idx].transform;
+                                    if old != new_transform {
+                                        self.push_undo_snapshot();
+                                        self.scene_entries[idx].transform = new_transform;
+                                    }
                                 }
                             } else {
                                 self.model_matrix = new_transform;

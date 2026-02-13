@@ -41,12 +41,14 @@ struct EditorApp {
     pause_icon: Option<TextureHandle>,
     stop_icon: Option<TextureHandle>,
     files_icon: Option<TextureHandle>,
+    rig_icon: Option<TextureHandle>,
     lang_pt_icon: Option<TextureHandle>,
     lang_en_icon: Option<TextureHandle>,
     lang_es_icon: Option<TextureHandle>,
     is_playing: bool,
     is_window_maximized: bool,
     selected_mode: ToolbarMode,
+    rig_enabled: bool,
     language: EngineLanguage,
     project_collapsed: bool,
     windows_blur_initialized: bool,
@@ -163,6 +165,9 @@ impl EditorApp {
         if self.files_icon.is_none() {
             self.files_icon = load_png_as_texture(ctx, "src/assets/icons/files.png");
         }
+        if self.rig_icon.is_none() {
+            self.rig_icon = load_png_as_texture(ctx, "src/assets/icons/rig.png");
+        }
         if self.lang_pt_icon.is_none() {
             self.lang_pt_icon = load_png_as_texture(ctx, "src/assets/icons/portugues.png");
         }
@@ -184,6 +189,19 @@ impl App for EditorApp {
         // Dark theme
         ctx.set_visuals(egui::Visuals::dark());
         self.ensure_toolbar_icons_loaded(ctx);
+        let undo_shortcut = egui::KeyboardShortcut::new(egui::Modifiers::CTRL, egui::Key::Z);
+        let redo_shortcut =
+            egui::KeyboardShortcut::new(egui::Modifiers::CTRL | egui::Modifiers::SHIFT, egui::Key::Z);
+        let redo_shortcut_alt = egui::KeyboardShortcut::new(egui::Modifiers::CTRL, egui::Key::Y);
+        let undo_pressed = ctx.input_mut(|i| i.consume_shortcut(&undo_shortcut));
+        let redo_pressed = ctx.input_mut(|i| i.consume_shortcut(&redo_shortcut))
+            || ctx.input_mut(|i| i.consume_shortcut(&redo_shortcut_alt));
+        if undo_pressed {
+            self.viewport.undo();
+        }
+        if redo_pressed {
+            self.viewport.redo();
+        }
         if !self.windows_blur_initialized {
             self.windows_blur_initialized = true;
             let _ = enable_windows_backdrop_blur(frame);
@@ -277,8 +295,23 @@ impl App for EditorApp {
                             });
 
                             ui.menu_button(self.tr("menu_edit"), |ui| {
-                                if ui.button("Undo").clicked() {}
-                                if ui.button("Redo").clicked() {}
+                                if ui
+                                    .add_enabled(self.viewport.can_undo(), egui::Button::new("Undo (Ctrl+Z)"))
+                                    .clicked()
+                                {
+                                    self.viewport.undo();
+                                    ui.close();
+                                }
+                                if ui
+                                    .add_enabled(
+                                        self.viewport.can_redo(),
+                                        egui::Button::new("Redo (Ctrl+Shift+Z)"),
+                                    )
+                                    .clicked()
+                                {
+                                    self.viewport.redo();
+                                    ui.close();
+                                }
                             });
 
                             ui.menu_button(self.tr("menu_help"), |ui| {
@@ -682,31 +715,63 @@ impl App for EditorApp {
                         egui::StrokeKind::Outside,
                     );
 
-                    let icon_rect = egui::Rect::from_center_size(
+                    let files_rect = egui::Rect::from_center_size(
                         egui::pos2(rect.left() + 16.0, rect.center().y),
                         egui::vec2(28.0, 22.0),
                     );
-                    let icon_resp = ui.interact(
-                        icon_rect,
+                    let files_resp = ui.interact(
+                        files_rect,
                         ui.id().with("restore_project_from_dock"),
                         egui::Sense::click(),
                     );
-                    if icon_resp.hovered() {
+                    if files_resp.hovered() {
                         ui.output_mut(|o| o.cursor_icon = egui::CursorIcon::PointingHand);
                         ui.painter().rect_filled(
-                            icon_rect.expand(2.0),
+                            files_rect.expand(2.0),
                             3.0,
                             egui::Color32::from_rgb(58, 58, 58),
                         );
                     }
-                    if icon_resp.clicked() {
+                    if files_resp.clicked() {
                         self.project_collapsed = false;
                     }
 
                     if let Some(files_icon) = &self.files_icon {
                         let _ = ui.put(
-                            icon_rect,
+                            files_rect,
                             egui::Image::new(files_icon)
+                                .fit_to_exact_size(egui::Vec2::new(20.0, 20.0)),
+                        );
+                    }
+
+                    let rig_rect = egui::Rect::from_center_size(
+                        egui::pos2(rect.left() + 48.0, rect.center().y),
+                        egui::vec2(28.0, 22.0),
+                    );
+                    let rig_resp = ui.interact(
+                        rig_rect,
+                        ui.id().with("toggle_rig_mode"),
+                        egui::Sense::click(),
+                    );
+                    if rig_resp.hovered() || self.rig_enabled {
+                        ui.output_mut(|o| o.cursor_icon = egui::CursorIcon::PointingHand);
+                        ui.painter().rect_filled(
+                            rig_rect.expand(2.0),
+                            3.0,
+                            if self.rig_enabled {
+                                egui::Color32::from_rgb(58, 84, 64)
+                            } else {
+                                egui::Color32::from_rgb(58, 58, 58)
+                            },
+                        );
+                    }
+                    if rig_resp.clicked() {
+                        self.rig_enabled = !self.rig_enabled;
+                    }
+                    if let Some(rig_icon) = &self.rig_icon {
+                        let _ = ui.put(
+                            rig_rect,
+                            egui::Image::new(rig_icon)
                                 .fit_to_exact_size(egui::Vec2::new(20.0, 20.0)),
                         );
                     }
@@ -925,12 +990,14 @@ fn main() -> eframe::Result<()> {
                 pause_icon: None,
                 stop_icon: None,
                 files_icon: None,
+                rig_icon: None,
                 lang_pt_icon: None,
                 lang_en_icon: None,
                 lang_es_icon: None,
                 is_playing: false,
                 is_window_maximized: true,
                 selected_mode: ToolbarMode::Cena,
+                rig_enabled: false,
                 language: EngineLanguage::Pt,
                 project_collapsed: false,
                 windows_blur_initialized: false,
