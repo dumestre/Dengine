@@ -22,6 +22,13 @@ pub struct ProjectWindow {
     hover_roll_asset: Option<String>,
     hover_still_since: f64,
     imported_assets: BTreeMap<&'static str, Vec<String>>,
+    preview_cache: BTreeMap<String, TextureHandle>,
+    mesh_preview_cache: BTreeMap<String, MeshPreview>,
+    dragging_asset: Option<String>,
+}
+
+struct MeshPreview {
+    lines: Vec<([f32; 2], [f32; 2])>,
 }
 
 fn load_png_as_texture(ctx: &egui::Context, png_path: &str) -> Option<TextureHandle> {
@@ -54,6 +61,9 @@ impl ProjectWindow {
             hover_roll_asset: None,
             hover_still_since: 0.0,
             imported_assets: BTreeMap::new(),
+            preview_cache: BTreeMap::new(),
+            mesh_preview_cache: BTreeMap::new(),
+            dragging_asset: None,
         }
     }
 
@@ -160,12 +170,12 @@ impl ProjectWindow {
         out
     }
 
-    fn import_target_folder_for_ext(ext: &str) -> Option<&'static str> {
+    fn import_target_folder_for_ext(ext: &str) -> &'static str {
         match ext {
-            "fbx" => Some("Meshes"),
-            "obj" => Some("Meshes"),
-            "glb" => Some("Meshes"),
-            _ => None,
+            "fbx" | "obj" | "glb" | "gltf" => "Meshes",
+            "cs" => "Scripts",
+            // Sem restrição: qualquer formato não mapeado cai em Assets.
+            _ => "Assets",
         }
     }
 
@@ -199,7 +209,11 @@ impl ProjectWindow {
         dest_dir.join(base_name)
     }
 
-    fn import_fbx_path(&mut self, src_path: &Path, language: EngineLanguage) {
+    fn import_model_path(&mut self, src_path: &Path, language: EngineLanguage) {
+        if !src_path.is_file() {
+            self.status_text = format!("{}: selecione um arquivo válido", self.tr(language, "import"));
+            return;
+        }
         let Some(file_name) = src_path.file_name().and_then(|n| n.to_str()) else {
             self.status_text = format!("{}: caminho inválido", self.tr(language, "import"));
             return;
@@ -211,15 +225,7 @@ impl ProjectWindow {
             .map(|e| e.to_lowercase())
             .unwrap_or_default();
 
-        let Some(target_folder) = Self::import_target_folder_for_ext(&ext) else {
-            self.status_text = format!("{}: formato não suportado", self.tr(language, "import"));
-            return;
-        };
-
-        if ext != "fbx" {
-            self.status_text = format!("{}: suporte inicial disponível para .fbx", self.tr(language, "import"));
-            return;
-        }
+        let target_folder = Self::import_target_folder_for_ext(&ext);
 
         let dest_dir = Path::new("Assets").join(target_folder);
         if let Err(err) = std::fs::create_dir_all(&dest_dir) {
@@ -248,14 +254,15 @@ impl ProjectWindow {
         self.status_text = format!("{}: {}", self.tr(language, "import"), imported_name);
     }
 
+    pub fn import_file_path(&mut self, src_path: &Path, language: EngineLanguage) {
+        self.import_model_path(src_path, language);
+    }
+
     pub fn import_asset_dialog(&mut self, language: EngineLanguage) {
-        let file = rfd::FileDialog::new()
-            .add_filter("3D Models", &["fbx", "obj", "glb"])
-            .add_filter("FBX", &["fbx"])
-            .pick_file();
+        let file = rfd::FileDialog::new().pick_file();
 
         if let Some(path) = file {
-            self.import_fbx_path(&path, language);
+            self.import_model_path(&path, language);
         }
     }
 
@@ -264,19 +271,109 @@ impl ProjectWindow {
             (Color32::from_rgb(56, 95, 166), "PF")
         } else if asset.ends_with(".cs") {
             (Color32::from_rgb(184, 104, 51), "C#")
-        } else if asset.ends_with(".png") {
+        } else if asset.ends_with(".png")
+            || asset.ends_with(".jpg")
+            || asset.ends_with(".jpeg")
+            || asset.ends_with(".webp")
+        {
             (Color32::from_rgb(64, 146, 112), "IMG")
+        } else if asset.ends_with(".wav")
+            || asset.ends_with(".mp3")
+            || asset.ends_with(".ogg")
+            || asset.ends_with(".flac")
+        {
+            (Color32::from_rgb(132, 96, 178), "SND")
         } else if asset.ends_with(".anim") || asset.ends_with(".controller") {
             (Color32::from_rgb(154, 72, 167), "AN")
         } else if asset.ends_with(".mat") {
             (Color32::from_rgb(179, 137, 57), "MAT")
-        } else if asset.ends_with(".fbx") {
+        } else if asset.ends_with(".fbx") || asset.ends_with(".obj") || asset.ends_with(".glb") || asset.ends_with(".gltf") {
             (Color32::from_rgb(86, 132, 176), "MESH")
         } else if asset.ends_with(".json") {
             (Color32::from_rgb(127, 127, 127), "{}")
         } else {
             (Color32::from_rgb(88, 88, 88), "AS")
         }
+    }
+
+    fn selected_folder_path(&self) -> Option<PathBuf> {
+        match self.selected_folder {
+            "Assets" => Some(PathBuf::from("Assets")),
+            "Animations" => Some(PathBuf::from("Assets/Animations")),
+            "Materials" => Some(PathBuf::from("Assets/Materials")),
+            "Meshes" => Some(PathBuf::from("Assets/Meshes")),
+            "Mold" => Some(PathBuf::from("Assets/Mold")),
+            "Scripts" => Some(PathBuf::from("Assets/Scripts")),
+            _ => None,
+        }
+    }
+
+    fn asset_path_in_selected_folder(&self, asset_name: &str) -> Option<PathBuf> {
+        self.selected_folder_path().map(|p| p.join(asset_name))
+    }
+
+    fn asset_preview_texture<'a>(
+        &'a mut self,
+        ctx: &egui::Context,
+        asset_name: &str,
+    ) -> Option<&'a TextureHandle> {
+        let asset_path = self.asset_path_in_selected_folder(asset_name)?;
+        let ext = asset_path
+            .extension()
+            .and_then(|e| e.to_str())
+            .map(|e| e.to_ascii_lowercase())
+            .unwrap_or_default();
+        if ext != "png" && ext != "jpg" && ext != "jpeg" && ext != "webp" {
+            return None;
+        }
+        if !asset_path.exists() {
+            return None;
+        }
+
+        let key = asset_path.to_string_lossy().to_string();
+        if !self.preview_cache.contains_key(&key) {
+            let bytes = std::fs::read(&asset_path).ok()?;
+            let rgba = image::load_from_memory(&bytes).ok()?.to_rgba8();
+            let size = [rgba.width() as usize, rgba.height() as usize];
+            let color_image = ColorImage::from_rgba_unmultiplied(size, rgba.as_raw());
+            let tex = ctx.load_texture(key.clone(), color_image, egui::TextureOptions::LINEAR);
+            self.preview_cache.insert(key.clone(), tex);
+        }
+        self.preview_cache.get(&key)
+    }
+
+    fn asset_mesh_preview<'a>(&'a mut self, asset_name: &str) -> Option<&'a MeshPreview> {
+        let asset_path = self.asset_path_in_selected_folder(asset_name)?;
+        let ext = asset_path
+            .extension()
+            .and_then(|e| e.to_str())
+            .map(|e| e.to_ascii_lowercase())
+            .unwrap_or_default();
+        if ext != "obj" && ext != "glb" && ext != "gltf" && ext != "fbx" {
+            return None;
+        }
+        if !asset_path.exists() {
+            return None;
+        }
+        let key = asset_path.to_string_lossy().to_string();
+        if !self.mesh_preview_cache.contains_key(&key) {
+            let preview = build_mesh_preview(&asset_path).ok()?;
+            self.mesh_preview_cache.insert(key.clone(), preview);
+        }
+        self.mesh_preview_cache.get(&key)
+    }
+
+    pub fn dragging_asset_name(&self) -> Option<&str> {
+        self.dragging_asset.as_deref()
+    }
+
+    pub fn dragging_asset_path(&self) -> Option<PathBuf> {
+        let name = self.dragging_asset_name()?;
+        self.asset_path_in_selected_folder(name)
+    }
+
+    pub fn clear_dragging_asset(&mut self) {
+        self.dragging_asset = None;
     }
 
     fn truncate_with_ellipsis(
@@ -794,7 +891,7 @@ impl ProjectWindow {
                                         let tile_size = Vec2::new(tile_w, tile_w + 20.0);
                                         let selected = self.selected_asset.as_ref() == Some(asset);
                                         let (tile_rect, tile_resp) =
-                                            ui.allocate_exact_size(tile_size, Sense::click());
+                                            ui.allocate_exact_size(tile_size, Sense::click_and_drag());
 
                                         ui.painter().rect_filled(
                                             tile_rect,
@@ -816,19 +913,51 @@ impl ProjectWindow {
                                             egui::StrokeKind::Outside,
                                         );
 
-                                        let (icon_color, icon_tag) = Self::icon_style(asset);
                                         let preview_rect = Rect::from_min_max(
                                             tile_rect.min + egui::vec2(7.0, 7.0),
                                             egui::pos2(tile_rect.max.x - 7.0, tile_rect.max.y - 20.0),
                                         );
-                                        ui.painter().rect_filled(preview_rect, 2.0, icon_color);
-                                        ui.painter().text(
-                                            preview_rect.center(),
-                                            egui::Align2::CENTER_CENTER,
-                                            icon_tag,
-                                            FontId::proportional(10.0),
-                                            Color32::from_gray(245),
-                                        );
+                                        if let Some(tex) = self.asset_preview_texture(ui.ctx(), asset) {
+                                            let _ = ui.put(
+                                                preview_rect,
+                                                egui::Image::new(tex).fit_to_exact_size(preview_rect.size()),
+                                            );
+                                            ui.painter().rect_stroke(
+                                                preview_rect,
+                                                2.0,
+                                                Stroke::new(1.0, Color32::from_rgba_unmultiplied(255, 255, 255, 26)),
+                                                egui::StrokeKind::Outside,
+                                            );
+                                        } else if let Some(mesh_preview) = self.asset_mesh_preview(asset) {
+                                            ui.painter().rect_filled(preview_rect, 2.0, Color32::from_rgb(33, 39, 46));
+                                            let c = preview_rect.center();
+                                            let sx = preview_rect.width() * 0.42;
+                                            let sy = preview_rect.height() * 0.42;
+                                            for (a, b) in &mesh_preview.lines {
+                                                let pa = egui::pos2(c.x + a[0] * sx, c.y - a[1] * sy);
+                                                let pb = egui::pos2(c.x + b[0] * sx, c.y - b[1] * sy);
+                                                ui.painter().line_segment(
+                                                    [pa, pb],
+                                                    Stroke::new(1.0, Color32::from_rgb(145, 198, 236)),
+                                                );
+                                            }
+                                            ui.painter().rect_stroke(
+                                                preview_rect,
+                                                2.0,
+                                                Stroke::new(1.0, Color32::from_rgb(82, 112, 136)),
+                                                egui::StrokeKind::Outside,
+                                            );
+                                        } else {
+                                            let (icon_color, icon_tag) = Self::icon_style(asset);
+                                            ui.painter().rect_filled(preview_rect, 2.0, icon_color);
+                                            ui.painter().text(
+                                                preview_rect.center(),
+                                                egui::Align2::CENTER_CENTER,
+                                                icon_tag,
+                                                FontId::proportional(10.0),
+                                                Color32::from_gray(245),
+                                            );
+                                        }
                                         let name_font = FontId::proportional(11.0);
                                         let name_color = Color32::from_gray(210);
                                         let name_rect = Rect::from_min_max(
@@ -963,6 +1092,14 @@ impl ProjectWindow {
                                             self.selected_asset = Some(asset.clone());
                                             self.status_text = asset.to_string();
                                         }
+                                        if tile_resp.drag_started() || tile_resp.dragged() {
+                                            self.dragging_asset = Some(asset.clone());
+                                        }
+                                        if tile_resp.hovered()
+                                            && ui.input(|i| i.pointer.primary_down() && i.pointer.delta().length_sq() > 0.0)
+                                        {
+                                            self.dragging_asset = Some(asset.clone());
+                                        }
                                     }
 
                                     if !hovered_any {
@@ -1036,4 +1173,195 @@ impl ProjectWindow {
             0.0
         }
     }
+}
+
+fn build_mesh_preview(path: &Path) -> Result<MeshPreview, String> {
+    let ext = path
+        .extension()
+        .and_then(|e| e.to_str())
+        .map(|e| e.to_ascii_lowercase())
+        .ok_or_else(|| "extensão inválida".to_string())?;
+
+    let (mut vertices, triangles) = match ext.as_str() {
+        "obj" => load_obj_preview_mesh(path)?,
+        "glb" | "gltf" => load_gltf_preview_mesh(path)?,
+        "fbx" => load_fbx_ascii_preview_mesh(path)?,
+        _ => return Err("formato não suportado".to_string()),
+    };
+    normalize_preview_vertices(&mut vertices);
+
+    // Isometric-ish thumbnail projection.
+    let yaw = 0.65_f32;
+    let pitch = 0.52_f32;
+    let (sy, cy) = yaw.sin_cos();
+    let (sp, cp) = pitch.sin_cos();
+    let mut p2: Vec<[f32; 2]> = Vec::with_capacity(vertices.len());
+    for v in &vertices {
+        let x1 = v.x * cy - v.z * sy;
+        let z1 = v.x * sy + v.z * cy;
+        let y2 = v.y * cp - z1 * sp;
+        p2.push([x1, y2]);
+    }
+
+    let mut edges = HashSet::<(u32, u32)>::new();
+    let mut lines: Vec<([f32; 2], [f32; 2])> = Vec::new();
+    for tri in &triangles {
+        for (a, b) in [(tri[0], tri[1]), (tri[1], tri[2]), (tri[2], tri[0])] {
+            let key = if a < b { (a, b) } else { (b, a) };
+            if !edges.insert(key) {
+                continue;
+            }
+            let ai = a as usize;
+            let bi = b as usize;
+            if ai < p2.len() && bi < p2.len() {
+                lines.push((p2[ai], p2[bi]));
+            }
+        }
+    }
+    if lines.is_empty() {
+        return Err("sem arestas para preview".to_string());
+    }
+    Ok(MeshPreview { lines })
+}
+
+fn load_obj_preview_mesh(path: &Path) -> Result<(Vec<glam::Vec3>, Vec<[u32; 3]>), String> {
+    let opt = tobj::LoadOptions {
+        triangulate: true,
+        single_index: true,
+        ..Default::default()
+    };
+    let (models, _mats) = tobj::load_obj(path, &opt).map_err(|e| e.to_string())?;
+    let mut vertices = Vec::new();
+    let mut triangles = Vec::new();
+    for m in models {
+        let base = vertices.len() as u32;
+        let mesh = m.mesh;
+        for p in mesh.positions.chunks_exact(3) {
+            vertices.push(glam::Vec3::new(p[0], p[1], p[2]));
+        }
+        for idx in mesh.indices.chunks_exact(3) {
+            triangles.push([base + idx[0], base + idx[1], base + idx[2]]);
+        }
+    }
+    if vertices.is_empty() || triangles.is_empty() {
+        return Err("OBJ vazio".to_string());
+    }
+    Ok((vertices, triangles))
+}
+
+fn load_gltf_preview_mesh(path: &Path) -> Result<(Vec<glam::Vec3>, Vec<[u32; 3]>), String> {
+    let (doc, buffers, _images) = gltf::import(path).map_err(|e| e.to_string())?;
+    let mut vertices = Vec::new();
+    let mut triangles = Vec::new();
+    for mesh in doc.meshes() {
+        for primitive in mesh.primitives() {
+            if primitive.mode() != gltf::mesh::Mode::Triangles {
+                continue;
+            }
+            let reader = primitive.reader(|buf| Some(&buffers[buf.index()].0));
+            let Some(positions) = reader.read_positions() else {
+                continue;
+            };
+            let base = vertices.len() as u32;
+            let local: Vec<glam::Vec3> = positions
+                .map(|p| glam::Vec3::new(p[0], p[1], p[2]))
+                .collect();
+            let vcount = local.len() as u32;
+            vertices.extend(local);
+
+            if let Some(indices) = reader.read_indices() {
+                let idx_u32: Vec<u32> = indices.into_u32().collect();
+                for tri in idx_u32.chunks_exact(3) {
+                    triangles.push([base + tri[0], base + tri[1], base + tri[2]]);
+                }
+            } else {
+                let mut i = 0;
+                while i + 2 < vcount {
+                    triangles.push([base + i, base + i + 1, base + i + 2]);
+                    i += 3;
+                }
+            }
+        }
+    }
+    if vertices.is_empty() || triangles.is_empty() {
+        return Err("GLTF/GLB vazio".to_string());
+    }
+    Ok((vertices, triangles))
+}
+
+fn load_fbx_ascii_preview_mesh(path: &Path) -> Result<(Vec<glam::Vec3>, Vec<[u32; 3]>), String> {
+    let text = std::fs::read_to_string(path).map_err(|_| "FBX binário".to_string())?;
+    let verts_blob =
+        extract_fbx_array_blob_preview(&text, "Vertices").ok_or_else(|| "sem Vertices".to_string())?;
+    let poly_blob = extract_fbx_array_blob_preview(&text, "PolygonVertexIndex")
+        .ok_or_else(|| "sem PolygonVertexIndex".to_string())?;
+    let verts_raw = parse_fbx_f32_preview_array(verts_blob);
+    let mut vertices = Vec::with_capacity(verts_raw.len() / 3);
+    for c in verts_raw.chunks_exact(3) {
+        vertices.push(glam::Vec3::new(c[0], c[1], c[2]));
+    }
+    let poly_idx = parse_fbx_i32_preview_array(poly_blob);
+    let mut triangles = Vec::new();
+    let mut poly: Vec<u32> = Vec::new();
+    for raw in poly_idx {
+        if raw >= 0 {
+            poly.push(raw as u32);
+        } else {
+            poly.push((-raw - 1) as u32);
+            if poly.len() >= 3 {
+                for i in 1..(poly.len() - 1) {
+                    triangles.push([poly[0], poly[i], poly[i + 1]]);
+                }
+            }
+            poly.clear();
+        }
+    }
+    triangles.retain(|tri| {
+        (tri[0] as usize) < vertices.len()
+            && (tri[1] as usize) < vertices.len()
+            && (tri[2] as usize) < vertices.len()
+    });
+    if vertices.is_empty() || triangles.is_empty() {
+        return Err("FBX ASCII vazio".to_string());
+    }
+    Ok((vertices, triangles))
+}
+
+fn normalize_preview_vertices(vertices: &mut [glam::Vec3]) {
+    let mut min = glam::Vec3::splat(f32::INFINITY);
+    let mut max = glam::Vec3::splat(f32::NEG_INFINITY);
+    for v in vertices.iter().copied() {
+        min = min.min(v);
+        max = max.max(v);
+    }
+    let center = (min + max) * 0.5;
+    let ext = (max - min).max(glam::Vec3::splat(1e-5));
+    let s = 1.7 / ext.x.max(ext.y).max(ext.z);
+    for v in vertices {
+        *v = (*v - center) * s;
+    }
+}
+
+fn extract_fbx_array_blob_preview<'a>(text: &'a str, key: &str) -> Option<&'a str> {
+    let key_pos = text.find(key)?;
+    let after_key = &text[key_pos..];
+    let a_pos_rel = after_key.find("a:")?;
+    let arr_start = key_pos + a_pos_rel + 2;
+    let tail = &text[arr_start..];
+    let end_rel = tail.find('}')?;
+    Some(tail[..end_rel].trim())
+}
+
+fn parse_fbx_f32_preview_array(data: &str) -> Vec<f32> {
+    data.split(|c: char| c == ',' || c.is_ascii_whitespace())
+        .filter(|s| !s.is_empty())
+        .filter_map(|s| s.parse::<f32>().ok())
+        .collect()
+}
+
+fn parse_fbx_i32_preview_array(data: &str) -> Vec<i32> {
+    data.split(|c: char| c == ',' || c.is_ascii_whitespace())
+        .filter(|s| !s.is_empty())
+        .filter_map(|s| s.parse::<i32>().ok())
+        .collect()
 }

@@ -1,3 +1,7 @@
+use std::collections::HashSet;
+use std::path::Path;
+use std::sync::mpsc::{self, Receiver};
+
 use eframe::egui::{self, Align2, Color32, FontId, PointerButton, Pos2, Rect, Sense, Stroke, TextureHandle, TextureOptions, Vec2};
 use egui_gizmo::{Gizmo, GizmoMode, GizmoOrientation};
 use epaint::ColorImage;
@@ -18,6 +22,17 @@ pub struct ViewportPanel {
     scale_icon: Option<TextureHandle>,
     transform_icon: Option<TextureHandle>,
     last_viewport_rect: Option<Rect>,
+    dropped_asset_label: Option<String>,
+    active_mesh: Option<MeshData>,
+    mesh_status: Option<String>,
+    mesh_loading: bool,
+    mesh_rx: Option<Receiver<Result<MeshData, String>>>,
+}
+
+struct MeshData {
+    name: String,
+    vertices: Vec<Vec3>,
+    triangles: Vec<[u32; 3]>,
 }
 
 impl ViewportPanel {
@@ -37,6 +52,11 @@ impl ViewportPanel {
             scale_icon: None,
             transform_icon: None,
             last_viewport_rect: None,
+            dropped_asset_label: None,
+            active_mesh: None,
+            mesh_status: None,
+            mesh_loading: false,
+            mesh_rx: None,
         }
     }
 
@@ -44,9 +64,43 @@ impl ViewportPanel {
         self.last_viewport_rect.is_some_and(|r| r.contains(p))
     }
 
+    pub fn panel_rect(&self) -> Option<Rect> {
+        self.last_viewport_rect
+    }
+
     pub fn on_asset_dropped(&mut self, asset_name: &str) {
         if asset_name.ends_with(".fbx") || asset_name.ends_with(".obj") || asset_name.ends_with(".glb") {
             self.object_selected = true;
+            self.dropped_asset_label = Some(asset_name.to_string());
+        }
+    }
+
+    pub fn on_asset_file_dropped(&mut self, path: &Path) {
+        let asset_name = path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("asset")
+            .to_string();
+        self.on_asset_dropped(&asset_name);
+
+        let ext = path
+            .extension()
+            .and_then(|e| e.to_str())
+            .map(|e| e.to_ascii_lowercase())
+            .unwrap_or_default();
+
+        match ext.as_str() {
+            "fbx" | "obj" | "glb" | "gltf" => {
+                let path_buf = path.to_path_buf();
+                let (tx, rx) = mpsc::channel();
+                self.mesh_loading = true;
+                self.mesh_status = Some("Carregando malha...".to_string());
+                self.mesh_rx = Some(rx);
+                std::thread::spawn(move || {
+                    let _ = tx.send(load_mesh_from_path(&path_buf));
+                });
+            }
+            _ => {}
         }
     }
 
@@ -108,6 +162,31 @@ impl ViewportPanel {
                     .stroke(Stroke::new(1.0, Color32::from_rgb(48, 48, 52))),
             )
             .show(ctx, |ui| {
+                if self.mesh_loading {
+                    ui.ctx().request_repaint();
+                }
+                if let Some(rx) = &self.mesh_rx {
+                    match rx.try_recv() {
+                        Ok(Ok(mesh)) => {
+                            self.active_mesh = Some(mesh);
+                            self.mesh_status = Some("Mesh carregada".to_string());
+                            self.mesh_loading = false;
+                            self.mesh_rx = None;
+                        }
+                        Ok(Err(err)) => {
+                            self.active_mesh = None;
+                            self.mesh_status = Some(format!("Falha ao carregar malha: {err}"));
+                            self.mesh_loading = false;
+                            self.mesh_rx = None;
+                        }
+                        Err(mpsc::TryRecvError::Disconnected) => {
+                            self.mesh_loading = false;
+                            self.mesh_rx = None;
+                        }
+                        Err(mpsc::TryRecvError::Empty) => {}
+                    }
+                }
+
                 let content = ui.max_rect();
                 let viewport_rect = Rect::from_min_max(
                     egui::pos2(content.left() + left_reserved, content.top()),
@@ -153,6 +232,51 @@ impl ViewportPanel {
                     FontId::proportional(13.0),
                     Color32::from_gray(210),
                 );
+                if let Some(asset) = &self.dropped_asset_label {
+                    ui.painter().text(
+                        egui::pos2(viewport_rect.left() + 12.0, viewport_rect.top() + 28.0),
+                        Align2::LEFT_TOP,
+                        format!("Asset: {asset}"),
+                        FontId::proportional(11.0),
+                        Color32::from_rgb(144, 206, 168),
+                    );
+                }
+                if let Some(status) = &self.mesh_status {
+                    ui.painter().text(
+                        egui::pos2(viewport_rect.left() + 12.0, viewport_rect.top() + 44.0),
+                        Align2::LEFT_TOP,
+                        status,
+                        FontId::proportional(10.0),
+                        Color32::from_gray(190),
+                    );
+                }
+                if self.mesh_loading {
+                    let loading_rect = Rect::from_center_size(viewport_rect.center(), egui::vec2(160.0, 30.0));
+                    ui.painter().rect_filled(
+                        loading_rect,
+                        6.0,
+                        Color32::from_rgba_unmultiplied(25, 30, 33, 220),
+                    );
+                    ui.painter().rect_stroke(
+                        loading_rect,
+                        6.0,
+                        Stroke::new(1.0, Color32::from_rgb(72, 92, 96)),
+                        egui::StrokeKind::Outside,
+                    );
+                    ui.scope_builder(
+                        egui::UiBuilder::new()
+                            .max_rect(loading_rect)
+                            .layout(
+                                egui::Layout::left_to_right(egui::Align::Center)
+                                    .with_main_align(egui::Align::Center),
+                            ),
+                        |ui| {
+                            ui.add(egui::Spinner::new().size(14.0));
+                            ui.add_space(8.0);
+                            ui.label("Carregando malha...");
+                        },
+                    );
+                }
 
                 let viewport_resp =
                     ui.interact(viewport_rect, ui.id().with("scene_viewport_input"), Sense::click_and_drag());
@@ -369,7 +493,11 @@ impl ViewportPanel {
                         };
                     }
 
-                    draw_wire_cube(ui, viewport_rect, mvp, self.object_selected);
+                    if let Some(mesh) = &self.active_mesh {
+                        draw_wire_mesh(ui, viewport_rect, mvp, mesh, self.object_selected);
+                    } else {
+                        draw_wire_cube(ui, viewport_rect, mvp, self.object_selected);
+                    }
 
                     if self.object_selected {
                         let gizmo = Gizmo::new("scene_transform_gizmo")
@@ -397,6 +525,211 @@ fn load_png_as_texture(ctx: &egui::Context, png_path: &str) -> Option<TextureHan
     Some(ctx.load_texture(png_path.to_owned(), color_image, TextureOptions::LINEAR))
 }
 
+fn load_mesh_from_path(path: &Path) -> Result<MeshData, String> {
+    let ext = path
+        .extension()
+        .and_then(|e| e.to_str())
+        .map(|e| e.to_ascii_lowercase())
+        .ok_or_else(|| "extensão inválida".to_string())?;
+
+    let mut mesh = match ext.as_str() {
+        "fbx" => load_fbx_ascii_mesh(path)?,
+        "obj" => load_obj_mesh(path)?,
+        "glb" | "gltf" => load_gltf_mesh(path)?,
+        _ => return Err("formato não suportado".to_string()),
+    };
+    normalize_mesh(&mut mesh);
+    Ok(mesh)
+}
+
+fn load_fbx_ascii_mesh(path: &Path) -> Result<MeshData, String> {
+    let text = std::fs::read_to_string(path).map_err(|_| {
+        "FBX binário não suportado neste parser inicial (exporte como ASCII ou use OBJ/GLB)"
+            .to_string()
+    })?;
+
+    let verts_blob = extract_fbx_array_blob(&text, "Vertices")
+        .ok_or_else(|| "FBX sem bloco Vertices".to_string())?;
+    let poly_blob = extract_fbx_array_blob(&text, "PolygonVertexIndex")
+        .ok_or_else(|| "FBX sem bloco PolygonVertexIndex".to_string())?;
+
+    let verts_raw = parse_fbx_f32_array(verts_blob);
+    if verts_raw.len() < 3 {
+        return Err("FBX sem vértices válidos".to_string());
+    }
+    let mut vertices = Vec::with_capacity(verts_raw.len() / 3);
+    for chunk in verts_raw.chunks_exact(3) {
+        vertices.push(Vec3::new(chunk[0], chunk[1], chunk[2]));
+    }
+
+    let poly_idx = parse_fbx_i32_array(poly_blob);
+    if poly_idx.is_empty() {
+        return Err("FBX sem índices válidos".to_string());
+    }
+
+    let mut triangles: Vec<[u32; 3]> = Vec::new();
+    let mut poly: Vec<u32> = Vec::new();
+    for raw in poly_idx {
+        if raw >= 0 {
+            poly.push(raw as u32);
+            continue;
+        }
+        let end_idx = (-raw - 1) as u32;
+        poly.push(end_idx);
+        if poly.len() >= 3 {
+            for i in 1..(poly.len() - 1) {
+                triangles.push([poly[0], poly[i], poly[i + 1]]);
+            }
+        }
+        poly.clear();
+    }
+
+    triangles.retain(|tri| {
+        (tri[0] as usize) < vertices.len()
+            && (tri[1] as usize) < vertices.len()
+            && (tri[2] as usize) < vertices.len()
+    });
+    if triangles.is_empty() {
+        return Err("FBX sem triângulos válidos".to_string());
+    }
+
+    let name = path
+        .file_name()
+        .and_then(|s| s.to_str())
+        .unwrap_or("FBX")
+        .to_string();
+    Ok(MeshData {
+        name,
+        vertices,
+        triangles,
+    })
+}
+
+fn extract_fbx_array_blob<'a>(text: &'a str, key: &str) -> Option<&'a str> {
+    let key_pos = text.find(key)?;
+    let after_key = &text[key_pos..];
+    let a_pos_rel = after_key.find("a:")?;
+    let arr_start = key_pos + a_pos_rel + 2;
+    let tail = &text[arr_start..];
+    let end_rel = tail.find('}')?;
+    Some(tail[..end_rel].trim())
+}
+
+fn parse_fbx_f32_array(data: &str) -> Vec<f32> {
+    data.split(|c: char| c == ',' || c.is_ascii_whitespace())
+        .filter(|s| !s.is_empty())
+        .filter_map(|s| s.parse::<f32>().ok())
+        .collect()
+}
+
+fn parse_fbx_i32_array(data: &str) -> Vec<i32> {
+    data.split(|c: char| c == ',' || c.is_ascii_whitespace())
+        .filter(|s| !s.is_empty())
+        .filter_map(|s| s.parse::<i32>().ok())
+        .collect()
+}
+
+fn load_obj_mesh(path: &Path) -> Result<MeshData, String> {
+    let opt = tobj::LoadOptions {
+        triangulate: true,
+        single_index: true,
+        ..Default::default()
+    };
+    let (models, _mats) = tobj::load_obj(path, &opt).map_err(|e| e.to_string())?;
+
+    let mut vertices = Vec::new();
+    let mut triangles = Vec::new();
+    for m in models {
+        let base = vertices.len() as u32;
+        let mesh = m.mesh;
+        for p in mesh.positions.chunks_exact(3) {
+            vertices.push(Vec3::new(p[0], p[1], p[2]));
+        }
+        for idx in mesh.indices.chunks_exact(3) {
+            triangles.push([base + idx[0], base + idx[1], base + idx[2]]);
+        }
+    }
+    if vertices.is_empty() || triangles.is_empty() {
+        return Err("OBJ sem vértices/triângulos".to_string());
+    }
+    let name = path
+        .file_name()
+        .and_then(|s| s.to_str())
+        .unwrap_or("OBJ")
+        .to_string();
+    Ok(MeshData {
+        name,
+        vertices,
+        triangles,
+    })
+}
+
+fn load_gltf_mesh(path: &Path) -> Result<MeshData, String> {
+    let (doc, buffers, _images) = gltf::import(path).map_err(|e| e.to_string())?;
+    let mut vertices = Vec::new();
+    let mut triangles = Vec::new();
+
+    for mesh in doc.meshes() {
+        for primitive in mesh.primitives() {
+            if primitive.mode() != gltf::mesh::Mode::Triangles {
+                continue;
+            }
+            let reader = primitive.reader(|buf| Some(&buffers[buf.index()].0));
+            let Some(positions) = reader.read_positions() else {
+                continue;
+            };
+
+            let base = vertices.len() as u32;
+            let local_verts: Vec<Vec3> = positions.map(|p| Vec3::new(p[0], p[1], p[2])).collect();
+            let vcount = local_verts.len() as u32;
+            vertices.extend(local_verts);
+
+            if let Some(indices) = reader.read_indices() {
+                let idx_u32: Vec<u32> = indices.into_u32().collect();
+                for tri in idx_u32.chunks_exact(3) {
+                    triangles.push([base + tri[0], base + tri[1], base + tri[2]]);
+                }
+            } else {
+                let mut i = 0;
+                while i + 2 < vcount {
+                    triangles.push([base + i, base + i + 1, base + i + 2]);
+                    i += 3;
+                }
+            }
+        }
+    }
+
+    if vertices.is_empty() || triangles.is_empty() {
+        return Err("GLTF/GLB sem triângulos suportados".to_string());
+    }
+    let name = path
+        .file_name()
+        .and_then(|s| s.to_str())
+        .unwrap_or("GLB")
+        .to_string();
+    Ok(MeshData {
+        name,
+        vertices,
+        triangles,
+    })
+}
+
+fn normalize_mesh(mesh: &mut MeshData) {
+    let mut min = Vec3::splat(f32::INFINITY);
+    let mut max = Vec3::splat(f32::NEG_INFINITY);
+    for v in &mesh.vertices {
+        min = min.min(*v);
+        max = max.max(*v);
+    }
+    let center = (min + max) * 0.5;
+    let extents = (max - min).max(Vec3::splat(1e-5));
+    let longest = extents.x.max(extents.y).max(extents.z);
+    let scale = if longest > 0.0 { 1.1 / longest } else { 1.0 };
+    for v in &mut mesh.vertices {
+        *v = (*v - center) * scale;
+    }
+}
+
 fn draw_view_orientation_gizmo(ui: &mut egui::Ui, rect: Rect, view: Mat4) -> Option<(f32, f32)> {
     let id = ui.id().with("viewport_view_orientation_gizmo");
     let resp = ui.interact(rect, id, Sense::click());
@@ -412,33 +745,33 @@ fn draw_view_orientation_gizmo(ui: &mut egui::Ui, rect: Rect, view: Mat4) -> Opt
     painter.circle_stroke(center, radius, Stroke::new(1.0, Color32::from_rgb(74, 82, 95)));
 
     let axes = [
-        (Vec3::X, Color32::from_rgb(228, 78, 88), 0.0_f32, 0.0_f32, "X"),
+        (Vec3::X, Color32::from_rgb(228, 78, 88), 0.0_f32, 0.0_f32, Some("X")),
         (
             Vec3::NEG_X,
             Color32::from_rgb(124, 50, 57),
             std::f32::consts::PI,
             0.0_f32,
-            "-X",
+            None,
         ),
-        (Vec3::Y, Color32::from_rgb(98, 206, 110), 0.0_f32, 1.45_f32, "Y"),
-        (Vec3::NEG_Y, Color32::from_rgb(54, 110, 62), 0.0_f32, -1.45_f32, "-Y"),
+        (Vec3::Y, Color32::from_rgb(98, 206, 110), 0.0_f32, 1.45_f32, Some("Y")),
+        (Vec3::NEG_Y, Color32::from_rgb(54, 110, 62), 0.0_f32, -1.45_f32, None),
         (
             Vec3::Z,
             Color32::from_rgb(84, 153, 236),
             std::f32::consts::FRAC_PI_2,
             0.0_f32,
-            "Z",
+            Some("Z"),
         ),
         (
             Vec3::NEG_Z,
             Color32::from_rgb(52, 92, 138),
             -std::f32::consts::FRAC_PI_2,
             0.0_f32,
-            "-Z",
+            None,
         ),
     ];
 
-    let mut projected: Vec<(f32, Pos2, Color32, f32, f32, &'static str)> = axes
+    let mut projected: Vec<(f32, Pos2, Color32, f32, f32, Option<&'static str>)> = axes
         .iter()
         .map(|(axis, color, yaw, pitch, label)| {
             let cam = view.transform_vector3(*axis);
@@ -461,18 +794,21 @@ fn draw_view_orientation_gizmo(ui: &mut egui::Ui, rect: Rect, view: Mat4) -> Opt
         if hit_resp.hovered() {
             painter.circle_stroke(pos, 6.0, Stroke::new(1.0, Color32::WHITE));
         }
-        let text_color = if depth > 0.0 {
-            Color32::from_rgb(245, 245, 245)
-        } else {
-            Color32::from_rgb(188, 188, 188)
-        };
-        painter.text(
-            pos + Vec2::new(7.5, 0.0),
-            Align2::LEFT_CENTER,
-            label,
-            FontId::proportional(9.0),
-            text_color,
-        );
+        if let Some(label) = label {
+            painter.circle_filled(
+                pos,
+                if depth > 0.0 { 7.0 } else { 6.4 },
+                Color32::from_rgba_unmultiplied(22, 24, 28, if depth > 0.0 { 220 } else { 185 }),
+            );
+            painter.circle_stroke(pos, 7.0, Stroke::new(1.0, draw_color));
+            painter.text(
+                pos,
+                Align2::CENTER_CENTER,
+                label,
+                FontId::proportional(9.0),
+                Color32::from_rgb(245, 245, 245),
+            );
+        }
         if hit_resp.clicked() {
             return Some((_yaw, _pitch));
         }
@@ -493,6 +829,43 @@ fn project_point(viewport: Rect, mvp: Mat4, point: Vec3) -> Option<Pos2> {
     let x = viewport.left() + (ndc.x * 0.5 + 0.5) * viewport.width();
     let y = viewport.top() + (1.0 - (ndc.y * 0.5 + 0.5)) * viewport.height();
     Some(egui::pos2(x, y))
+}
+
+fn draw_wire_mesh(ui: &mut egui::Ui, viewport: Rect, mvp: Mat4, mesh: &MeshData, selected: bool) {
+    let projected: Vec<Option<Pos2>> = mesh
+        .vertices
+        .iter()
+        .map(|p| project_point(viewport, mvp, *p))
+        .collect();
+    let stroke = if selected {
+        Stroke::new(1.5, Color32::from_rgb(15, 232, 121))
+    } else {
+        Stroke::new(1.1, Color32::from_rgb(150, 150, 165))
+    };
+
+    let mut drawn = HashSet::<(u32, u32)>::new();
+    for tri in &mesh.triangles {
+        let edges = [(tri[0], tri[1]), (tri[1], tri[2]), (tri[2], tri[0])];
+        for (a, b) in edges {
+            let key = if a < b { (a, b) } else { (b, a) };
+            if !drawn.insert(key) {
+                continue;
+            }
+            let ai = a as usize;
+            let bi = b as usize;
+            if let (Some(pa), Some(pb)) = (projected.get(ai).and_then(|p| *p), projected.get(bi).and_then(|p| *p))
+            {
+                ui.painter().line_segment([pa, pb], stroke);
+            }
+        }
+    }
+    ui.painter().text(
+        egui::pos2(viewport.left() + 12.0, viewport.top() + 60.0),
+        Align2::LEFT_TOP,
+        format!("Mesh: {}", mesh.name),
+        FontId::proportional(10.0),
+        Color32::from_gray(180),
+    );
 }
 
 fn draw_wire_cube(ui: &mut egui::Ui, viewport: Rect, mvp: Mat4, selected: bool) {

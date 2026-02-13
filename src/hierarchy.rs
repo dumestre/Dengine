@@ -33,6 +33,7 @@ pub struct HierarchyWindow {
     color_picker_open: bool,
     picker_color: Color32,
     language: EngineLanguage,
+    last_panel_rect: Option<Rect>,
 }
 
 #[derive(Clone, Copy)]
@@ -100,7 +101,33 @@ impl HierarchyWindow {
             color_picker_open: false,
             picker_color: Color32::from_rgb(15, 232, 121),
             language: EngineLanguage::Pt,
+            last_panel_rect: None,
         }
+    }
+
+    pub fn contains_point(&self, p: Pos2) -> bool {
+        self.last_panel_rect.is_some_and(|r| r.contains(p))
+    }
+
+    pub fn panel_rect(&self) -> Option<Rect> {
+        self.last_panel_rect
+    }
+
+    pub fn on_asset_dropped(&mut self, asset_name: &str) {
+        let stem = std::path::Path::new(asset_name)
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .unwrap_or("Imported Mesh");
+        let mut object_name = format!("{stem} (Mesh)");
+        let mut idx = 1;
+        while self.top_level_order.iter().any(|n| *n == object_name) {
+            idx += 1;
+            object_name = format!("{stem} (Mesh {idx})");
+        }
+        let leaked: &'static str = Box::leak(object_name.into_boxed_str());
+        self.top_level_order.push(leaked);
+        self.selected_object = leaked;
+        self.deleted_objects.remove(leaked);
     }
 
     fn tr(&self, key: &'static str) -> &'static str {
@@ -674,6 +701,7 @@ impl HierarchyWindow {
             .show(ctx, |ui| {
                 let (rect, _) = ui.allocate_exact_size(window_size, egui::Sense::hover());
                 panel_rect = rect;
+                self.last_panel_rect = Some(rect);
 
                 ui.painter()
                     .rect_filled(rect, 6.0, Color32::from_rgb(28, 28, 28));

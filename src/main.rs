@@ -47,6 +47,7 @@ struct EditorApp {
     language: EngineLanguage,
     project_collapsed: bool,
     windows_blur_initialized: bool,
+    last_pointer_pos: Option<egui::Pos2>,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -632,27 +633,6 @@ impl App for EditorApp {
         };
         self.viewport
             .show(ctx, mode_label, left_reserved, right_reserved, project_bottom);
-        let dropped_files = ctx.input(|i| i.raw.dropped_files.clone());
-        if !dropped_files.is_empty() {
-            let drop_pos = ctx.input(|i| i.pointer.hover_pos());
-            if let Some(pos) = drop_pos {
-                if self.viewport.contains_point(pos) {
-                    for file in dropped_files {
-                        let asset_name = if let Some(path) = &file.path {
-                            path.file_name()
-                                .and_then(|n| n.to_str())
-                                .map(|s| s.to_owned())
-                                .unwrap_or_else(|| file.name.clone())
-                        } else {
-                            file.name.clone()
-                        };
-                        if !asset_name.is_empty() {
-                            self.viewport.on_asset_dropped(&asset_name);
-                        }
-                    }
-                }
-            }
-        }
 
         // Janela Inspetor
         self.inspector
@@ -661,6 +641,7 @@ impl App for EditorApp {
         let i_right = self.inspector.docked_right_width();
         self.hierarchy
             .show(ctx, i_left, i_right, project_bottom, self.language);
+
         let engine_busy = self.is_playing;
 
         if self.project_collapsed {
@@ -738,6 +719,116 @@ impl App for EditorApp {
                 });
         } else if self.project.show(ctx, self.language) {
             self.project_collapsed = true;
+        }
+
+        let pointer_pos = ctx.input(|i| i.pointer.hover_pos().or(i.pointer.latest_pos()));
+        if pointer_pos.is_some() {
+            self.last_pointer_pos = pointer_pos;
+        }
+        let drop_pos = pointer_pos.or(self.last_pointer_pos);
+        let pointer_down = ctx.input(|i| i.pointer.primary_down());
+        if !pointer_down {
+            if let (Some(asset_name), Some(pos)) = (self.project.dragging_asset_name(), drop_pos) {
+                if self.viewport.contains_point(pos) {
+                    if let Some(path) = self.project.dragging_asset_path() {
+                        self.viewport.on_asset_file_dropped(&path);
+                    } else {
+                        self.viewport.on_asset_dropped(asset_name);
+                    }
+                    self.hierarchy.on_asset_dropped(asset_name);
+                } else if self.hierarchy.contains_point(pos) {
+                    self.hierarchy.on_asset_dropped(asset_name);
+                }
+            }
+            self.project.clear_dragging_asset();
+        }
+
+        let dropped_files = ctx.input(|i| i.raw.dropped_files.clone());
+        if !dropped_files.is_empty() {
+            if let Some(pos) = drop_pos {
+                for file in dropped_files {
+                    let asset_name = if let Some(path) = &file.path {
+                        path.file_name()
+                            .and_then(|n| n.to_str())
+                            .map(|s| s.to_owned())
+                            .unwrap_or_else(|| file.name.clone())
+                    } else {
+                        file.name.clone()
+                    };
+                    if asset_name.is_empty() {
+                        continue;
+                    }
+                    if let Some(path) = &file.path {
+                        self.project.import_file_path(path, self.language);
+                    }
+                    if self.viewport.contains_point(pos) {
+                        if let Some(path) = &file.path {
+                            self.viewport.on_asset_file_dropped(path);
+                        } else {
+                            self.viewport.on_asset_dropped(&asset_name);
+                        }
+                        self.hierarchy.on_asset_dropped(&asset_name);
+                    } else if self.hierarchy.contains_point(pos) {
+                        self.hierarchy.on_asset_dropped(&asset_name);
+                    }
+                }
+            } else {
+                for file in dropped_files {
+                    if let Some(path) = &file.path {
+                        self.project.import_file_path(path, self.language);
+                        self.viewport.on_asset_file_dropped(path);
+                        let asset_name = path
+                            .file_name()
+                            .and_then(|n| n.to_str())
+                            .unwrap_or("Imported");
+                        self.hierarchy.on_asset_dropped(asset_name);
+                    }
+                }
+            }
+        }
+
+        if let (Some(asset_name), Some(pos)) = (self.project.dragging_asset_name(), drop_pos) {
+            let painter =
+                ctx.layer_painter(egui::LayerId::new(egui::Order::Tooltip, egui::Id::new("asset_drag_overlay")));
+            let preview_rect = egui::Rect::from_min_size(pos + egui::vec2(14.0, 12.0), egui::vec2(170.0, 24.0));
+            painter.rect_filled(
+                preview_rect,
+                4.0,
+                egui::Color32::from_rgba_unmultiplied(26, 32, 34, 220),
+            );
+            painter.rect_stroke(
+                preview_rect,
+                4.0,
+                egui::Stroke::new(1.0, egui::Color32::from_rgb(80, 120, 100)),
+                egui::StrokeKind::Outside,
+            );
+            painter.text(
+                preview_rect.left_center() + egui::vec2(8.0, 0.0),
+                egui::Align2::LEFT_CENTER,
+                asset_name,
+                egui::FontId::proportional(12.0),
+                egui::Color32::from_gray(230),
+            );
+
+            if self.viewport.contains_point(pos) {
+                if let Some(rect) = self.viewport.panel_rect() {
+                    painter.rect_stroke(
+                        rect.shrink(2.0),
+                        4.0,
+                        egui::Stroke::new(2.0, egui::Color32::from_rgb(15, 232, 121)),
+                        egui::StrokeKind::Outside,
+                    );
+                }
+            } else if self.hierarchy.contains_point(pos) {
+                if let Some(rect) = self.hierarchy.panel_rect() {
+                    painter.rect_stroke(
+                        rect.shrink(2.0),
+                        6.0,
+                        egui::Stroke::new(2.0, egui::Color32::from_rgb(15, 232, 121)),
+                        egui::StrokeKind::Outside,
+                    );
+                }
+            }
         }
     }
 }
@@ -821,6 +912,7 @@ fn main() -> eframe::Result<()> {
                 language: EngineLanguage::Pt,
                 project_collapsed: false,
                 windows_blur_initialized: false,
+                last_pointer_pos: None,
             }))
         }),
     )
