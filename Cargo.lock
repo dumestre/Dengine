@@ -8,8 +8,10 @@ version = "0.1.0"
 dependencies = [
  "eframe",
  "egui",
+ "egui-gizmo",
  "egui_dock",
  "epaint",
+ "glam 0.32.0",
  "image",
  "raw-window-handle",
  "windows-sys 0.59.0",
@@ -866,6 +868,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "egui-gizmo"
+version = "0.16.2"
+source = "git+https://github.com/dumestre/Eguizmo?branch=main#a0596fed0f85fd115bb23ee40eee7080de8d3ae3"
+dependencies = [
+ "egui",
+ "glam 0.31.1",
+ "mint",
+ "serde",
+]
+
+[[package]]
 name = "egui-wgpu"
 version = "0.33.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1237,6 +1250,24 @@ dependencies = [
  "khronos_api",
  "log",
  "xml-rs",
+]
+
+[[package]]
+name = "glam"
+version = "0.31.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "556f6b2ea90b8d15a74e0e7bb41671c9bdf38cd9f78c284d750b9ce58a2b5be7"
+dependencies = [
+ "mint",
+]
+
+[[package]]
+name = "glam"
+version = "0.32.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "34627c5158214743a374170fed714833fdf4e4b0cbcc1ea98417866a4c5d4441"
+dependencies = [
+ "mint",
 ]
 
 [[package]]
@@ -1756,6 +1787,12 @@ dependencies = [
  "adler2",
  "simd-adler32",
 ]
+
+[[package]]
+name = "mint"
+version = "0.5.9"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e53debba6bda7a793e5f99b8dacf19e626084f525f7829104ba9898f367d85ff"
 
 [[package]]
 name = "moxcms"

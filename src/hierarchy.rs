@@ -1106,4 +1106,20 @@ impl HierarchyWindow {
         }
     }
 
+    pub fn docked_left_width(&self) -> f32 {
+        if self.open && matches!(self.dock_side, Some(HierarchyDockSide::Left)) {
+            self.window_width
+        } else {
+            0.0
+        }
+    }
+
+    pub fn docked_right_width(&self) -> f32 {
+        if self.open && matches!(self.dock_side, Some(HierarchyDockSide::Right)) {
+            self.window_width
+        } else {
+            0.0
+        }
+    }
+
 }

@@ -2,6 +2,7 @@
 mod inspector;
 mod hierarchy;
 mod project;
+mod viewport;
 
 use eframe::egui::{TextureHandle, TextureOptions};
 use eframe::{App, Frame, NativeOptions, egui};
@@ -9,6 +10,7 @@ use epaint::ColorImage;
 use hierarchy::HierarchyWindow;
 use inspector::InspectorWindow;
 use project::ProjectWindow;
+use viewport::ViewportPanel;
 use raw_window_handle::{HasWindowHandle, RawWindowHandle};
 use std::sync::Arc;
 #[cfg(target_os = "windows")]
@@ -28,6 +30,7 @@ struct EditorApp {
     inspector: InspectorWindow,
     hierarchy: HierarchyWindow,
     project: ProjectWindow,
+    viewport: ViewportPanel,
     app_icon_texture: Option<TextureHandle>,
     cena_icon: Option<TextureHandle>,
     game_icon: Option<TextureHandle>,
@@ -183,7 +186,7 @@ impl App for EditorApp {
             .exact_height(30.0)
             .frame(
                 egui::Frame::new()
-                    .fill(egui::Color32::from_rgba_unmultiplied(24, 31, 30, 56))
+                    .fill(egui::Color32::from_rgba_unmultiplied(24, 31, 30, 76))
                     .stroke(egui::Stroke::new(
                         1.0,
                         egui::Color32::from_rgba_unmultiplied(210, 228, 222, 42),
@@ -194,7 +197,7 @@ impl App for EditorApp {
                 ui.painter().rect_filled(
                     title_rect,
                     0.0,
-                    egui::Color32::from_rgba_unmultiplied(245, 252, 249, 14),
+                    egui::Color32::from_rgba_unmultiplied(245, 252, 249, 18),
                 );
 
                 let drag_rect = egui::Rect::from_min_max(
@@ -612,6 +615,15 @@ impl App for EditorApp {
         } else {
             self.project.docked_bottom_height()
         };
+        let left_reserved = self.inspector.docked_left_width() + self.hierarchy.docked_left_width();
+        let right_reserved = self.inspector.docked_right_width() + self.hierarchy.docked_right_width();
+        let mode_label = if self.selected_mode == ToolbarMode::Cena {
+            "Cena"
+        } else {
+            "Game"
+        };
+        self.viewport
+            .show(ctx, mode_label, left_reserved, right_reserved, project_bottom);
 
         // Janela Inspetor
         self.inspector
@@ -763,6 +775,7 @@ fn main() -> eframe::Result<()> {
                 inspector: InspectorWindow::new(),
                 hierarchy: HierarchyWindow::new(),
                 project: ProjectWindow::new(),
+                viewport: ViewportPanel::new(),
                 app_icon_texture: None,
                 cena_icon: None,
                 game_icon: None,
