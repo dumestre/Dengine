@@ -17,6 +17,7 @@ pub struct ViewportPanel {
     rotation_icon: Option<TextureHandle>,
     scale_icon: Option<TextureHandle>,
     transform_icon: Option<TextureHandle>,
+    last_viewport_rect: Option<Rect>,
 }
 
 impl ViewportPanel {
@@ -35,6 +36,17 @@ impl ViewportPanel {
             rotation_icon: None,
             scale_icon: None,
             transform_icon: None,
+            last_viewport_rect: None,
+        }
+    }
+
+    pub fn contains_point(&self, p: Pos2) -> bool {
+        self.last_viewport_rect.is_some_and(|r| r.contains(p))
+    }
+
+    pub fn on_asset_dropped(&mut self, asset_name: &str) {
+        if asset_name.ends_with(".fbx") || asset_name.ends_with(".obj") || asset_name.ends_with(".glb") {
+            self.object_selected = true;
         }
     }
 
@@ -102,8 +114,10 @@ impl ViewportPanel {
                     egui::pos2(content.right() - right_reserved, content.bottom() - bottom_reserved),
                 );
                 if viewport_rect.width() < 80.0 || viewport_rect.height() < 80.0 {
+                    self.last_viewport_rect = None;
                     return;
                 }
+                self.last_viewport_rect = Some(viewport_rect);
 
                 ui.painter()
                     .rect_filled(viewport_rect, 0.0, Color32::from_rgb(22, 22, 24));
@@ -232,7 +246,7 @@ impl ViewportPanel {
                             .is_some_and(|p| controls_rect.contains(p))
                     });
                     let view_gizmo_rect = Rect::from_min_size(
-                        egui::pos2(viewport_rect.right() - 66.0, controls_rect.bottom() + 8.0),
+                        egui::pos2(viewport_rect.right() - 66.0, viewport_rect.bottom() - 66.0),
                         egui::vec2(56.0, 56.0),
                     );
 
@@ -398,35 +412,43 @@ fn draw_view_orientation_gizmo(ui: &mut egui::Ui, rect: Rect, view: Mat4) -> Opt
     painter.circle_stroke(center, radius, Stroke::new(1.0, Color32::from_rgb(74, 82, 95)));
 
     let axes = [
-        (Vec3::X, Color32::from_rgb(228, 78, 88), 0.0_f32, 0.0_f32),
-        (Vec3::NEG_X, Color32::from_rgb(124, 50, 57), std::f32::consts::PI, 0.0_f32),
-        (Vec3::Y, Color32::from_rgb(98, 206, 110), 0.0_f32, 1.45_f32),
-        (Vec3::NEG_Y, Color32::from_rgb(54, 110, 62), 0.0_f32, -1.45_f32),
+        (Vec3::X, Color32::from_rgb(228, 78, 88), 0.0_f32, 0.0_f32, "X"),
+        (
+            Vec3::NEG_X,
+            Color32::from_rgb(124, 50, 57),
+            std::f32::consts::PI,
+            0.0_f32,
+            "-X",
+        ),
+        (Vec3::Y, Color32::from_rgb(98, 206, 110), 0.0_f32, 1.45_f32, "Y"),
+        (Vec3::NEG_Y, Color32::from_rgb(54, 110, 62), 0.0_f32, -1.45_f32, "-Y"),
         (
             Vec3::Z,
             Color32::from_rgb(84, 153, 236),
             std::f32::consts::FRAC_PI_2,
             0.0_f32,
+            "Z",
         ),
         (
             Vec3::NEG_Z,
             Color32::from_rgb(52, 92, 138),
             -std::f32::consts::FRAC_PI_2,
             0.0_f32,
+            "-Z",
         ),
     ];
 
-    let mut projected: Vec<(f32, Pos2, Color32, f32, f32)> = axes
+    let mut projected: Vec<(f32, Pos2, Color32, f32, f32, &'static str)> = axes
         .iter()
-        .map(|(axis, color, yaw, pitch)| {
+        .map(|(axis, color, yaw, pitch, label)| {
             let cam = view.transform_vector3(*axis);
             let pos = center + Vec2::new(cam.x, -cam.y) * (radius * 0.68);
-            (cam.z, pos, *color, *yaw, *pitch)
+            (cam.z, pos, *color, *yaw, *pitch, *label)
         })
         .collect();
     projected.sort_by(|a, b| a.0.total_cmp(&b.0));
 
-    for (depth, pos, color, _yaw, _pitch) in projected {
+    for (depth, pos, color, _yaw, _pitch, label) in projected {
         let thickness = if depth > 0.0 { 2.1 } else { 1.4 };
         let alpha = if depth > 0.0 { 255 } else { 155 };
         let draw_color = Color32::from_rgba_unmultiplied(color.r(), color.g(), color.b(), alpha);
@@ -439,6 +461,18 @@ fn draw_view_orientation_gizmo(ui: &mut egui::Ui, rect: Rect, view: Mat4) -> Opt
         if hit_resp.hovered() {
             painter.circle_stroke(pos, 6.0, Stroke::new(1.0, Color32::WHITE));
         }
+        let text_color = if depth > 0.0 {
+            Color32::from_rgb(245, 245, 245)
+        } else {
+            Color32::from_rgb(188, 188, 188)
+        };
+        painter.text(
+            pos + Vec2::new(7.5, 0.0),
+            Align2::LEFT_CENTER,
+            label,
+            FontId::proportional(9.0),
+            text_color,
+        );
         if hit_resp.clicked() {
             return Some((_yaw, _pitch));
         }

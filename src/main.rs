@@ -632,6 +632,27 @@ impl App for EditorApp {
         };
         self.viewport
             .show(ctx, mode_label, left_reserved, right_reserved, project_bottom);
+        let dropped_files = ctx.input(|i| i.raw.dropped_files.clone());
+        if !dropped_files.is_empty() {
+            let drop_pos = ctx.input(|i| i.pointer.hover_pos());
+            if let Some(pos) = drop_pos {
+                if self.viewport.contains_point(pos) {
+                    for file in dropped_files {
+                        let asset_name = if let Some(path) = &file.path {
+                            path.file_name()
+                                .and_then(|n| n.to_str())
+                                .map(|s| s.to_owned())
+                                .unwrap_or_else(|| file.name.clone())
+                        } else {
+                            file.name.clone()
+                        };
+                        if !asset_name.is_empty() {
+                            self.viewport.on_asset_dropped(&asset_name);
+                        }
+                    }
+                }
+            }
+        }
 
         // Janela Inspetor
         self.inspector
