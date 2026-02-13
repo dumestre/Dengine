@@ -1,5 +1,6 @@
-use eframe::egui::{self, Align2, Color32, FontId, Pos2, Rect, Sense, Stroke};
+use eframe::egui::{self, Align2, Color32, FontId, PointerButton, Pos2, Rect, Sense, Stroke, TextureHandle, TextureOptions};
 use egui_gizmo::{Gizmo, GizmoMode, GizmoOrientation};
+use epaint::ColorImage;
 use glam::{Mat4, Vec3};
 
 pub struct ViewportPanel {
@@ -13,6 +14,9 @@ pub struct ViewportPanel {
     camera_distance: f32,
     camera_target: Vec3,
     object_selected: bool,
+    rotation_icon: Option<TextureHandle>,
+    scale_icon: Option<TextureHandle>,
+    transform_icon: Option<TextureHandle>,
 }
 
 impl ViewportPanel {
@@ -28,7 +32,51 @@ impl ViewportPanel {
             camera_distance: 4.8,
             camera_target: Vec3::ZERO,
             object_selected: false,
+            rotation_icon: None,
+            scale_icon: None,
+            transform_icon: None,
         }
+    }
+
+    fn ensure_icons_loaded(&mut self, ctx: &egui::Context) {
+        if self.rotation_icon.is_none() {
+            self.rotation_icon = load_png_as_texture(ctx, "src/assets/icons/rotation.png");
+        }
+        if self.scale_icon.is_none() {
+            self.scale_icon = load_png_as_texture(ctx, "src/assets/icons/scale.png");
+        }
+        if self.transform_icon.is_none() {
+            self.transform_icon = load_png_as_texture(ctx, "src/assets/icons/transform.png");
+        }
+    }
+
+    fn gizmo_icon_button(
+        ui: &mut egui::Ui,
+        texture: Option<&TextureHandle>,
+        fallback: &str,
+        selected: bool,
+        tooltip: &str,
+    ) -> bool {
+        let button = if let Some(texture) = texture {
+            egui::Button::image(egui::Image::new(texture).fit_to_exact_size(egui::vec2(14.0, 14.0)))
+        } else {
+            egui::Button::new(fallback)
+        }
+        .corner_radius(6)
+        .fill(if selected {
+            Color32::from_rgb(64, 64, 68)
+        } else {
+            Color32::from_rgb(42, 42, 46)
+        })
+        .stroke(if selected {
+            Stroke::new(1.0, Color32::from_rgb(15, 232, 121))
+        } else {
+            Stroke::new(1.0, Color32::from_rgb(72, 72, 78))
+        });
+
+        ui.add_sized([28.0, 24.0], button)
+            .on_hover_text(tooltip)
+            .clicked()
     }
 
     pub fn show(
@@ -39,6 +87,8 @@ impl ViewportPanel {
         right_reserved: f32,
         bottom_reserved: f32,
     ) {
+        self.ensure_icons_loaded(ctx);
+
         egui::CentralPanel::default()
             .frame(
                 egui::Frame::new()
@@ -94,7 +144,7 @@ impl ViewportPanel {
                     ui.interact(viewport_rect, ui.id().with("scene_viewport_input"), Sense::click_and_drag());
 
                 let controls_rect = Rect::from_min_max(
-                    egui::pos2(viewport_rect.right() - 370.0, viewport_rect.top() + 6.0),
+                    egui::pos2(viewport_rect.right() - 395.0, viewport_rect.top() + 6.0),
                     egui::pos2(viewport_rect.right() - 8.0, viewport_rect.top() + 32.0),
                 );
                 ui.scope_builder(
@@ -126,65 +176,35 @@ impl ViewportPanel {
                         }
                         ui.add_space(10.0);
 
-                        if ui
-                            .add_sized(
-                                [64.0, 22.0],
-                                egui::Button::new("Move")
-                                    .corner_radius(6)
-                                    .fill(if self.gizmo_mode == GizmoMode::Translate {
-                                        Color32::from_rgb(64, 64, 68)
-                                    } else {
-                                        Color32::from_rgb(42, 42, 46)
-                                    })
-                                    .stroke(if self.gizmo_mode == GizmoMode::Translate {
-                                        Stroke::new(1.0, Color32::from_rgb(15, 232, 121))
-                                    } else {
-                                        Stroke::new(1.0, Color32::from_rgb(72, 72, 78))
-                                    }),
-                            )
-                            .clicked()
-                        {
+                        if Self::gizmo_icon_button(
+                            ui,
+                            self.transform_icon.as_ref(),
+                            "T",
+                            self.gizmo_mode == GizmoMode::Translate,
+                            "Transform",
+                        ) {
                             self.gizmo_mode = GizmoMode::Translate;
+                            self.object_selected = true;
                         }
-                        if ui
-                            .add_sized(
-                                [66.0, 22.0],
-                                egui::Button::new("Rotate")
-                                    .corner_radius(6)
-                                    .fill(if self.gizmo_mode == GizmoMode::Rotate {
-                                        Color32::from_rgb(64, 64, 68)
-                                    } else {
-                                        Color32::from_rgb(42, 42, 46)
-                                    })
-                                    .stroke(if self.gizmo_mode == GizmoMode::Rotate {
-                                        Stroke::new(1.0, Color32::from_rgb(15, 232, 121))
-                                    } else {
-                                        Stroke::new(1.0, Color32::from_rgb(72, 72, 78))
-                                    }),
-                            )
-                            .clicked()
-                        {
-                            self.gizmo_mode = GizmoMode::Rotate;
-                        }
-                        if ui
-                            .add_sized(
-                                [60.0, 22.0],
-                                egui::Button::new("Scale")
-                                    .corner_radius(6)
-                                    .fill(if self.gizmo_mode == GizmoMode::Scale {
-                                        Color32::from_rgb(64, 64, 68)
-                                    } else {
-                                        Color32::from_rgb(42, 42, 46)
-                                    })
-                                    .stroke(if self.gizmo_mode == GizmoMode::Scale {
-                                        Stroke::new(1.0, Color32::from_rgb(15, 232, 121))
-                                    } else {
-                                        Stroke::new(1.0, Color32::from_rgb(72, 72, 78))
-                                    }),
-                            )
-                            .clicked()
-                        {
+                        if Self::gizmo_icon_button(
+                            ui,
+                            self.scale_icon.as_ref(),
+                            "S",
+                            self.gizmo_mode == GizmoMode::Scale,
+                            "Scale",
+                        ) {
                             self.gizmo_mode = GizmoMode::Scale;
+                            self.object_selected = true;
+                        }
+                        if Self::gizmo_icon_button(
+                            ui,
+                            self.rotation_icon.as_ref(),
+                            "R",
+                            self.gizmo_mode == GizmoMode::Rotate,
+                            "Rotation",
+                        ) {
+                            self.gizmo_mode = GizmoMode::Rotate;
+                            self.object_selected = true;
                         }
                     },
                 );
@@ -192,43 +212,87 @@ impl ViewportPanel {
                 ui.painter().text(
                     egui::pos2(viewport_rect.left() + 12.0, viewport_rect.bottom() - 10.0),
                     Align2::LEFT_BOTTOM,
-                    "LMB: orbitar | MMB: pan | RMB: selecionar | Ctrl+Scroll: zoom",
+                    "Mouse (Unity): Alt+LMB orbitar | RMB arrastar orbitar (3a pessoa) | MMB pan | Alt+RMB zoom | Scroll zoom | LMB selecionar | Touchpad: clique selecionar | 2 dedos pan | Pinch zoom | Shift+2 dedos orbitar",
                     FontId::proportional(11.0),
                     Color32::from_gray(170),
                 );
 
                 if self.is_3d {
                     let pointer_delta = ctx.input(|i| i.pointer.delta());
-                    let scroll_delta = ctx.input(|i| i.smooth_scroll_delta.y);
-                    let ctrl_down = ctx.input(|i| i.modifiers.ctrl);
+                    let scroll_delta = ctx.input(|i| i.smooth_scroll_delta);
+                    let pinch_zoom = ctx.input(|i| i.zoom_delta());
+                    let alt_down = ctx.input(|i| i.modifiers.alt);
+                    let shift_down = ctx.input(|i| i.modifiers.shift);
                     let primary_down = ctx.input(|i| i.pointer.primary_down());
                     let middle_down = ctx.input(|i| i.pointer.middle_down());
+                    let secondary_down = ctx.input(|i| i.pointer.secondary_down());
+                    let pointer_over_controls = ctx.input(|i| {
+                        i.pointer
+                            .hover_pos()
+                            .is_some_and(|p| controls_rect.contains(p))
+                    });
+                    let can_navigate_camera = viewport_resp.hovered() && !pointer_over_controls;
 
-                    if viewport_resp.hovered() {
-                        if primary_down {
+                    if can_navigate_camera {
+                        // Unity-like orbit: Alt + LMB.
+                        if alt_down && primary_down {
                             self.camera_yaw -= pointer_delta.x * 0.012;
                             self.camera_pitch =
                                 (self.camera_pitch - pointer_delta.y * 0.009).clamp(-1.45, 1.45);
                             ui.ctx().request_repaint();
                         }
 
+                        // Third-person orbit: RMB drag (without Alt).
+                        if secondary_down && !alt_down {
+                            self.camera_yaw -= pointer_delta.x * 0.012;
+                            self.camera_pitch =
+                                (self.camera_pitch - pointer_delta.y * 0.009).clamp(-1.45, 1.45);
+                            ui.ctx().request_repaint();
+                        }
+
+                        // Unity-like pan: MMB drag.
                         if middle_down {
-                            if ctrl_down {
-                                self.camera_distance =
-                                    (self.camera_distance + pointer_delta.y * 0.02).clamp(0.8, 80.0);
+                            let right = Vec3::new(self.camera_yaw.sin(), 0.0, -self.camera_yaw.cos());
+                            let up = Vec3::Y;
+                            let pan_scale = self.camera_distance * 0.002;
+                            self.camera_target += (-pointer_delta.x * pan_scale) * right;
+                            self.camera_target += (pointer_delta.y * pan_scale) * up;
+                            ui.ctx().request_repaint();
+                        }
+
+                        // Unity-like dolly: Alt + RMB drag.
+                        if alt_down && secondary_down && pointer_delta.y.abs() > 0.0 {
+                            self.camera_distance =
+                                (self.camera_distance + pointer_delta.y * 0.02).clamp(0.8, 80.0);
+                            ui.ctx().request_repaint();
+                        }
+
+                        // Scroll zoom (mouse wheel / touchpad scroll).
+                        if scroll_delta.y.abs() > 0.0 {
+                            self.camera_distance =
+                                (self.camera_distance - scroll_delta.y * 0.01).clamp(0.8, 80.0);
+                            ui.ctx().request_repaint();
+                        }
+
+                        // Touchpad: dois dedos = pan; Shift + dois dedos = orbita.
+                        if scroll_delta.length_sq() > 0.0 {
+                            if shift_down {
+                                self.camera_yaw -= scroll_delta.x * 0.008;
+                                self.camera_pitch =
+                                    (self.camera_pitch - scroll_delta.y * 0.006).clamp(-1.45, 1.45);
                             } else {
                                 let right = Vec3::new(self.camera_yaw.sin(), 0.0, -self.camera_yaw.cos());
                                 let up = Vec3::Y;
-                                let pan_scale = self.camera_distance * 0.002;
-                                self.camera_target += (-pointer_delta.x * pan_scale) * right;
-                                self.camera_target += (pointer_delta.y * pan_scale) * up;
+                                let pan_scale = self.camera_distance * 0.0016;
+                                self.camera_target += (-scroll_delta.x * pan_scale) * right;
+                                self.camera_target += (scroll_delta.y * pan_scale) * up;
                             }
                             ui.ctx().request_repaint();
                         }
 
-                        if ctrl_down && scroll_delta.abs() > 0.0 {
-                            self.camera_distance =
-                                (self.camera_distance - scroll_delta * 0.01).clamp(0.8, 80.0);
+                        // Touchpad pinch: aproxima/afasta camera.
+                        if (pinch_zoom - 1.0).abs() > 1e-4 {
+                            self.camera_distance = (self.camera_distance / pinch_zoom).clamp(0.8, 80.0);
                             ui.ctx().request_repaint();
                         }
                     }
@@ -248,7 +312,10 @@ impl ViewportPanel {
                     };
                     let mvp = proj * view * self.model_matrix;
 
-                    if viewport_resp.secondary_clicked() {
+                    if viewport_resp.clicked_by(PointerButton::Primary)
+                        && !pointer_over_controls
+                        && !alt_down
+                    {
                         let hover_pos = ctx.input(|i| i.pointer.hover_pos());
                         let object_screen = project_point(viewport_rect, mvp, Vec3::ZERO);
                         self.object_selected = if let (Some(cursor), Some(center)) = (hover_pos, object_screen) {
@@ -276,6 +343,14 @@ impl ViewportPanel {
                 }
             });
     }
+}
+
+fn load_png_as_texture(ctx: &egui::Context, png_path: &str) -> Option<TextureHandle> {
+    let bytes = std::fs::read(png_path).ok()?;
+    let rgba = image::load_from_memory(&bytes).ok()?.to_rgba8();
+    let size = [rgba.width() as usize, rgba.height() as usize];
+    let color_image = ColorImage::from_rgba_unmultiplied(size, rgba.as_raw());
+    Some(ctx.load_texture(png_path.to_owned(), color_image, TextureOptions::LINEAR))
 }
 
 fn project_point(viewport: Rect, mvp: Mat4, point: Vec3) -> Option<Pos2> {
