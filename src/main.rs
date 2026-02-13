@@ -14,6 +14,9 @@ use project::ProjectWindow;
 use viewport::ViewportPanel;
 use viewport_gpu::ViewportGpuRenderer;
 use raw_window_handle::{HasWindowHandle, RawWindowHandle};
+use std::fs::File;
+use std::io::Write;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 #[cfg(target_os = "windows")]
 use windows_sys::Win32::Graphics::Dwm::DwmSetWindowAttribute;
@@ -42,6 +45,8 @@ struct EditorApp {
     stop_icon: Option<TextureHandle>,
     files_icon: Option<TextureHandle>,
     rig_icon: Option<TextureHandle>,
+    animador_icon: Option<TextureHandle>,
+    fios_icon: Option<TextureHandle>,
     lang_pt_icon: Option<TextureHandle>,
     lang_en_icon: Option<TextureHandle>,
     lang_es_icon: Option<TextureHandle>,
@@ -49,10 +54,16 @@ struct EditorApp {
     is_window_maximized: bool,
     selected_mode: ToolbarMode,
     rig_enabled: bool,
+    animator_enabled: bool,
+    fios_enabled: bool,
     language: EngineLanguage,
     project_collapsed: bool,
     windows_blur_initialized: bool,
     last_pointer_pos: Option<egui::Pos2>,
+    show_hub: bool,
+    hub_projects: Vec<PathBuf>,
+    hub_selected: Option<usize>,
+    current_project: Option<PathBuf>,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -82,6 +93,357 @@ fn load_icon_data_from_png(png_path: &str) -> Option<Arc<egui::IconData>> {
 }
 
 impl EditorApp {
+    fn current_project_label(&self) -> String {
+        self.current_project
+            .as_ref()
+            .map(|p| p.to_string_lossy().to_string())
+            .unwrap_or_else(|| "Sem projeto".to_string())
+    }
+
+    fn refresh_hub_projects(&mut self) {
+        let mut out = Vec::<PathBuf>::new();
+        let root = Path::new(".");
+        collect_deng_files(root, root, 0, &mut out);
+        out.sort_by_key(|p| p.to_string_lossy().to_string().to_ascii_lowercase());
+        self.hub_projects = out;
+        if let Some(sel) = self.hub_selected {
+            if sel >= self.hub_projects.len() {
+                self.hub_selected = None;
+            }
+        }
+    }
+
+    fn create_project_dialog(&mut self) {
+        let picked = rfd::FileDialog::new()
+            .add_filter("Dengine Project", &["deng"])
+            .set_file_name("NovoProjeto.deng")
+            .save_file();
+        let Some(mut path) = picked else {
+            return;
+        };
+        if path
+            .extension()
+            .and_then(|e| e.to_str())
+            .map(|e| e.eq_ignore_ascii_case("deng"))
+            != Some(true)
+        {
+            path.set_extension("deng");
+        }
+
+        let parent = path.parent().unwrap_or_else(|| Path::new("."));
+        let stem = path
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .unwrap_or("NovoProjeto")
+            .to_string();
+        let project_dir = parent.join(&stem);
+        let _ = std::fs::create_dir_all(project_dir.join("Assets"));
+        let project_file = project_dir.join(format!("{stem}.deng"));
+
+        if let Ok(mut f) = File::create(&project_file) {
+            let _ = f.write_all(b"DENG1\n");
+        }
+        self.current_project = Some(project_file.clone());
+        self.show_hub = false;
+        self.refresh_hub_projects();
+    }
+
+    fn open_project_dialog(&mut self) {
+        let picked = rfd::FileDialog::new()
+            .add_filter("Dengine Project", &["deng"])
+            .pick_file();
+        let Some(path) = picked else {
+            return;
+        };
+        self.current_project = Some(path);
+        self.show_hub = false;
+    }
+
+    fn draw_hub(&mut self, ctx: &egui::Context) {
+        let bg = egui::Color32::from_rgb(20, 23, 24);
+        let panel_fill = egui::Color32::from_rgb(28, 33, 34);
+        let panel_stroke = egui::Color32::from_rgba_unmultiplied(210, 228, 222, 42);
+        let accent = egui::Color32::from_rgb(15, 232, 121);
+        let muted = egui::Color32::from_gray(170);
+
+        egui::CentralPanel::default()
+            .frame(egui::Frame::new().fill(bg))
+            .show(ctx, |ui| {
+                ui.add_space(14.0);
+                egui::Frame::new()
+                    .fill(panel_fill)
+                    .stroke(egui::Stroke::new(1.0, panel_stroke))
+                    .corner_radius(8)
+                    .inner_margin(egui::Margin::same(12))
+                    .show(ui, |ui| {
+                        ui.horizontal(|ui| {
+                            if let Some(icon) = &self.app_icon_texture {
+                                ui.add(
+                                    egui::Image::new(icon)
+                                        .fit_to_exact_size(egui::Vec2::new(18.0, 18.0)),
+                                );
+                                ui.add_space(6.0);
+                            }
+                            ui.vertical(|ui| {
+                                ui.label(
+                                    egui::RichText::new("Dengine Hub")
+                                        .strong()
+                                        .size(18.0)
+                                        .color(egui::Color32::from_gray(230)),
+                                );
+                                ui.label(
+                                    egui::RichText::new("Projetos locais")
+                                        .size(12.0)
+                                        .color(muted),
+                                );
+                            });
+                            ui.with_layout(
+                                egui::Layout::right_to_left(egui::Align::Center),
+                                |ui| {
+                                    let control_size = egui::Vec2::new(22.0, 22.0);
+
+                                    let (close_rect, close_resp) =
+                                        ui.allocate_exact_size(control_size, egui::Sense::click());
+                                    if close_resp.hovered() {
+                                        ui.painter().circle_filled(
+                                            close_rect.center(),
+                                            9.0,
+                                            egui::Color32::from_rgba_unmultiplied(255, 255, 255, 28),
+                                        );
+                                    }
+                                    ui.painter().circle_filled(
+                                        close_rect.center(),
+                                        5.0,
+                                        egui::Color32::from_rgb(0xD0, 0x24, 0x24),
+                                    );
+                                    if close_resp.clicked() {
+                                        ui.ctx().send_viewport_cmd(egui::ViewportCommand::Close);
+                                    }
+
+                                    let (max_rect, max_resp) =
+                                        ui.allocate_exact_size(control_size, egui::Sense::click());
+                                    if max_resp.hovered() {
+                                        ui.painter().circle_filled(
+                                            max_rect.center(),
+                                            9.0,
+                                            egui::Color32::from_rgba_unmultiplied(255, 255, 255, 28),
+                                        );
+                                    }
+                                    ui.painter().circle_filled(
+                                        max_rect.center(),
+                                        5.0,
+                                        egui::Color32::from_rgb(0x04, 0xBA, 0x6C),
+                                    );
+                                    if max_resp.clicked() {
+                                        self.is_window_maximized = !self.is_window_maximized;
+                                        ui.ctx().send_viewport_cmd(egui::ViewportCommand::Maximized(
+                                            self.is_window_maximized,
+                                        ));
+                                    }
+
+                                    let (min_rect, min_resp) =
+                                        ui.allocate_exact_size(control_size, egui::Sense::click());
+                                    if min_resp.hovered() {
+                                        ui.painter().circle_filled(
+                                            min_rect.center(),
+                                            9.0,
+                                            egui::Color32::from_rgba_unmultiplied(255, 255, 255, 28),
+                                        );
+                                    }
+                                    ui.painter().circle_filled(
+                                        min_rect.center(),
+                                        5.0,
+                                        egui::Color32::from_rgb(0xD5, 0x3C, 0x0D),
+                                    );
+                                    if min_resp.clicked() {
+                                        ui.ctx()
+                                            .send_viewport_cmd(egui::ViewportCommand::Minimized(true));
+                                    }
+
+                                    ui.add_space(8.0);
+                                    let version = format!("Engine {}", env!("CARGO_PKG_VERSION"));
+                                    ui.label(egui::RichText::new(version).size(11.0).color(accent));
+                                },
+                            );
+                        });
+                    });
+
+                ui.add_space(10.0);
+                ui.horizontal_top(|ui| {
+                    ui.set_height(ui.available_height());
+                    ui.allocate_ui_with_layout(
+                        egui::Vec2::new(260.0, ui.available_height()),
+                        egui::Layout::top_down(egui::Align::Min),
+                        |ui| {
+                            egui::Frame::new()
+                                .fill(panel_fill)
+                                .stroke(egui::Stroke::new(1.0, panel_stroke))
+                                .corner_radius(8)
+                                .inner_margin(egui::Margin::same(12))
+                                .show(ui, |ui| {
+                                    ui.label(
+                                        egui::RichText::new("Acoes")
+                                            .size(13.0)
+                                            .color(egui::Color32::from_gray(220)),
+                                    );
+                                    ui.add_space(8.0);
+                                    if ui
+                                        .add_sized(
+                                            [ui.available_width(), 30.0],
+                                            egui::Button::new("Novo Projeto")
+                                                .corner_radius(6)
+                                                .fill(egui::Color32::from_rgb(44, 44, 44))
+                                                .stroke(egui::Stroke::new(1.0, accent)),
+                                        )
+                                        .clicked()
+                                    {
+                                        self.create_project_dialog();
+                                    }
+                                    if ui
+                                        .add_sized(
+                                            [ui.available_width(), 30.0],
+                                            egui::Button::new("Abrir .deng")
+                                                .corner_radius(6)
+                                                .fill(egui::Color32::from_rgb(44, 44, 44))
+                                                .stroke(egui::Stroke::new(
+                                                    1.0,
+                                                    egui::Color32::from_gray(70),
+                                                )),
+                                        )
+                                        .clicked()
+                                    {
+                                        self.open_project_dialog();
+                                    }
+                                    if ui
+                                        .add_sized(
+                                            [ui.available_width(), 28.0],
+                                            egui::Button::new("Atualizar Lista")
+                                                .corner_radius(6)
+                                                .fill(egui::Color32::from_rgb(40, 45, 46))
+                                                .stroke(egui::Stroke::new(
+                                                    1.0,
+                                                    egui::Color32::from_gray(70),
+                                                )),
+                                        )
+                                        .clicked()
+                                    {
+                                        self.refresh_hub_projects();
+                                    }
+                                    ui.add_space(10.0);
+                                    ui.separator();
+                                    ui.add_space(10.0);
+                                    ui.label(
+                                        egui::RichText::new(format!(
+                                            "{} projeto(s) encontrado(s)",
+                                            self.hub_projects.len()
+                                        ))
+                                        .size(11.0)
+                                        .color(muted),
+                                    );
+                                    ui.label(
+                                        egui::RichText::new(self.current_project_label())
+                                            .size(11.0)
+                                            .color(egui::Color32::from_gray(140)),
+                                    );
+                                });
+                        },
+                    );
+
+                    ui.add_space(10.0);
+                    egui::Frame::new()
+                        .fill(panel_fill)
+                        .stroke(egui::Stroke::new(1.0, panel_stroke))
+                        .corner_radius(8)
+                        .inner_margin(egui::Margin::same(12))
+                        .show(ui, |ui| {
+                            ui.horizontal(|ui| {
+                                ui.label(
+                                    egui::RichText::new("Projetos")
+                                        .size(13.0)
+                                        .color(egui::Color32::from_gray(220)),
+                                );
+                                ui.label(
+                                    egui::RichText::new(".deng")
+                                        .size(11.0)
+                                        .color(egui::Color32::from_gray(150)),
+                                );
+                            });
+                            ui.add_space(8.0);
+
+                            egui::ScrollArea::vertical()
+                                .max_height((ui.available_height() - 46.0).max(80.0))
+                                .show(ui, |ui| {
+                                    if self.hub_projects.is_empty() {
+                                        ui.label(
+                                            egui::RichText::new(
+                                                "Nenhum projeto encontrado. Crie ou abra um .deng.",
+                                            )
+                                            .color(muted),
+                                        );
+                                    }
+
+                                    for (idx, path) in self.hub_projects.iter().enumerate() {
+                                        let selected = self.hub_selected == Some(idx);
+                                        let name = path
+                                            .file_stem()
+                                            .and_then(|s| s.to_str())
+                                            .unwrap_or("Projeto");
+                                        let full = path.to_string_lossy();
+                                        let stroke = if selected {
+                                            egui::Stroke::new(1.0, accent)
+                                        } else {
+                                            egui::Stroke::new(1.0, egui::Color32::from_gray(66))
+                                        };
+                                        let fill = if selected {
+                                            egui::Color32::from_rgb(40, 51, 46)
+                                        } else {
+                                            egui::Color32::from_rgb(34, 38, 39)
+                                        };
+
+                                        let button = egui::Button::new(
+                                            egui::RichText::new(name).color(egui::Color32::WHITE),
+                                        )
+                                        .fill(fill)
+                                        .stroke(stroke)
+                                        .corner_radius(6);
+                                        let resp = ui
+                                            .add_sized([ui.available_width(), 28.0], button)
+                                            .on_hover_text(full.as_ref());
+                                        if resp.clicked() {
+                                            self.hub_selected = Some(idx);
+                                        }
+                                    }
+                                });
+
+                            ui.add_space(8.0);
+                            let can_enter = self.hub_selected.is_some();
+                            ui.with_layout(
+                                egui::Layout::right_to_left(egui::Align::Center),
+                                |ui| {
+                                    if ui
+                                        .add_enabled(
+                                            can_enter,
+                                            egui::Button::new("Entrar no Projeto")
+                                                .corner_radius(6)
+                                                .fill(egui::Color32::from_rgb(44, 44, 44))
+                                                .stroke(egui::Stroke::new(1.0, accent)),
+                                        )
+                                        .clicked()
+                                    {
+                                        if let Some(idx) = self.hub_selected {
+                                            if let Some(path) = self.hub_projects.get(idx) {
+                                                self.current_project = Some(path.clone());
+                                                self.show_hub = false;
+                                            }
+                                        }
+                                    }
+                                },
+                            );
+                        });
+                });
+            });
+    }
+
     fn language_name(&self, lang: EngineLanguage) -> &'static str {
         match lang {
             EngineLanguage::Pt => "Português",
@@ -168,6 +530,12 @@ impl EditorApp {
         if self.rig_icon.is_none() {
             self.rig_icon = load_png_as_texture(ctx, "src/assets/icons/rig.png");
         }
+        if self.animador_icon.is_none() {
+            self.animador_icon = load_png_as_texture(ctx, "src/assets/icons/animador.png");
+        }
+        if self.fios_icon.is_none() {
+            self.fios_icon = load_png_as_texture(ctx, "src/assets/icons/fios.png");
+        }
         if self.lang_pt_icon.is_none() {
             self.lang_pt_icon = load_png_as_texture(ctx, "src/assets/icons/portugues.png");
         }
@@ -189,6 +557,10 @@ impl App for EditorApp {
         // Dark theme
         ctx.set_visuals(egui::Visuals::dark());
         self.ensure_toolbar_icons_loaded(ctx);
+        if self.show_hub {
+            self.draw_hub(ctx);
+            return;
+        }
         let undo_shortcut = egui::KeyboardShortcut::new(egui::Modifiers::CTRL, egui::Key::Z);
         let redo_shortcut =
             egui::KeyboardShortcut::new(egui::Modifiers::CTRL | egui::Modifiers::SHIFT, egui::Key::Z);
@@ -273,7 +645,21 @@ impl App for EditorApp {
                                 .strong()
                                 .color(egui::Color32::from_gray(220)),
                         );
+                        ui.add_space(8.0);
+                        ui.label(
+                            egui::RichText::new(self.current_project_label())
+                                .size(11.0)
+                                .color(egui::Color32::from_gray(170)),
+                        );
                         ui.add_space(10.0);
+                        if ui
+                            .add_sized([54.0, 22.0], egui::Button::new("Hub").corner_radius(6))
+                            .clicked()
+                        {
+                            self.show_hub = true;
+                            self.refresh_hub_projects();
+                        }
+                        ui.add_space(8.0);
 
                         egui::MenuBar::new().ui(ui, |ui| {
                             ui.menu_button(self.tr("menu_file"), |ui| {
@@ -281,7 +667,11 @@ impl App for EditorApp {
                                     ui.close();
                                 }
                                 if ui.button(self.tr("save")).clicked() {
-                                    self.project.save_project_dialog(self.language);
+                                    if let Some(path) = self.current_project.clone() {
+                                        let _ = self.project.save_project_to_path(&path, self.language);
+                                    } else if let Some(path) = self.project.save_project_dialog(self.language) {
+                                        self.current_project = Some(path);
+                                    }
                                     ui.close();
                                 }
                                 if ui.button(self.tr("import")).clicked() {
@@ -656,7 +1046,7 @@ impl App for EditorApp {
                 );
             });
 
-        let dock_bar_h = 34.0;
+        let dock_bar_h = 48.0;
         let project_bottom = if self.project_collapsed {
             dock_bar_h
         } else {
@@ -715,8 +1105,11 @@ impl App for EditorApp {
                         egui::StrokeKind::Outside,
                     );
 
+                    let icon_center_y = rect.top() + 15.0;
+                    let button_start_x = 18.0;
+                    let button_spacing = 46.0;
                     let files_rect = egui::Rect::from_center_size(
-                        egui::pos2(rect.left() + 16.0, rect.center().y),
+                        egui::pos2(rect.left() + button_start_x, icon_center_y),
                         egui::vec2(28.0, 22.0),
                     );
                     let files_resp = ui.interact(
@@ -745,7 +1138,7 @@ impl App for EditorApp {
                     }
 
                     let rig_rect = egui::Rect::from_center_size(
-                        egui::pos2(rect.left() + 48.0, rect.center().y),
+                        egui::pos2(rect.left() + button_start_x + button_spacing, icon_center_y),
                         egui::vec2(28.0, 22.0),
                     );
                     let rig_resp = ui.interact(
@@ -775,6 +1168,106 @@ impl App for EditorApp {
                                 .fit_to_exact_size(egui::Vec2::new(20.0, 20.0)),
                         );
                     }
+
+                    let animator_rect = egui::Rect::from_center_size(
+                        egui::pos2(
+                            rect.left() + button_start_x + button_spacing * 2.0,
+                            icon_center_y,
+                        ),
+                        egui::vec2(28.0, 22.0),
+                    );
+                    let animator_resp = ui.interact(
+                        animator_rect,
+                        ui.id().with("toggle_animator_mode"),
+                        egui::Sense::click(),
+                    );
+                    if animator_resp.hovered() || self.animator_enabled {
+                        ui.output_mut(|o| o.cursor_icon = egui::CursorIcon::PointingHand);
+                        ui.painter().rect_filled(
+                            animator_rect.expand(2.0),
+                            3.0,
+                            if self.animator_enabled {
+                                egui::Color32::from_rgb(58, 84, 64)
+                            } else {
+                                egui::Color32::from_rgb(58, 58, 58)
+                            },
+                        );
+                    }
+                    if animator_resp.clicked() {
+                        self.animator_enabled = !self.animator_enabled;
+                    }
+                    if let Some(animador_icon) = &self.animador_icon {
+                        let _ = ui.put(
+                            animator_rect,
+                            egui::Image::new(animador_icon)
+                                .fit_to_exact_size(egui::Vec2::new(20.0, 20.0)),
+                        );
+                    }
+
+                    let fios_rect = egui::Rect::from_center_size(
+                        egui::pos2(
+                            rect.left() + button_start_x + button_spacing * 3.0,
+                            icon_center_y,
+                        ),
+                        egui::vec2(28.0, 22.0),
+                    );
+                    let fios_resp = ui.interact(
+                        fios_rect,
+                        ui.id().with("toggle_fios_mode"),
+                        egui::Sense::click(),
+                    );
+                    if fios_resp.hovered() || self.fios_enabled {
+                        ui.output_mut(|o| o.cursor_icon = egui::CursorIcon::PointingHand);
+                        ui.painter().rect_filled(
+                            fios_rect.expand(2.0),
+                            3.0,
+                            if self.fios_enabled {
+                                egui::Color32::from_rgb(58, 84, 64)
+                            } else {
+                                egui::Color32::from_rgb(58, 58, 58)
+                            },
+                        );
+                    }
+                    if fios_resp.clicked() {
+                        self.fios_enabled = !self.fios_enabled;
+                    }
+                    if let Some(fios_icon) = &self.fios_icon {
+                        let _ = ui.put(
+                            fios_rect,
+                            egui::Image::new(fios_icon)
+                                .fit_to_exact_size(egui::Vec2::new(20.0, 20.0)),
+                        );
+                    }
+
+                    let label_y = rect.bottom() - 10.0;
+                    ui.painter().text(
+                        egui::pos2(files_rect.center().x, label_y),
+                        egui::Align2::CENTER_CENTER,
+                        "Projeto",
+                        egui::FontId::proportional(12.0),
+                        egui::Color32::from_gray(190),
+                    );
+                    ui.painter().text(
+                        egui::pos2(rig_rect.center().x, label_y),
+                        egui::Align2::CENTER_CENTER,
+                        "Rig",
+                        egui::FontId::proportional(12.0),
+                        egui::Color32::from_gray(190),
+                    );
+                    ui.painter().text(
+                        egui::pos2(animator_rect.center().x, label_y),
+                        egui::Align2::CENTER_CENTER,
+                        "Animador",
+                        egui::FontId::proportional(12.0),
+                        egui::Color32::from_gray(190),
+                    );
+                    ui.painter().text(
+                        egui::pos2(fios_rect.center().x, label_y),
+                        egui::Align2::CENTER_CENTER,
+                        "Fios",
+                        egui::FontId::proportional(12.0),
+                        egui::Color32::from_gray(190),
+                    );
 
                     if engine_busy {
                         ui.ctx().request_repaint();
@@ -950,6 +1443,38 @@ fn enable_windows_backdrop_blur(frame: &Frame) -> bool {
     }
 }
 
+fn collect_deng_files(root: &Path, current: &Path, depth: usize, out: &mut Vec<PathBuf>) {
+    if depth > 6 {
+        return;
+    }
+    let Ok(entries) = std::fs::read_dir(current) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        let Some(name) = path.file_name().and_then(|n| n.to_str()) else {
+            continue;
+        };
+        if name.starts_with('.') || name == "target" {
+            continue;
+        }
+        if path.is_dir() {
+            collect_deng_files(root, &path, depth + 1, out);
+        } else if path
+            .extension()
+            .and_then(|e| e.to_str())
+            .map(|e| e.eq_ignore_ascii_case("deng"))
+            == Some(true)
+        {
+            let rel = path
+                .strip_prefix(root)
+                .map(PathBuf::from)
+                .unwrap_or(path.clone());
+            out.push(rel);
+        }
+    }
+}
+
 fn main() -> eframe::Result<()> {
     let app_icon = load_icon_data_from_png("src/assets/icons/icon.png");
     let options = NativeOptions {
@@ -974,7 +1499,7 @@ fn main() -> eframe::Result<()> {
         "Dengine Editor",
         options,
         Box::new(|cc| {
-            Ok(Box::new(EditorApp {
+            let mut app = EditorApp {
                 inspector: InspectorWindow::new(),
                 hierarchy: HierarchyWindow::new(),
                 project: ProjectWindow::new(),
@@ -991,6 +1516,8 @@ fn main() -> eframe::Result<()> {
                 stop_icon: None,
                 files_icon: None,
                 rig_icon: None,
+                animador_icon: None,
+                fios_icon: None,
                 lang_pt_icon: None,
                 lang_en_icon: None,
                 lang_es_icon: None,
@@ -998,11 +1525,19 @@ fn main() -> eframe::Result<()> {
                 is_window_maximized: true,
                 selected_mode: ToolbarMode::Cena,
                 rig_enabled: false,
+                animator_enabled: false,
+                fios_enabled: false,
                 language: EngineLanguage::Pt,
                 project_collapsed: false,
                 windows_blur_initialized: false,
                 last_pointer_pos: None,
-            }))
+                show_hub: true,
+                hub_projects: Vec::new(),
+                hub_selected: None,
+                current_project: None,
+            };
+            app.refresh_hub_projects();
+            Ok(Box::new(app))
         }),
     )
 }

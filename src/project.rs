@@ -359,14 +359,14 @@ impl ProjectWindow {
         }
     }
 
-    pub fn save_project_dialog(&mut self, language: EngineLanguage) {
+    pub fn save_project_dialog(&mut self, language: EngineLanguage) -> Option<PathBuf> {
         let picked = rfd::FileDialog::new()
             .add_filter("Dengine Project", &["deng"])
             .set_file_name("project.deng")
             .save_file();
 
         let Some(mut path) = picked else {
-            return;
+            return None;
         };
         if path
             .extension()
@@ -381,9 +381,25 @@ impl ProjectWindow {
             Ok(()) => {
                 let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("project.deng");
                 self.status_text = format!("{}: {}", self.tr(language, "save"), name);
+                Some(path)
             }
             Err(err) => {
                 self.status_text = format!("{}: erro ao salvar ({err})", self.tr(language, "save"));
+                None
+            }
+        }
+    }
+
+    pub fn save_project_to_path(&mut self, path: &Path, language: EngineLanguage) -> bool {
+        match self.save_project_file(path) {
+            Ok(()) => {
+                let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("project.deng");
+                self.status_text = format!("{}: {}", self.tr(language, "save"), name);
+                true
+            }
+            Err(err) => {
+                self.status_text = format!("{}: erro ao salvar ({err})", self.tr(language, "save"));
+                false
             }
         }
     }
