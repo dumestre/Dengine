@@ -31,6 +31,7 @@ struct EditorApp {
     play_icon: Option<TextureHandle>,
     pause_icon: Option<TextureHandle>,
     stop_icon: Option<TextureHandle>,
+    files_icon: Option<TextureHandle>,
     lang_pt_icon: Option<TextureHandle>,
     lang_en_icon: Option<TextureHandle>,
     lang_es_icon: Option<TextureHandle>,
@@ -38,6 +39,7 @@ struct EditorApp {
     is_window_maximized: bool,
     selected_mode: ToolbarMode,
     language: EngineLanguage,
+    project_collapsed: bool,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -142,6 +144,9 @@ impl EditorApp {
         }
         if self.stop_icon.is_none() {
             self.stop_icon = load_png_as_texture(ctx, "src/assets/icons/stop.png");
+        }
+        if self.files_icon.is_none() {
+            self.files_icon = load_png_as_texture(ctx, "src/assets/icons/files.png");
         }
         if self.lang_pt_icon.is_none() {
             self.lang_pt_icon = load_png_as_texture(ctx, "src/assets/icons/portugues.png");
@@ -583,7 +588,12 @@ impl App for EditorApp {
                 );
             });
 
-        let project_bottom = self.project.docked_bottom_height();
+        let dock_bar_h = 34.0;
+        let project_bottom = if self.project_collapsed {
+            dock_bar_h
+        } else {
+            self.project.docked_bottom_height()
+        };
 
         // Janela Inspetor
         self.inspector
@@ -592,7 +602,84 @@ impl App for EditorApp {
         let i_right = self.inspector.docked_right_width();
         self.hierarchy
             .show(ctx, i_left, i_right, project_bottom, self.language);
-        self.project.show(ctx, self.language);
+        let engine_busy = self.is_playing;
+
+        if self.project_collapsed {
+            let dock_rect = ctx.available_rect();
+            let bar_rect = egui::Rect::from_min_max(
+                egui::pos2(dock_rect.left(), dock_rect.bottom() - dock_bar_h),
+                egui::pos2(dock_rect.right(), dock_rect.bottom()),
+            );
+
+            egui::Area::new(egui::Id::new("bottom_multi_dock_bar"))
+                .order(egui::Order::Foreground)
+                .fixed_pos(bar_rect.min)
+                .show(ctx, |ui| {
+                    let (rect, _) = ui.allocate_exact_size(bar_rect.size(), egui::Sense::hover());
+                    ui.painter()
+                        .rect_filled(rect, 0.0, egui::Color32::from_rgb(35, 35, 35));
+                    ui.painter().rect_stroke(
+                        rect,
+                        0.0,
+                        egui::Stroke::new(1.0, egui::Color32::from_rgb(58, 58, 58)),
+                        egui::StrokeKind::Outside,
+                    );
+
+                    let icon_rect = egui::Rect::from_center_size(
+                        egui::pos2(rect.left() + 16.0, rect.center().y),
+                        egui::vec2(28.0, 22.0),
+                    );
+                    let icon_resp = ui.interact(
+                        icon_rect,
+                        ui.id().with("restore_project_from_dock"),
+                        egui::Sense::click(),
+                    );
+                    if icon_resp.hovered() {
+                        ui.output_mut(|o| o.cursor_icon = egui::CursorIcon::PointingHand);
+                        ui.painter().rect_filled(
+                            icon_rect.expand(2.0),
+                            3.0,
+                            egui::Color32::from_rgb(58, 58, 58),
+                        );
+                    }
+                    if icon_resp.clicked() {
+                        self.project_collapsed = false;
+                    }
+
+                    if let Some(files_icon) = &self.files_icon {
+                        let _ = ui.put(
+                            icon_rect,
+                            egui::Image::new(files_icon)
+                                .fit_to_exact_size(egui::Vec2::new(20.0, 20.0)),
+                        );
+                    }
+
+                    if engine_busy {
+                        ui.ctx().request_repaint();
+                        let spinner_rect = egui::Rect::from_center_size(
+                            rect.center(),
+                            egui::vec2(20.0, 20.0),
+                        );
+                        ui.scope_builder(
+                            egui::UiBuilder::new()
+                                .max_rect(spinner_rect)
+                                .layout(
+                                    egui::Layout::left_to_right(egui::Align::Center)
+                                        .with_main_align(egui::Align::Center),
+                                ),
+                            |ui| {
+                                ui.add(
+                                    egui::Spinner::new()
+                                        .size(16.0)
+                                        .color(egui::Color32::from_rgb(15, 232, 121)),
+                                );
+                            },
+                        );
+                    }
+                });
+        } else if self.project.show(ctx, self.language) {
+            self.project_collapsed = true;
+        }
     }
 }
 
@@ -629,6 +716,7 @@ fn main() -> eframe::Result<()> {
                 play_icon: None,
                 pause_icon: None,
                 stop_icon: None,
+                files_icon: None,
                 lang_pt_icon: None,
                 lang_en_icon: None,
                 lang_es_icon: None,
@@ -636,6 +724,7 @@ fn main() -> eframe::Result<()> {
                 is_window_maximized: true,
                 selected_mode: ToolbarMode::Cena,
                 language: EngineLanguage::Pt,
+                project_collapsed: false,
             }))
         }),
     )
