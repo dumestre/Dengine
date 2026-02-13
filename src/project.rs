@@ -1476,15 +1476,16 @@ fn load_obj_preview_mesh(path: &Path) -> Result<(Vec<glam::Vec3>, Vec<[u32; 3]>)
 }
 
 fn load_gltf_preview_mesh(path: &Path) -> Result<(Vec<glam::Vec3>, Vec<[u32; 3]>), String> {
-    let (doc, buffers, _images) = gltf::import(path).map_err(|e| e.to_string())?;
+    let gltf = gltf::Gltf::open(path).map_err(|e| e.to_string())?;
+    let buffers = load_gltf_buffers_mesh_only_preview(path, &gltf)?;
     let mut vertices = Vec::new();
     let mut triangles = Vec::new();
-    for mesh in doc.meshes() {
+    for mesh in gltf.document.meshes() {
         for primitive in mesh.primitives() {
             if primitive.mode() != gltf::mesh::Mode::Triangles {
                 continue;
             }
-            let reader = primitive.reader(|buf| Some(&buffers[buf.index()].0));
+            let reader = primitive.reader(|buf| buffers.get(buf.index()).map(|b| b.as_slice()));
             let Some(positions) = reader.read_positions() else {
                 continue;
             };
@@ -1513,6 +1514,32 @@ fn load_gltf_preview_mesh(path: &Path) -> Result<(Vec<glam::Vec3>, Vec<[u32; 3]>
         return Err("GLTF/GLB vazio".to_string());
     }
     Ok((vertices, triangles))
+}
+
+fn load_gltf_buffers_mesh_only_preview(path: &Path, gltf: &gltf::Gltf) -> Result<Vec<Vec<u8>>, String> {
+    let base_dir = path.parent().unwrap_or_else(|| Path::new("."));
+    let mut out = Vec::new();
+    for buf in gltf.document.buffers() {
+        match buf.source() {
+            gltf::buffer::Source::Bin => {
+                let blob = gltf
+                    .blob
+                    .as_ref()
+                    .ok_or_else(|| "GLB sem bloco binário".to_string())?;
+                out.push(blob.clone());
+            }
+            gltf::buffer::Source::Uri(uri) => {
+                if uri.starts_with("data:") {
+                    return Err("GLTF com data-uri não suportado no preview".to_string());
+                }
+                let p = base_dir.join(uri);
+                let bytes = std::fs::read(&p)
+                    .map_err(|e| format!("falha ao ler buffer GLTF '{}': {e}", p.display()))?;
+                out.push(bytes);
+            }
+        }
+    }
+    Ok(out)
 }
 
 fn load_fbx_ascii_preview_mesh(path: &Path) -> Result<(Vec<glam::Vec3>, Vec<[u32; 3]>), String> {

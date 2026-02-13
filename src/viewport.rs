@@ -1,14 +1,21 @@
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::fs::{self, File};
 use std::io::{Read, Write};
 use std::hash::{Hash, Hasher};
-use std::path::Path;
-use std::sync::mpsc::{self, Receiver};
+use std::path::{Path, PathBuf};
+use std::sync::mpsc::{self, Receiver, Sender};
 
 use eframe::egui::{self, Align2, Color32, FontId, PointerButton, Pos2, Rect, Sense, Stroke, TextureHandle, TextureOptions, Vec2};
 use egui_gizmo::{Gizmo, GizmoMode, GizmoOrientation};
 use epaint::ColorImage;
 use glam::{Mat4, Vec3};
+use crate::viewport_gpu::ViewportGpuRenderer;
+
+const MAX_RUNTIME_TRIANGLES: usize = 90_000;
+const MAX_RUNTIME_VERTICES: usize = 120_000;
+const MAX_IMPORT_FILE_BYTES: u64 = 350 * 1024 * 1024;
+const MAX_PARSED_TRIANGLES: usize = 6_000_000;
+const MAX_PARSED_VERTICES: usize = 3_000_000;
 
 pub struct ViewportPanel {
     is_3d: bool,
@@ -27,9 +34,14 @@ pub struct ViewportPanel {
     last_viewport_rect: Option<Rect>,
     dropped_asset_label: Option<String>,
     active_mesh: Option<MeshData>,
+    active_mesh_id: u64,
     mesh_status: Option<String>,
     mesh_loading: bool,
-    mesh_rx: Option<Receiver<MeshLoadEvent>>,
+    import_pipeline: AssetImportPipeline,
+    pending_mesh_job: Option<u64>,
+    pending_texture_job: Option<u64>,
+    next_import_job_id: u64,
+    active_texture: Option<ActiveTextureData>,
 }
 
 struct MeshData {
@@ -38,13 +50,85 @@ struct MeshData {
     triangles: Vec<[u32; 3]>,
 }
 
+struct ActiveTextureData {
+    id: u64,
+    size: [u32; 2],
+    rgba: Vec<u8>,
+}
+
 enum MeshLoadEvent {
     Proxy(MeshData),
     Full(Result<MeshData, String>),
 }
 
+enum ImportRequest {
+    LoadMesh { job_id: u64, path: PathBuf },
+    #[allow(dead_code)]
+    LoadTexture { job_id: u64, path: PathBuf },
+}
+
+enum ImportEvent {
+    Mesh { job_id: u64, event: MeshLoadEvent },
+    Texture { job_id: u64, result: Result<ActiveTextureData, String> },
+}
+
+struct AssetImportPipeline {
+    tx: Sender<ImportRequest>,
+    rx: Receiver<ImportEvent>,
+}
+
+impl AssetImportPipeline {
+    fn new() -> Self {
+        let (tx_req, rx_req) = mpsc::channel::<ImportRequest>();
+        let (tx_evt, rx_evt) = mpsc::channel::<ImportEvent>();
+        std::thread::spawn(move || {
+            while let Ok(req) = rx_req.recv() {
+                match req {
+                    ImportRequest::LoadMesh { job_id, path } => match load_mesh_from_path_cached(&path) {
+                        Ok(full) => {
+                            let proxy = make_proxy_mesh(&full, 1800, 6000);
+                            let _ = tx_evt.send(ImportEvent::Mesh {
+                                job_id,
+                                event: MeshLoadEvent::Proxy(proxy),
+                            });
+                            let _ = tx_evt.send(ImportEvent::Mesh {
+                                job_id,
+                                event: MeshLoadEvent::Full(Ok(full)),
+                            });
+                        }
+                        Err(err) => {
+                            let _ = tx_evt.send(ImportEvent::Mesh {
+                                job_id,
+                                event: MeshLoadEvent::Full(Err(err)),
+                            });
+                        }
+                    },
+                    ImportRequest::LoadTexture { job_id, path } => {
+                        let result = load_texture_from_path_cached(&path);
+                        let _ = tx_evt.send(ImportEvent::Texture { job_id, result });
+                    }
+                }
+            }
+        });
+        Self {
+            tx: tx_req,
+            rx: rx_evt,
+        }
+    }
+
+    fn enqueue_mesh(&self, job_id: u64, path: PathBuf) {
+        let _ = self.tx.send(ImportRequest::LoadMesh { job_id, path });
+    }
+
+    #[allow(dead_code)]
+    fn enqueue_texture(&self, job_id: u64, path: PathBuf) {
+        let _ = self.tx.send(ImportRequest::LoadTexture { job_id, path });
+    }
+}
+
 impl ViewportPanel {
     pub fn new() -> Self {
+        let import_pipeline = AssetImportPipeline::new();
         Self {
             is_3d: true,
             is_ortho: false,
@@ -62,10 +146,21 @@ impl ViewportPanel {
             last_viewport_rect: None,
             dropped_asset_label: None,
             active_mesh: None,
+            active_mesh_id: 0,
             mesh_status: None,
             mesh_loading: false,
-            mesh_rx: None,
+            import_pipeline,
+            pending_mesh_job: None,
+            pending_texture_job: None,
+            next_import_job_id: 1,
+            active_texture: None,
         }
+    }
+
+    fn alloc_import_job_id(&mut self) -> u64 {
+        let id = self.next_import_job_id;
+        self.next_import_job_id = self.next_import_job_id.wrapping_add(1).max(1);
+        id
     }
 
     pub fn contains_point(&self, p: Pos2) -> bool {
@@ -99,23 +194,26 @@ impl ViewportPanel {
 
         match ext.as_str() {
             "fbx" | "obj" | "glb" | "gltf" => {
-                let path_buf = path.to_path_buf();
-                let (tx, rx) = mpsc::channel();
+                if let Ok(meta) = fs::metadata(path) {
+                    if meta.len() > MAX_IMPORT_FILE_BYTES {
+                        self.mesh_status = Some(
+                            "Arquivo muito grande para importacao direta; reduza a malha".to_string(),
+                        );
+                        self.mesh_loading = false;
+                        self.pending_mesh_job = None;
+                        return;
+                    }
+                }
+                let job_id = self.alloc_import_job_id();
+                self.pending_mesh_job = Some(job_id);
                 self.mesh_loading = true;
                 self.mesh_status = Some("Carregando proxy...".to_string());
-                self.mesh_rx = Some(rx);
-                std::thread::spawn(move || {
-                    match load_mesh_from_path_cached(&path_buf) {
-                        Ok(full) => {
-                            let proxy = make_proxy_mesh(&full, 1800);
-                            let _ = tx.send(MeshLoadEvent::Proxy(proxy));
-                            let _ = tx.send(MeshLoadEvent::Full(Ok(full)));
-                        }
-                        Err(err) => {
-                            let _ = tx.send(MeshLoadEvent::Full(Err(err)));
-                        }
-                    }
-                });
+                self.import_pipeline.enqueue_mesh(job_id, path.to_path_buf());
+            }
+            "png" | "jpg" | "jpeg" | "webp" => {
+                self.pending_texture_job = None;
+                self.active_texture = None;
+                self.mesh_status = Some("Viewport em modo sólido: textura desativada".to_string());
             }
             _ => {}
         }
@@ -130,6 +228,60 @@ impl ViewportPanel {
         }
         if self.transform_icon.is_none() {
             self.transform_icon = load_png_as_texture(ctx, "src/assets/icons/transform.png");
+        }
+    }
+
+    fn poll_import_pipeline(&mut self) {
+        while let Ok(event) = self.import_pipeline.rx.try_recv() {
+            match event {
+                ImportEvent::Mesh { job_id, event } => {
+                    if self.pending_mesh_job != Some(job_id) {
+                        continue;
+                    }
+                    match event {
+                        MeshLoadEvent::Proxy(mesh) => {
+                            self.active_mesh = Some(mesh);
+                            self.active_mesh_id = self.active_mesh_id.wrapping_add(1);
+                            self.mesh_status = Some("Proxy carregada... finalizando".to_string());
+                        }
+                        MeshLoadEvent::Full(Ok(mesh)) => {
+                            let is_heavy = mesh.triangles.len() > MAX_RUNTIME_TRIANGLES
+                                || mesh.vertices.len() > MAX_RUNTIME_VERTICES;
+                            let mesh = make_proxy_mesh(&mesh, MAX_RUNTIME_TRIANGLES, MAX_RUNTIME_VERTICES);
+                            self.active_mesh = Some(mesh);
+                            self.active_mesh_id = self.active_mesh_id.wrapping_add(1);
+                            self.mesh_status = Some(if is_heavy {
+                                "Mesh carregada com otimização automática".to_string()
+                            } else {
+                                "Mesh carregada".to_string()
+                            });
+                            self.mesh_loading = false;
+                            self.pending_mesh_job = None;
+                        }
+                        MeshLoadEvent::Full(Err(err)) => {
+                            self.active_mesh = None;
+                            self.mesh_status = Some(format!("Falha ao carregar malha: {err}"));
+                            self.mesh_loading = false;
+                            self.pending_mesh_job = None;
+                        }
+                    }
+                }
+                ImportEvent::Texture { job_id, result } => {
+                    if self.pending_texture_job != Some(job_id) {
+                        continue;
+                    }
+                    match result {
+                        Ok(tex) => {
+                            self.active_texture = Some(tex);
+                            self.mesh_status = Some("Textura aplicada ao material".to_string());
+                        }
+                        Err(err) => {
+                            self.mesh_status = Some(format!("Falha ao carregar textura: {err}"));
+                        }
+                    }
+                    self.pending_texture_job = None;
+                }
+            }
         }
     }
 
@@ -169,6 +321,7 @@ impl ViewportPanel {
         left_reserved: f32,
         right_reserved: f32,
         bottom_reserved: f32,
+        gpu_renderer: Option<&ViewportGpuRenderer>,
     ) {
         self.ensure_icons_loaded(ctx);
 
@@ -179,33 +332,10 @@ impl ViewportPanel {
                     .stroke(Stroke::new(1.0, Color32::from_rgb(48, 48, 52))),
             )
             .show(ctx, |ui| {
+                self.poll_import_pipeline();
+
                 if self.mesh_loading {
                     ui.ctx().request_repaint();
-                }
-                if let Some(rx) = &self.mesh_rx {
-                    match rx.try_recv() {
-                        Ok(MeshLoadEvent::Proxy(mesh)) => {
-                            self.active_mesh = Some(mesh);
-                            self.mesh_status = Some("Proxy carregada... finalizando".to_string());
-                        }
-                        Ok(MeshLoadEvent::Full(Ok(mesh))) => {
-                            self.active_mesh = Some(mesh);
-                            self.mesh_status = Some("Mesh carregada".to_string());
-                            self.mesh_loading = false;
-                            self.mesh_rx = None;
-                        }
-                        Ok(MeshLoadEvent::Full(Err(err))) => {
-                            self.active_mesh = None;
-                            self.mesh_status = Some(format!("Falha ao carregar malha: {err}"));
-                            self.mesh_loading = false;
-                            self.mesh_rx = None;
-                        }
-                        Err(mpsc::TryRecvError::Disconnected) => {
-                            self.mesh_loading = false;
-                            self.mesh_rx = None;
-                        }
-                        Err(mpsc::TryRecvError::Empty) => {}
-                    }
                 }
 
                 let content = ui.max_rect();
@@ -515,8 +645,23 @@ impl ViewportPanel {
                     }
 
                     if let Some(mesh) = &self.active_mesh {
-                        draw_solid_mesh(ui, viewport_rect, mvp, mesh);
-                        draw_wire_mesh(ui, viewport_rect, mvp, mesh, self.object_selected);
+                        let mut gpu_drawn = false;
+                        if let Some(gpu) = gpu_renderer {
+                            gpu.update_scene(
+                                self.active_mesh_id,
+                                &mesh.vertices,
+                                &mesh.triangles,
+                                mvp,
+                                None,
+                                false,
+                            );
+                            let cb = gpu.paint_callback(viewport_rect);
+                            ui.painter().add(egui::Shape::Callback(cb));
+                            gpu_drawn = true;
+                        }
+                        if !gpu_drawn {
+                            draw_solid_mesh(ui, viewport_rect, mvp, mesh);
+                        }
                     } else {
                         draw_wire_cube(ui, viewport_rect, mvp, self.object_selected);
                     }
@@ -561,30 +706,65 @@ fn load_mesh_from_path(path: &Path) -> Result<MeshData, String> {
         _ => return Err("formato não suportado".to_string()),
     };
     normalize_mesh(&mut mesh);
+    if mesh.triangles.len() > MAX_PARSED_TRIANGLES || mesh.vertices.len() > MAX_PARSED_VERTICES {
+        return Err("malha excede limite de complexidade para importacao".to_string());
+    }
     Ok(mesh)
 }
 
-fn make_proxy_mesh(full: &MeshData, max_tris: usize) -> MeshData {
-    if full.triangles.len() <= max_tris {
-        return MeshData {
-            name: full.name.clone(),
-            vertices: full.vertices.clone(),
-            triangles: full.triangles.clone(),
-        };
-    }
-    let step = ((full.triangles.len() as f32 / max_tris as f32).ceil() as usize).max(1);
-    let mut triangles = Vec::with_capacity(max_tris);
+fn make_proxy_mesh(full: &MeshData, max_tris: usize, max_vertices: usize) -> MeshData {
+    let target_tris = full.triangles.len().min(max_tris).max(1);
+    let step = ((full.triangles.len() as f32 / target_tris as f32).ceil() as usize).max(1);
+
+    let mut remap = HashMap::<u32, u32>::with_capacity(target_tris * 2);
+    let mut vertices = Vec::<Vec3>::with_capacity(max_vertices.min(full.vertices.len()));
+    let mut triangles = Vec::<[u32; 3]>::with_capacity(target_tris);
+
     for (idx, tri) in full.triangles.iter().enumerate() {
-        if idx % step == 0 {
-            triangles.push(*tri);
+        if idx % step != 0 {
+            continue;
         }
-        if triangles.len() >= max_tris {
+        if triangles.len() >= target_tris {
             break;
         }
+
+        let mut out = [0_u32; 3];
+        let mut can_add = true;
+        for (k, src_idx) in tri.iter().copied().enumerate() {
+            let Some(&v) = remap.get(&src_idx) else {
+                let src_usize = src_idx as usize;
+                if src_usize >= full.vertices.len() || vertices.len() >= max_vertices {
+                    can_add = false;
+                    break;
+                }
+                let dst = vertices.len() as u32;
+                vertices.push(full.vertices[src_usize]);
+                remap.insert(src_idx, dst);
+                out[k] = dst;
+                continue;
+            };
+            out[k] = v;
+        }
+        if can_add {
+            triangles.push(out);
+        }
     }
+
+    if triangles.is_empty() || vertices.is_empty() {
+        return MeshData {
+            name: format!("{} [proxy]", full.name),
+            vertices: vec![Vec3::ZERO, Vec3::X * 0.2, Vec3::Y * 0.2],
+            triangles: vec![[0, 1, 2]],
+        };
+    }
+
     MeshData {
-        name: format!("{} [proxy]", full.name),
-        vertices: full.vertices.clone(),
+        name: if triangles.len() < full.triangles.len() || vertices.len() < full.vertices.len() {
+            format!("{} [proxy]", full.name)
+        } else {
+            full.name.clone()
+        },
+        vertices,
         triangles,
     }
 }
@@ -701,6 +881,98 @@ fn read_dmesh_cache(source: &Path, stamp: (u64, u64)) -> Result<Option<MeshData>
     }))
 }
 
+fn load_texture_from_path_cached(path: &Path) -> Result<ActiveTextureData, String> {
+    let stamp = source_stamp(path).unwrap_or((0, 0));
+    if let Some(tex) = read_dtex_cache(path, stamp).ok().flatten() {
+        return Ok(tex);
+    }
+
+    let img = image::open(path).map_err(|e| e.to_string())?;
+    let rgba = img.to_rgba8();
+    let size = [rgba.width(), rgba.height()];
+    let id = texture_asset_id(path, stamp);
+    let tex = ActiveTextureData {
+        id,
+        size,
+        rgba: rgba.into_raw(),
+    };
+    let _ = write_dtex_cache(path, &tex, stamp);
+    Ok(tex)
+}
+
+fn texture_asset_id(path: &Path, stamp: (u64, u64)) -> u64 {
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    path.to_string_lossy().hash(&mut hasher);
+    stamp.0.hash(&mut hasher);
+    stamp.1.hash(&mut hasher);
+    hasher.finish()
+}
+
+fn texture_cache_file_path(source: &Path) -> Result<std::path::PathBuf, String> {
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    source.to_string_lossy().hash(&mut hasher);
+    let key = hasher.finish();
+    let cache_dir = Path::new("Assets").join(".cache").join("textures");
+    fs::create_dir_all(&cache_dir).map_err(|e| e.to_string())?;
+    Ok(cache_dir.join(format!("{key:016x}.dtex")))
+}
+
+fn write_dtex_cache(source: &Path, tex: &ActiveTextureData, stamp: (u64, u64)) -> Result<(), String> {
+    let cache = texture_cache_file_path(source)?;
+    let mut f = File::create(cache).map_err(|e| e.to_string())?;
+    f.write_all(b"DTX1").map_err(|e| e.to_string())?;
+    f.write_all(&stamp.0.to_le_bytes()).map_err(|e| e.to_string())?;
+    f.write_all(&stamp.1.to_le_bytes()).map_err(|e| e.to_string())?;
+    f.write_all(&tex.id.to_le_bytes()).map_err(|e| e.to_string())?;
+    f.write_all(&tex.size[0].to_le_bytes()).map_err(|e| e.to_string())?;
+    f.write_all(&tex.size[1].to_le_bytes()).map_err(|e| e.to_string())?;
+    let len = tex.rgba.len() as u64;
+    f.write_all(&len.to_le_bytes()).map_err(|e| e.to_string())?;
+    f.write_all(&tex.rgba).map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+fn read_dtex_cache(source: &Path, stamp: (u64, u64)) -> Result<Option<ActiveTextureData>, String> {
+    let cache = texture_cache_file_path(source)?;
+    if !cache.exists() {
+        return Ok(None);
+    }
+
+    let mut f = File::open(cache).map_err(|e| e.to_string())?;
+    let mut magic = [0_u8; 4];
+    f.read_exact(&mut magic).map_err(|e| e.to_string())?;
+    if &magic != b"DTX1" {
+        return Ok(None);
+    }
+
+    let mut b8 = [0_u8; 8];
+    let mut b4 = [0_u8; 4];
+    f.read_exact(&mut b8).map_err(|e| e.to_string())?;
+    let src_len = u64::from_le_bytes(b8);
+    f.read_exact(&mut b8).map_err(|e| e.to_string())?;
+    let src_mtime = u64::from_le_bytes(b8);
+    if src_len != stamp.0 || src_mtime != stamp.1 {
+        return Ok(None);
+    }
+
+    f.read_exact(&mut b8).map_err(|e| e.to_string())?;
+    let id = u64::from_le_bytes(b8);
+    f.read_exact(&mut b4).map_err(|e| e.to_string())?;
+    let w = u32::from_le_bytes(b4);
+    f.read_exact(&mut b4).map_err(|e| e.to_string())?;
+    let h = u32::from_le_bytes(b4);
+    f.read_exact(&mut b8).map_err(|e| e.to_string())?;
+    let len = u64::from_le_bytes(b8) as usize;
+
+    let mut rgba = vec![0_u8; len];
+    f.read_exact(&mut rgba).map_err(|e| e.to_string())?;
+    Ok(Some(ActiveTextureData {
+        id,
+        size: [w, h],
+        rgba,
+    }))
+}
+
 fn load_fbx_ascii_mesh(path: &Path) -> Result<MeshData, String> {
     use fbxcel_dom::any::AnyDocument;
     use fbxcel_dom::v7400::object::{TypedObjectHandle, geometry::TypedGeometryHandle};
@@ -795,16 +1067,17 @@ fn load_obj_mesh(path: &Path) -> Result<MeshData, String> {
 }
 
 fn load_gltf_mesh(path: &Path) -> Result<MeshData, String> {
-    let (doc, buffers, _images) = gltf::import(path).map_err(|e| e.to_string())?;
+    let gltf = gltf::Gltf::open(path).map_err(|e| e.to_string())?;
+    let buffers = load_gltf_buffers_mesh_only(path, &gltf)?;
     let mut vertices = Vec::new();
     let mut triangles = Vec::new();
 
-    for mesh in doc.meshes() {
+    for mesh in gltf.document.meshes() {
         for primitive in mesh.primitives() {
             if primitive.mode() != gltf::mesh::Mode::Triangles {
                 continue;
             }
-            let reader = primitive.reader(|buf| Some(&buffers[buf.index()].0));
+            let reader = primitive.reader(|buf| buffers.get(buf.index()).map(|b| b.as_slice()));
             let Some(positions) = reader.read_positions() else {
                 continue;
             };
@@ -842,6 +1115,32 @@ fn load_gltf_mesh(path: &Path) -> Result<MeshData, String> {
         vertices,
         triangles,
     })
+}
+
+fn load_gltf_buffers_mesh_only(path: &Path, gltf: &gltf::Gltf) -> Result<Vec<Vec<u8>>, String> {
+    let base_dir = path.parent().unwrap_or_else(|| Path::new("."));
+    let mut out = Vec::new();
+    for buf in gltf.document.buffers() {
+        match buf.source() {
+            gltf::buffer::Source::Bin => {
+                let blob = gltf
+                    .blob
+                    .as_ref()
+                    .ok_or_else(|| "GLB sem bloco binário".to_string())?;
+                out.push(blob.clone());
+            }
+            gltf::buffer::Source::Uri(uri) => {
+                if uri.starts_with("data:") {
+                    return Err("GLTF com data-uri não suportado no modo mesh-only".to_string());
+                }
+                let p = base_dir.join(uri);
+                let bytes = fs::read(&p)
+                    .map_err(|e| format!("falha ao ler buffer GLTF '{}': {e}", p.display()))?;
+                out.push(bytes);
+            }
+        }
+    }
+    Ok(out)
 }
 
 fn normalize_mesh(mesh: &mut MeshData) {
@@ -961,6 +1260,7 @@ fn project_point(viewport: Rect, mvp: Mat4, point: Vec3) -> Option<Pos2> {
     Some(egui::pos2(x, y))
 }
 
+#[allow(dead_code)]
 fn draw_wire_mesh(ui: &mut egui::Ui, viewport: Rect, mvp: Mat4, mesh: &MeshData, selected: bool) {
     let projected: Vec<Option<Pos2>> = mesh
         .vertices

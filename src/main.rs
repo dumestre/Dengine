@@ -3,6 +3,7 @@ mod inspector;
 mod hierarchy;
 mod project;
 mod viewport;
+mod viewport_gpu;
 
 use eframe::egui::{TextureHandle, TextureOptions};
 use eframe::{App, Frame, NativeOptions, egui};
@@ -11,6 +12,7 @@ use hierarchy::HierarchyWindow;
 use inspector::InspectorWindow;
 use project::ProjectWindow;
 use viewport::ViewportPanel;
+use viewport_gpu::ViewportGpuRenderer;
 use raw_window_handle::{HasWindowHandle, RawWindowHandle};
 use std::sync::Arc;
 #[cfg(target_os = "windows")]
@@ -31,6 +33,7 @@ struct EditorApp {
     hierarchy: HierarchyWindow,
     project: ProjectWindow,
     viewport: ViewportPanel,
+    viewport_gpu: Option<ViewportGpuRenderer>,
     app_icon_texture: Option<TextureHandle>,
     cena_icon: Option<TextureHandle>,
     game_icon: Option<TextureHandle>,
@@ -632,7 +635,14 @@ impl App for EditorApp {
             "Game"
         };
         self.viewport
-            .show(ctx, mode_label, left_reserved, right_reserved, project_bottom);
+            .show(
+                ctx,
+                mode_label,
+                left_reserved,
+                right_reserved,
+                project_bottom,
+                self.viewport_gpu.as_ref(),
+            );
 
         // Janela Inspetor
         self.inspector
@@ -890,12 +900,16 @@ fn main() -> eframe::Result<()> {
     eframe::run_native(
         "Dengine Editor",
         options,
-        Box::new(|_cc| {
+        Box::new(|cc| {
             Ok(Box::new(EditorApp {
                 inspector: InspectorWindow::new(),
                 hierarchy: HierarchyWindow::new(),
                 project: ProjectWindow::new(),
                 viewport: ViewportPanel::new(),
+                viewport_gpu: cc
+                    .wgpu_render_state
+                    .clone()
+                    .map(ViewportGpuRenderer::new),
                 app_icon_texture: None,
                 cena_icon: None,
                 game_icon: None,
