@@ -1480,7 +1480,48 @@ fn load_gltf_preview_mesh(path: &Path) -> Result<(Vec<glam::Vec3>, Vec<[u32; 3]>
     let buffers = load_gltf_buffers_mesh_only_preview(path, &gltf)?;
     let mut vertices = Vec::new();
     let mut triangles = Vec::new();
-    for mesh in gltf.document.meshes() {
+    if let Some(scene) = gltf
+        .document
+        .default_scene()
+        .or_else(|| gltf.document.scenes().next())
+    {
+        for node in scene.nodes() {
+            append_gltf_preview_node_meshes(
+                node,
+                glam::Mat4::IDENTITY,
+                &buffers,
+                &mut vertices,
+                &mut triangles,
+            );
+        }
+    } else {
+        for node in gltf.document.nodes() {
+            append_gltf_preview_node_meshes(
+                node,
+                glam::Mat4::IDENTITY,
+                &buffers,
+                &mut vertices,
+                &mut triangles,
+            );
+        }
+    }
+    if vertices.is_empty() || triangles.is_empty() {
+        return Err("GLTF/GLB vazio".to_string());
+    }
+    Ok((vertices, triangles))
+}
+
+fn append_gltf_preview_node_meshes(
+    node: gltf::Node<'_>,
+    parent: glam::Mat4,
+    buffers: &[Vec<u8>],
+    vertices: &mut Vec<glam::Vec3>,
+    triangles: &mut Vec<[u32; 3]>,
+) {
+    let local = glam::Mat4::from_cols_array_2d(&node.transform().matrix());
+    let world = parent * local;
+
+    if let Some(mesh) = node.mesh() {
         for primitive in mesh.primitives() {
             if primitive.mode() != gltf::mesh::Mode::Triangles {
                 continue;
@@ -1491,7 +1532,7 @@ fn load_gltf_preview_mesh(path: &Path) -> Result<(Vec<glam::Vec3>, Vec<[u32; 3]>
             };
             let base = vertices.len() as u32;
             let local: Vec<glam::Vec3> = positions
-                .map(|p| glam::Vec3::new(p[0], p[1], p[2]))
+                .map(|p| world.transform_point3(glam::Vec3::new(p[0], p[1], p[2])))
                 .collect();
             let vcount = local.len() as u32;
             vertices.extend(local);
@@ -1510,10 +1551,10 @@ fn load_gltf_preview_mesh(path: &Path) -> Result<(Vec<glam::Vec3>, Vec<[u32; 3]>
             }
         }
     }
-    if vertices.is_empty() || triangles.is_empty() {
-        return Err("GLTF/GLB vazio".to_string());
+
+    for child in node.children() {
+        append_gltf_preview_node_meshes(child, world, buffers, vertices, triangles);
     }
-    Ok((vertices, triangles))
 }
 
 fn load_gltf_buffers_mesh_only_preview(path: &Path, gltf: &gltf::Gltf) -> Result<Vec<Vec<u8>>, String> {

@@ -1,4 +1,4 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 use std::fs::{self, File};
 use std::io::{Read, Write};
 use std::hash::{Hash, Hasher};
@@ -16,6 +16,10 @@ const MAX_RUNTIME_VERTICES: usize = 120_000;
 const MAX_IMPORT_FILE_BYTES: u64 = 350 * 1024 * 1024;
 const MAX_PARSED_TRIANGLES: usize = 6_000_000;
 const MAX_PARSED_VERTICES: usize = 3_000_000;
+const VIEWPORT_PROXY_TRIANGLES: usize = 12_000;
+const VIEWPORT_PROXY_VERTICES: usize = 24_000;
+const VIEWPORT_NAV_TRIANGLES: usize = 18_000;
+const VIEWPORT_NAV_VERTICES: usize = 36_000;
 
 pub struct ViewportPanel {
     is_3d: bool,
@@ -33,27 +37,21 @@ pub struct ViewportPanel {
     transform_icon: Option<TextureHandle>,
     last_viewport_rect: Option<Rect>,
     dropped_asset_label: Option<String>,
-    active_mesh: Option<MeshData>,
-    active_mesh_id: u64,
+    active_mesh_full: Option<MeshData>,
+    active_mesh_full_id: u64,
+    active_mesh_proxy: Option<MeshData>,
+    active_mesh_proxy_id: u64,
     mesh_status: Option<String>,
     mesh_loading: bool,
     import_pipeline: AssetImportPipeline,
     pending_mesh_job: Option<u64>,
-    pending_texture_job: Option<u64>,
     next_import_job_id: u64,
-    active_texture: Option<ActiveTextureData>,
 }
 
 struct MeshData {
     name: String,
     vertices: Vec<Vec3>,
     triangles: Vec<[u32; 3]>,
-}
-
-struct ActiveTextureData {
-    id: u64,
-    size: [u32; 2],
-    rgba: Vec<u8>,
 }
 
 enum MeshLoadEvent {
@@ -63,13 +61,15 @@ enum MeshLoadEvent {
 
 enum ImportRequest {
     LoadMesh { job_id: u64, path: PathBuf },
-    #[allow(dead_code)]
-    LoadTexture { job_id: u64, path: PathBuf },
 }
 
 enum ImportEvent {
     Mesh { job_id: u64, event: MeshLoadEvent },
-    Texture { job_id: u64, result: Result<ActiveTextureData, String> },
+}
+
+struct ViewportMeshAsset {
+    full: MeshData,
+    proxy: MeshData,
 }
 
 struct AssetImportPipeline {
@@ -84,16 +84,15 @@ impl AssetImportPipeline {
         std::thread::spawn(move || {
             while let Ok(req) = rx_req.recv() {
                 match req {
-                    ImportRequest::LoadMesh { job_id, path } => match load_mesh_from_path_cached(&path) {
-                        Ok(full) => {
-                            let proxy = make_proxy_mesh(&full, 1800, 6000);
+                    ImportRequest::LoadMesh { job_id, path } => match load_viewport_mesh_asset_cached(&path) {
+                        Ok(asset) => {
                             let _ = tx_evt.send(ImportEvent::Mesh {
                                 job_id,
-                                event: MeshLoadEvent::Proxy(proxy),
+                                event: MeshLoadEvent::Proxy(asset.proxy),
                             });
                             let _ = tx_evt.send(ImportEvent::Mesh {
                                 job_id,
-                                event: MeshLoadEvent::Full(Ok(full)),
+                                event: MeshLoadEvent::Full(Ok(asset.full)),
                             });
                         }
                         Err(err) => {
@@ -102,10 +101,6 @@ impl AssetImportPipeline {
                                 event: MeshLoadEvent::Full(Err(err)),
                             });
                         }
-                    },
-                    ImportRequest::LoadTexture { job_id, path } => {
-                        let result = load_texture_from_path_cached(&path);
-                        let _ = tx_evt.send(ImportEvent::Texture { job_id, result });
                     }
                 }
             }
@@ -118,11 +113,6 @@ impl AssetImportPipeline {
 
     fn enqueue_mesh(&self, job_id: u64, path: PathBuf) {
         let _ = self.tx.send(ImportRequest::LoadMesh { job_id, path });
-    }
-
-    #[allow(dead_code)]
-    fn enqueue_texture(&self, job_id: u64, path: PathBuf) {
-        let _ = self.tx.send(ImportRequest::LoadTexture { job_id, path });
     }
 }
 
@@ -145,15 +135,15 @@ impl ViewportPanel {
             transform_icon: None,
             last_viewport_rect: None,
             dropped_asset_label: None,
-            active_mesh: None,
-            active_mesh_id: 0,
+            active_mesh_full: None,
+            active_mesh_full_id: 0,
+            active_mesh_proxy: None,
+            active_mesh_proxy_id: 0,
             mesh_status: None,
             mesh_loading: false,
             import_pipeline,
             pending_mesh_job: None,
-            pending_texture_job: None,
             next_import_job_id: 1,
-            active_texture: None,
         }
     }
 
@@ -211,8 +201,6 @@ impl ViewportPanel {
                 self.import_pipeline.enqueue_mesh(job_id, path.to_path_buf());
             }
             "png" | "jpg" | "jpeg" | "webp" => {
-                self.pending_texture_job = None;
-                self.active_texture = None;
                 self.mesh_status = Some("Viewport em modo sólido: textura desativada".to_string());
             }
             _ => {}
@@ -240,16 +228,20 @@ impl ViewportPanel {
                     }
                     match event {
                         MeshLoadEvent::Proxy(mesh) => {
-                            self.active_mesh = Some(mesh);
-                            self.active_mesh_id = self.active_mesh_id.wrapping_add(1);
+                            self.active_mesh_proxy = Some(mesh);
+                            self.active_mesh_proxy_id = self.active_mesh_proxy_id.wrapping_add(1);
                             self.mesh_status = Some("Proxy carregada... finalizando".to_string());
                         }
                         MeshLoadEvent::Full(Ok(mesh)) => {
                             let is_heavy = mesh.triangles.len() > MAX_RUNTIME_TRIANGLES
                                 || mesh.vertices.len() > MAX_RUNTIME_VERTICES;
-                            let mesh = make_proxy_mesh(&mesh, MAX_RUNTIME_TRIANGLES, MAX_RUNTIME_VERTICES);
-                            self.active_mesh = Some(mesh);
-                            self.active_mesh_id = self.active_mesh_id.wrapping_add(1);
+                            let full = make_proxy_mesh(&mesh, MAX_RUNTIME_TRIANGLES, MAX_RUNTIME_VERTICES);
+                            let nav_proxy =
+                                make_proxy_mesh(&full, VIEWPORT_NAV_TRIANGLES, VIEWPORT_NAV_VERTICES);
+                            self.active_mesh_full = Some(full);
+                            self.active_mesh_full_id = self.active_mesh_full_id.wrapping_add(1);
+                            self.active_mesh_proxy = Some(nav_proxy);
+                            self.active_mesh_proxy_id = self.active_mesh_proxy_id.wrapping_add(1);
                             self.mesh_status = Some(if is_heavy {
                                 "Mesh carregada com otimização automática".to_string()
                             } else {
@@ -259,27 +251,13 @@ impl ViewportPanel {
                             self.pending_mesh_job = None;
                         }
                         MeshLoadEvent::Full(Err(err)) => {
-                            self.active_mesh = None;
+                            self.active_mesh_full = None;
+                            self.active_mesh_proxy = None;
                             self.mesh_status = Some(format!("Falha ao carregar malha: {err}"));
                             self.mesh_loading = false;
                             self.pending_mesh_job = None;
                         }
                     }
-                }
-                ImportEvent::Texture { job_id, result } => {
-                    if self.pending_texture_job != Some(job_id) {
-                        continue;
-                    }
-                    match result {
-                        Ok(tex) => {
-                            self.active_texture = Some(tex);
-                            self.mesh_status = Some("Textura aplicada ao material".to_string());
-                        }
-                        Err(err) => {
-                            self.mesh_status = Some(format!("Falha ao carregar textura: {err}"));
-                        }
-                    }
-                    self.pending_texture_job = None;
                 }
             }
         }
@@ -553,6 +531,13 @@ impl ViewportPanel {
                     });
                     let can_navigate_camera =
                         viewport_resp.hovered() && !pointer_over_controls && !pointer_over_view_gizmo;
+                    let is_navigating = can_navigate_camera
+                        && ((alt_down && primary_down)
+                            || (secondary_down && !alt_down)
+                            || middle_down
+                            || (alt_down && secondary_down && pointer_delta.y.abs() > 0.0)
+                            || scroll_delta.length_sq() > 0.0
+                            || (pinch_zoom - 1.0).abs() > 1e-4);
 
                     if can_navigate_camera {
                         // Unity-like orbit: Alt + LMB.
@@ -644,17 +629,30 @@ impl ViewportPanel {
                         };
                     }
 
-                    if let Some(mesh) = &self.active_mesh {
+                    let mesh_choice = if is_navigating {
+                        self.active_mesh_proxy
+                            .as_ref()
+                            .map(|m| (m, self.active_mesh_proxy_id))
+                            .or_else(|| {
+                                self.active_mesh_full
+                                    .as_ref()
+                                    .map(|m| (m, self.active_mesh_full_id))
+                            })
+                    } else {
+                        self.active_mesh_full
+                            .as_ref()
+                            .map(|m| (m, self.active_mesh_full_id))
+                            .or_else(|| {
+                                self.active_mesh_proxy
+                                    .as_ref()
+                                    .map(|m| (m, self.active_mesh_proxy_id))
+                            })
+                    };
+
+                    if let Some((mesh, mesh_id)) = mesh_choice {
                         let mut gpu_drawn = false;
                         if let Some(gpu) = gpu_renderer {
-                            gpu.update_scene(
-                                self.active_mesh_id,
-                                &mesh.vertices,
-                                &mesh.triangles,
-                                mvp,
-                                None,
-                                false,
-                            );
+                            gpu.update_scene(mesh_id, &mesh.vertices, &mesh.triangles, mvp);
                             let cb = gpu.paint_callback(viewport_rect);
                             ui.painter().add(egui::Shape::Callback(cb));
                             gpu_drawn = true;
@@ -713,40 +711,57 @@ fn load_mesh_from_path(path: &Path) -> Result<MeshData, String> {
 }
 
 fn make_proxy_mesh(full: &MeshData, max_tris: usize, max_vertices: usize) -> MeshData {
-    let target_tris = full.triangles.len().min(max_tris).max(1);
-    let step = ((full.triangles.len() as f32 / target_tris as f32).ceil() as usize).max(1);
+    if full.triangles.is_empty() || full.vertices.is_empty() {
+        return MeshData {
+            name: format!("{} [proxy]", full.name),
+            vertices: vec![Vec3::ZERO, Vec3::X * 0.2, Vec3::Y * 0.2],
+            triangles: vec![[0, 1, 2]],
+        };
+    }
 
-    let mut remap = HashMap::<u32, u32>::with_capacity(target_tris * 2);
-    let mut vertices = Vec::<Vec3>::with_capacity(max_vertices.min(full.vertices.len()));
-    let mut triangles = Vec::<[u32; 3]>::with_capacity(target_tris);
+    let positions: Vec<[f32; 3]> = full.vertices.iter().map(|v| [v.x, v.y, v.z]).collect();
+    let src_indices: Vec<u32> = full
+        .triangles
+        .iter()
+        .flat_map(|t| [t[0], t[1], t[2]])
+        .collect();
 
-    for (idx, tri) in full.triangles.iter().enumerate() {
-        if idx % step != 0 {
-            continue;
+    let target_index_count = (max_tris.saturating_mul(3))
+        .min(src_indices.len())
+        .max(3);
+    let simplified = meshopt::simplify_decoder(
+        &src_indices,
+        &positions,
+        target_index_count,
+        0.02,
+        meshopt::SimplifyOptions::Sparse,
+        None,
+    );
+
+    let mut optimized_indices = if simplified.len() >= 3 {
+        meshopt::optimize_vertex_cache(&simplified, positions.len())
+    } else {
+        Vec::new()
+    };
+    let mut working_vertices = positions.clone();
+    let compact_vertices = meshopt::optimize_vertex_fetch(&mut optimized_indices, &working_vertices);
+    working_vertices.clear();
+
+    let vertices: Vec<Vec3> = compact_vertices
+        .iter()
+        .take(max_vertices)
+        .map(|v| Vec3::new(v[0], v[1], v[2]))
+        .collect();
+    let mut triangles: Vec<[u32; 3]> = Vec::with_capacity(optimized_indices.len() / 3);
+    for tri in optimized_indices.chunks_exact(3) {
+        if (tri[0] as usize) < vertices.len()
+            && (tri[1] as usize) < vertices.len()
+            && (tri[2] as usize) < vertices.len()
+        {
+            triangles.push([tri[0], tri[1], tri[2]]);
         }
-        if triangles.len() >= target_tris {
+        if triangles.len() >= max_tris {
             break;
-        }
-
-        let mut out = [0_u32; 3];
-        let mut can_add = true;
-        for (k, src_idx) in tri.iter().copied().enumerate() {
-            let Some(&v) = remap.get(&src_idx) else {
-                let src_usize = src_idx as usize;
-                if src_usize >= full.vertices.len() || vertices.len() >= max_vertices {
-                    can_add = false;
-                    break;
-                }
-                let dst = vertices.len() as u32;
-                vertices.push(full.vertices[src_usize]);
-                remap.insert(src_idx, dst);
-                out[k] = dst;
-                continue;
-            };
-            out[k] = v;
-        }
-        if can_add {
-            triangles.push(out);
         }
     }
 
@@ -769,14 +784,17 @@ fn make_proxy_mesh(full: &MeshData, max_tris: usize, max_vertices: usize) -> Mes
     }
 }
 
-fn load_mesh_from_path_cached(path: &Path) -> Result<MeshData, String> {
+fn load_viewport_mesh_asset_cached(path: &Path) -> Result<ViewportMeshAsset, String> {
     let stamp = source_stamp(path).unwrap_or((0, 0));
-    if let Some(mesh) = read_dmesh_cache(path, stamp).ok().flatten() {
-        return Ok(mesh);
+    if let Some(asset) = read_vmesh_cache(path, stamp).ok().flatten() {
+        return Ok(asset);
     }
-    let mesh = load_mesh_from_path(path)?;
-    let _ = write_dmesh_cache(path, &mesh, stamp);
-    Ok(mesh)
+
+    let full = load_mesh_from_path(path)?;
+    let proxy = make_proxy_mesh(&full, VIEWPORT_PROXY_TRIANGLES, VIEWPORT_PROXY_VERTICES);
+    let asset = ViewportMeshAsset { full, proxy };
+    let _ = write_vmesh_cache(path, &asset, stamp);
+    Ok(asset)
 }
 
 fn source_stamp(path: &Path) -> Result<(u64, u64), String> {
@@ -791,21 +809,16 @@ fn source_stamp(path: &Path) -> Result<(u64, u64), String> {
     Ok((len, mtime))
 }
 
-fn cache_file_path(source: &Path) -> Result<std::path::PathBuf, String> {
+fn viewport_cache_file_path(source: &Path) -> Result<std::path::PathBuf, String> {
     let mut hasher = std::collections::hash_map::DefaultHasher::new();
     source.to_string_lossy().hash(&mut hasher);
     let key = hasher.finish();
-    let cache_dir = Path::new("Assets").join(".cache").join("meshes");
+    let cache_dir = Path::new("Assets").join(".cache").join("viewport_meshes");
     fs::create_dir_all(&cache_dir).map_err(|e| e.to_string())?;
-    Ok(cache_dir.join(format!("{key:016x}.dmesh")))
+    Ok(cache_dir.join(format!("{key:016x}.vmesh")))
 }
 
-fn write_dmesh_cache(source: &Path, mesh: &MeshData, stamp: (u64, u64)) -> Result<(), String> {
-    let cache = cache_file_path(source)?;
-    let mut f = File::create(cache).map_err(|e| e.to_string())?;
-    f.write_all(b"DMSH1").map_err(|e| e.to_string())?;
-    f.write_all(&stamp.0.to_le_bytes()).map_err(|e| e.to_string())?;
-    f.write_all(&stamp.1.to_le_bytes()).map_err(|e| e.to_string())?;
+fn write_mesh_blob(f: &mut File, mesh: &MeshData) -> Result<(), String> {
     let vcount = mesh.vertices.len() as u32;
     let tcount = mesh.triangles.len() as u32;
     f.write_all(&vcount.to_le_bytes()).map_err(|e| e.to_string())?;
@@ -823,25 +836,7 @@ fn write_dmesh_cache(source: &Path, mesh: &MeshData, stamp: (u64, u64)) -> Resul
     Ok(())
 }
 
-fn read_dmesh_cache(source: &Path, stamp: (u64, u64)) -> Result<Option<MeshData>, String> {
-    let cache = cache_file_path(source)?;
-    if !cache.exists() {
-        return Ok(None);
-    }
-    let mut f = File::open(cache).map_err(|e| e.to_string())?;
-    let mut magic = [0_u8; 5];
-    f.read_exact(&mut magic).map_err(|e| e.to_string())?;
-    if &magic != b"DMSH1" {
-        return Ok(None);
-    }
-    let mut buf8 = [0_u8; 8];
-    f.read_exact(&mut buf8).map_err(|e| e.to_string())?;
-    let src_len = u64::from_le_bytes(buf8);
-    f.read_exact(&mut buf8).map_err(|e| e.to_string())?;
-    let src_mtime = u64::from_le_bytes(buf8);
-    if src_len != stamp.0 || src_mtime != stamp.1 {
-        return Ok(None);
-    }
+fn read_mesh_blob(f: &mut File, name: &str) -> Result<MeshData, String> {
     let mut buf4 = [0_u8; 4];
     f.read_exact(&mut buf4).map_err(|e| e.to_string())?;
     let vcount = u32::from_le_bytes(buf4) as usize;
@@ -869,108 +864,52 @@ fn read_dmesh_cache(source: &Path, stamp: (u64, u64)) -> Result<Option<MeshData>
         let c = u32::from_le_bytes(buf4);
         triangles.push([a, b, c]);
     }
+    Ok(MeshData {
+        name: name.to_string(),
+        vertices,
+        triangles,
+    })
+}
+
+fn write_vmesh_cache(source: &Path, asset: &ViewportMeshAsset, stamp: (u64, u64)) -> Result<(), String> {
+    let cache = viewport_cache_file_path(source)?;
+    let mut f = File::create(cache).map_err(|e| e.to_string())?;
+    f.write_all(b"VMSH2").map_err(|e| e.to_string())?;
+    f.write_all(&stamp.0.to_le_bytes()).map_err(|e| e.to_string())?;
+    f.write_all(&stamp.1.to_le_bytes()).map_err(|e| e.to_string())?;
+    write_mesh_blob(&mut f, &asset.full)?;
+    write_mesh_blob(&mut f, &asset.proxy)?;
+    Ok(())
+}
+
+fn read_vmesh_cache(source: &Path, stamp: (u64, u64)) -> Result<Option<ViewportMeshAsset>, String> {
+    let cache = viewport_cache_file_path(source)?;
+    if !cache.exists() {
+        return Ok(None);
+    }
+    let mut f = File::open(cache).map_err(|e| e.to_string())?;
+    let mut magic = [0_u8; 5];
+    f.read_exact(&mut magic).map_err(|e| e.to_string())?;
+    if &magic != b"VMSH2" {
+        return Ok(None);
+    }
+    let mut buf8 = [0_u8; 8];
+    f.read_exact(&mut buf8).map_err(|e| e.to_string())?;
+    let src_len = u64::from_le_bytes(buf8);
+    f.read_exact(&mut buf8).map_err(|e| e.to_string())?;
+    let src_mtime = u64::from_le_bytes(buf8);
+    if src_len != stamp.0 || src_mtime != stamp.1 {
+        return Ok(None);
+    }
+
     let name = source
         .file_name()
         .and_then(|s| s.to_str())
         .unwrap_or("Mesh")
         .to_string();
-    Ok(Some(MeshData {
-        name,
-        vertices,
-        triangles,
-    }))
-}
-
-fn load_texture_from_path_cached(path: &Path) -> Result<ActiveTextureData, String> {
-    let stamp = source_stamp(path).unwrap_or((0, 0));
-    if let Some(tex) = read_dtex_cache(path, stamp).ok().flatten() {
-        return Ok(tex);
-    }
-
-    let img = image::open(path).map_err(|e| e.to_string())?;
-    let rgba = img.to_rgba8();
-    let size = [rgba.width(), rgba.height()];
-    let id = texture_asset_id(path, stamp);
-    let tex = ActiveTextureData {
-        id,
-        size,
-        rgba: rgba.into_raw(),
-    };
-    let _ = write_dtex_cache(path, &tex, stamp);
-    Ok(tex)
-}
-
-fn texture_asset_id(path: &Path, stamp: (u64, u64)) -> u64 {
-    let mut hasher = std::collections::hash_map::DefaultHasher::new();
-    path.to_string_lossy().hash(&mut hasher);
-    stamp.0.hash(&mut hasher);
-    stamp.1.hash(&mut hasher);
-    hasher.finish()
-}
-
-fn texture_cache_file_path(source: &Path) -> Result<std::path::PathBuf, String> {
-    let mut hasher = std::collections::hash_map::DefaultHasher::new();
-    source.to_string_lossy().hash(&mut hasher);
-    let key = hasher.finish();
-    let cache_dir = Path::new("Assets").join(".cache").join("textures");
-    fs::create_dir_all(&cache_dir).map_err(|e| e.to_string())?;
-    Ok(cache_dir.join(format!("{key:016x}.dtex")))
-}
-
-fn write_dtex_cache(source: &Path, tex: &ActiveTextureData, stamp: (u64, u64)) -> Result<(), String> {
-    let cache = texture_cache_file_path(source)?;
-    let mut f = File::create(cache).map_err(|e| e.to_string())?;
-    f.write_all(b"DTX1").map_err(|e| e.to_string())?;
-    f.write_all(&stamp.0.to_le_bytes()).map_err(|e| e.to_string())?;
-    f.write_all(&stamp.1.to_le_bytes()).map_err(|e| e.to_string())?;
-    f.write_all(&tex.id.to_le_bytes()).map_err(|e| e.to_string())?;
-    f.write_all(&tex.size[0].to_le_bytes()).map_err(|e| e.to_string())?;
-    f.write_all(&tex.size[1].to_le_bytes()).map_err(|e| e.to_string())?;
-    let len = tex.rgba.len() as u64;
-    f.write_all(&len.to_le_bytes()).map_err(|e| e.to_string())?;
-    f.write_all(&tex.rgba).map_err(|e| e.to_string())?;
-    Ok(())
-}
-
-fn read_dtex_cache(source: &Path, stamp: (u64, u64)) -> Result<Option<ActiveTextureData>, String> {
-    let cache = texture_cache_file_path(source)?;
-    if !cache.exists() {
-        return Ok(None);
-    }
-
-    let mut f = File::open(cache).map_err(|e| e.to_string())?;
-    let mut magic = [0_u8; 4];
-    f.read_exact(&mut magic).map_err(|e| e.to_string())?;
-    if &magic != b"DTX1" {
-        return Ok(None);
-    }
-
-    let mut b8 = [0_u8; 8];
-    let mut b4 = [0_u8; 4];
-    f.read_exact(&mut b8).map_err(|e| e.to_string())?;
-    let src_len = u64::from_le_bytes(b8);
-    f.read_exact(&mut b8).map_err(|e| e.to_string())?;
-    let src_mtime = u64::from_le_bytes(b8);
-    if src_len != stamp.0 || src_mtime != stamp.1 {
-        return Ok(None);
-    }
-
-    f.read_exact(&mut b8).map_err(|e| e.to_string())?;
-    let id = u64::from_le_bytes(b8);
-    f.read_exact(&mut b4).map_err(|e| e.to_string())?;
-    let w = u32::from_le_bytes(b4);
-    f.read_exact(&mut b4).map_err(|e| e.to_string())?;
-    let h = u32::from_le_bytes(b4);
-    f.read_exact(&mut b8).map_err(|e| e.to_string())?;
-    let len = u64::from_le_bytes(b8) as usize;
-
-    let mut rgba = vec![0_u8; len];
-    f.read_exact(&mut rgba).map_err(|e| e.to_string())?;
-    Ok(Some(ActiveTextureData {
-        id,
-        size: [w, h],
-        rgba,
-    }))
+    let full = read_mesh_blob(&mut f, &name)?;
+    let proxy = read_mesh_blob(&mut f, &format!("{name} [proxy]"))?;
+    Ok(Some(ViewportMeshAsset { full, proxy }))
 }
 
 fn load_fbx_ascii_mesh(path: &Path) -> Result<MeshData, String> {
@@ -1072,7 +1011,46 @@ fn load_gltf_mesh(path: &Path) -> Result<MeshData, String> {
     let mut vertices = Vec::new();
     let mut triangles = Vec::new();
 
-    for mesh in gltf.document.meshes() {
+    if let Some(scene) = gltf
+        .document
+        .default_scene()
+        .or_else(|| gltf.document.scenes().next())
+    {
+        for node in scene.nodes() {
+            append_gltf_node_meshes(node, Mat4::IDENTITY, &buffers, &mut vertices, &mut triangles);
+        }
+    } else {
+        for node in gltf.document.nodes() {
+            append_gltf_node_meshes(node, Mat4::IDENTITY, &buffers, &mut vertices, &mut triangles);
+        }
+    }
+
+    if vertices.is_empty() || triangles.is_empty() {
+        return Err("GLTF/GLB sem triângulos suportados".to_string());
+    }
+    let name = path
+        .file_name()
+        .and_then(|s| s.to_str())
+        .unwrap_or("GLB")
+        .to_string();
+    Ok(MeshData {
+        name,
+        vertices,
+        triangles,
+    })
+}
+
+fn append_gltf_node_meshes(
+    node: gltf::Node<'_>,
+    parent: Mat4,
+    buffers: &[Vec<u8>],
+    vertices: &mut Vec<Vec3>,
+    triangles: &mut Vec<[u32; 3]>,
+) {
+    let local = Mat4::from_cols_array_2d(&node.transform().matrix());
+    let world = parent * local;
+
+    if let Some(mesh) = node.mesh() {
         for primitive in mesh.primitives() {
             if primitive.mode() != gltf::mesh::Mode::Triangles {
                 continue;
@@ -1083,7 +1061,9 @@ fn load_gltf_mesh(path: &Path) -> Result<MeshData, String> {
             };
 
             let base = vertices.len() as u32;
-            let local_verts: Vec<Vec3> = positions.map(|p| Vec3::new(p[0], p[1], p[2])).collect();
+            let local_verts: Vec<Vec3> = positions
+                .map(|p| world.transform_point3(Vec3::new(p[0], p[1], p[2])))
+                .collect();
             let vcount = local_verts.len() as u32;
             vertices.extend(local_verts);
 
@@ -1102,19 +1082,9 @@ fn load_gltf_mesh(path: &Path) -> Result<MeshData, String> {
         }
     }
 
-    if vertices.is_empty() || triangles.is_empty() {
-        return Err("GLTF/GLB sem triângulos suportados".to_string());
+    for child in node.children() {
+        append_gltf_node_meshes(child, world, buffers, vertices, triangles);
     }
-    let name = path
-        .file_name()
-        .and_then(|s| s.to_str())
-        .unwrap_or("GLB")
-        .to_string();
-    Ok(MeshData {
-        name,
-        vertices,
-        triangles,
-    })
 }
 
 fn load_gltf_buffers_mesh_only(path: &Path, gltf: &gltf::Gltf) -> Result<Vec<Vec<u8>>, String> {
