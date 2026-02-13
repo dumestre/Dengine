@@ -11,6 +11,8 @@ dependencies = [
  "egui_dock",
  "epaint",
  "image",
+ "raw-window-handle",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]

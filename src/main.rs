@@ -9,7 +9,10 @@ use epaint::ColorImage;
 use hierarchy::HierarchyWindow;
 use inspector::InspectorWindow;
 use project::ProjectWindow;
+use raw_window_handle::{HasWindowHandle, RawWindowHandle};
 use std::sync::Arc;
+#[cfg(target_os = "windows")]
+use windows_sys::Win32::Graphics::Dwm::DwmSetWindowAttribute;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum EngineLanguage {
@@ -40,6 +43,7 @@ struct EditorApp {
     selected_mode: ToolbarMode,
     language: EngineLanguage,
     project_collapsed: bool,
+    windows_blur_initialized: bool,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -165,24 +169,34 @@ impl App for EditorApp {
         [0.0, 0.0, 0.0, 0.0]
     }
 
-    fn update(&mut self, ctx: &egui::Context, _: &mut Frame) {
+    fn update(&mut self, ctx: &egui::Context, frame: &mut Frame) {
         // Dark theme
         ctx.set_visuals(egui::Visuals::dark());
         self.ensure_toolbar_icons_loaded(ctx);
+        if !self.windows_blur_initialized {
+            self.windows_blur_initialized = true;
+            let _ = enable_windows_backdrop_blur(frame);
+        }
 
         // Barra de título customizada
         egui::TopBottomPanel::top("window_controls_bar")
             .exact_height(30.0)
             .frame(
                 egui::Frame::new()
-                    .fill(egui::Color32::from_rgba_unmultiplied(22, 22, 22, 78))
+                    .fill(egui::Color32::from_rgba_unmultiplied(24, 31, 30, 56))
                     .stroke(egui::Stroke::new(
                         1.0,
-                        egui::Color32::from_rgba_unmultiplied(90, 90, 90, 48),
+                        egui::Color32::from_rgba_unmultiplied(210, 228, 222, 42),
                     )),
             )
             .show(ctx, |ui| {
                 let title_rect = ui.max_rect();
+                ui.painter().rect_filled(
+                    title_rect,
+                    0.0,
+                    egui::Color32::from_rgba_unmultiplied(245, 252, 249, 14),
+                );
+
                 let drag_rect = egui::Rect::from_min_max(
                     title_rect.min,
                     egui::pos2(title_rect.max.x - 116.0, title_rect.max.y),
@@ -687,6 +701,40 @@ impl App for EditorApp {
     }
 }
 
+fn enable_windows_backdrop_blur(frame: &Frame) -> bool {
+    #[cfg(target_os = "windows")]
+    {
+        let Ok(window_handle) = frame.window_handle() else {
+            return false;
+        };
+        let RawWindowHandle::Win32(win) = window_handle.as_raw() else {
+            return false;
+        };
+
+        // Windows 11 backdrop types: 2 = Mica, 3 = Acrylic-like transient blur.
+        const DWMWA_SYSTEMBACKDROP_TYPE: u32 = 38;
+        const DWMSBT_TRANSIENTWINDOW: i32 = 3;
+
+        let hwnd = win.hwnd.get() as *mut core::ffi::c_void;
+        let backdrop = DWMSBT_TRANSIENTWINDOW;
+        let hr = unsafe {
+            DwmSetWindowAttribute(
+                hwnd,
+                DWMWA_SYSTEMBACKDROP_TYPE,
+                &backdrop as *const _ as *const core::ffi::c_void,
+                std::mem::size_of::<i32>() as u32,
+            )
+        };
+        return hr >= 0;
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    {
+        let _ = frame;
+        false
+    }
+}
+
 fn main() -> eframe::Result<()> {
     let app_icon = load_icon_data_from_png("src/assets/icons/icon.png");
     let options = NativeOptions {
@@ -730,6 +778,7 @@ fn main() -> eframe::Result<()> {
                 selected_mode: ToolbarMode::Cena,
                 language: EngineLanguage::Pt,
                 project_collapsed: false,
+                windows_blur_initialized: false,
             }))
         }),
     )

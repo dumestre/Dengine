@@ -9,3 +9,5 @@ egui_dock = "0.18"
 eframe = { version = "0.33.3", features = ["wgpu"] }
 epaint = "0.33.3"
 image = { version = "0.25", default-features = false, features = ["png"] }
+raw-window-handle = "0.6.2"
+windows-sys = { version = "0.59", features = ["Win32_Graphics_Dwm"] }
