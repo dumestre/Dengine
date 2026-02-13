@@ -20,7 +20,6 @@ pub struct ProjectWindow {
     packages_open: bool,
     hover_roll_asset: Option<&'static str>,
     hover_still_since: f64,
-    pointer_last_move_time: f64,
 }
 
 fn load_png_as_texture(ctx: &egui::Context, png_path: &str) -> Option<TextureHandle> {
@@ -52,7 +51,6 @@ impl ProjectWindow {
             packages_open: true,
             hover_roll_asset: None,
             hover_still_since: 0.0,
-            pointer_last_move_time: 0.0,
         }
     }
 
@@ -379,19 +377,16 @@ impl ProjectWindow {
                 let splitter_y = header_rect.bottom() + 4.0;
                 let search_hint = self.tr(language, "search");
                 let breadcrumb = self.breadcrumb_segments(language);
+                let search_w = 220.0;
+                let search_x = (header_rect.center().x - search_w * 0.5 - 36.0)
+                    .clamp(header_rect.left() + 6.0, header_rect.right() - search_w);
                 let search_rect = Rect::from_min_max(
-                    egui::pos2(header_rect.right() - 226.0, header_rect.top()),
-                    header_rect.right_bottom(),
+                    egui::pos2(search_x, header_rect.top()),
+                    egui::pos2(search_x + search_w, header_rect.bottom()),
                 );
                 let left_header_rect = Rect::from_min_max(
                     header_rect.min,
                     egui::pos2(search_rect.left() - 6.0, header_rect.bottom()),
-                );
-
-                ui.painter().rect_filled(
-                    left_header_rect.shrink2(egui::vec2(0.0, 1.0)),
-                    4.0,
-                    Color32::from_rgb(41, 41, 41),
                 );
 
                 ui.scope_builder(
@@ -403,8 +398,10 @@ impl ProjectWindow {
                         ui.label(
                             egui::RichText::new(self.tr(language, "title"))
                                 .size(12.0)
-                                .color(Color32::from_gray(210)),
+                                .color(Color32::from_gray(175)),
                         );
+                        ui.add_space(6.0);
+                        ui.label(egui::RichText::new("|").size(12.0).color(Color32::from_gray(110)));
                         ui.add_space(8.0);
 
                         for (idx, (folder_id, folder_label)) in breadcrumb.iter().enumerate() {
@@ -456,7 +453,7 @@ impl ProjectWindow {
                     |ui| {
                         ui.add(
                             egui::TextEdit::singleline(&mut self.search_query)
-                                .desired_width(220.0)
+                                .desired_width(search_w)
                                 .hint_text(search_hint),
                         );
                     },
@@ -584,12 +581,7 @@ impl ProjectWindow {
                             .show(ui, |ui| {
                                 ui.horizontal_wrapped(|ui| {
                                     ui.spacing_mut().item_spacing = egui::vec2(8.0, 8.0);
-                                    let pointer_delta = ui.ctx().input(|i| i.pointer.delta());
-                                    let pointer_is_moving = pointer_delta.length_sq() > 0.64;
                                     let now = ui.ctx().input(|i| i.time);
-                                    if pointer_is_moving {
-                                        self.pointer_last_move_time = now;
-                                    }
                                     let mut hovered_any = false;
 
                                     for asset in assets {
@@ -667,11 +659,8 @@ impl ProjectWindow {
                                                 self.hover_still_since = now;
                                             }
 
-                                            let stable_since =
-                                                self.hover_still_since.max(self.pointer_last_move_time);
-                                            let stable_hover = self.hover_roll_asset == Some(asset)
-                                                && (now - stable_since) >= 0.28;
-                                            if !stable_hover {
+                                            let hover_elapsed = now - self.hover_still_since;
+                                            if hover_elapsed < 0.18 {
                                                 let short = Self::truncate_with_ellipsis(
                                                     ui.painter(),
                                                     asset,
@@ -687,31 +676,31 @@ impl ProjectWindow {
                                                 );
                                             } else {
                                                 ui.ctx().request_repaint();
-                                                let anim_time = (now - stable_since - 0.28) as f32;
+                                                let anim_time = (hover_elapsed - 0.18) as f32;
                                                 let tail_pad = 8.0;
                                                 let overflow = (full_w - name_rect.width() + tail_pad).max(0.0);
                                                 let speed = 12.0;
                                                 let start_pause = 0.65;
-                                            let end_pause = 1.0;
-                                            let run_time = overflow / speed;
-                                            let cycle = start_pause + run_time + end_pause;
+                                                let end_pause = 1.0;
+                                                let run_time = overflow / speed;
+                                                let cycle = start_pause + run_time + end_pause;
                                                 let phase = anim_time % cycle;
-                                            let scroll_x = if phase < start_pause {
-                                                0.0
-                                            } else if phase < start_pause + run_time {
-                                                (phase - start_pause) * speed
-                                            } else {
-                                                overflow
-                                            };
-                                            let base_x = name_rect.center().x - full_w * 0.5;
+                                                let scroll_x = if phase < start_pause {
+                                                    0.0
+                                                } else if phase < start_pause + run_time {
+                                                    (phase - start_pause) * speed
+                                                } else {
+                                                    overflow
+                                                };
+                                                let base_x = name_rect.center().x - full_w * 0.5;
 
-                                            clipped_painter.text(
-                                                egui::pos2(base_x - scroll_x, name_rect.center().y),
-                                                egui::Align2::LEFT_CENTER,
-                                                asset,
-                                                name_font.clone(),
-                                                name_color,
-                                            );
+                                                clipped_painter.text(
+                                                    egui::pos2(base_x - scroll_x, name_rect.center().y),
+                                                    egui::Align2::LEFT_CENTER,
+                                                    asset,
+                                                    name_font.clone(),
+                                                    name_color,
+                                                );
                                             }
                                         } else {
                                             let short = Self::truncate_with_ellipsis(
