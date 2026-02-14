@@ -15,11 +15,12 @@ use viewport::ViewportPanel;
 use viewport_gpu::ViewportGpuRenderer;
 use raw_window_handle::{HasWindowHandle, RawWindowHandle};
 use std::fs::{self, File};
-use std::io::Write;
+use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::Arc;
 use std::sync::mpsc::{self, Receiver, TryRecvError};
+use portable_pty::{CommandBuilder, PtySize, native_pty_system};
 #[cfg(target_os = "windows")]
 use windows_sys::Win32::Graphics::Dwm::DwmSetWindowAttribute;
 
@@ -78,6 +79,12 @@ impl TerminalCliModel {
 struct TerminalProvisionResult {
     ok: bool,
     message: String,
+    model: Option<TerminalCliModel>,
+}
+
+struct EmbeddedTerminalSession {
+    child: Box<dyn portable_pty::Child + Send>,
+    writer: Box<dyn Write + Send>,
 }
 
 struct EditorApp {
@@ -125,6 +132,12 @@ struct EditorApp {
     terminal_status: Option<String>,
     terminal_busy: bool,
     terminal_job_rx: Option<Receiver<TerminalProvisionResult>>,
+    terminal_output_rx: Option<Receiver<String>>,
+    terminal_output: String,
+    terminal_input: String,
+    terminal_session: Option<EmbeddedTerminalSession>,
+    terminal_history: Vec<String>,
+    terminal_history_cursor: Option<usize>,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -962,25 +975,56 @@ impl EditorApp {
     }
 
     fn poll_terminal_job(&mut self) {
-        let Some(rx) = &self.terminal_job_rx else {
+        let Some(rx) = self.terminal_job_rx.take() else {
             return;
         };
         match rx.try_recv() {
             Ok(result) => {
                 self.terminal_busy = false;
                 self.terminal_status = Some(result.message);
-                self.terminal_job_rx = None;
                 if !result.ok {
                     self.terminal_selected_model = None;
+                } else if let Some(model) = result.model {
+                    if let Err(err) = self.start_embedded_cli_session(model) {
+                        self.terminal_status = Some(err);
+                    }
                 }
             }
-            Err(TryRecvError::Empty) => {}
+            Err(TryRecvError::Empty) => {
+                self.terminal_job_rx = Some(rx);
+            }
             Err(TryRecvError::Disconnected) => {
                 self.terminal_busy = false;
                 self.terminal_status = Some("Falha ao iniciar tarefa do terminal".to_string());
-                self.terminal_job_rx = None;
                 self.terminal_selected_model = None;
             }
+        }
+    }
+
+    fn poll_terminal_output(&mut self) {
+        let Some(rx) = self.terminal_output_rx.take() else {
+            return;
+        };
+        let mut keep_rx = true;
+        loop {
+            match rx.try_recv() {
+                Ok(chunk) => {
+                    self.terminal_output.push_str(&chunk);
+                    if self.terminal_output.len() > 220_000 {
+                        let cut = self.terminal_output.len().saturating_sub(200_000);
+                        self.terminal_output.drain(..cut);
+                    }
+                }
+                Err(TryRecvError::Empty) => break,
+                Err(TryRecvError::Disconnected) => {
+                    keep_rx = false;
+                    self.terminal_status = Some("Sessão de terminal finalizada".to_string());
+                    break;
+                }
+            }
+        }
+        if keep_rx {
+            self.terminal_output_rx = Some(rx);
         }
     }
 
@@ -1117,80 +1161,164 @@ impl EditorApp {
         }
     }
 
-    fn launch_cli_terminal(model: TerminalCliModel) -> Result<(), String> {
-        let exe = model.exe_name();
-        #[cfg(target_os = "windows")]
-        {
-            let cmd_shim = format!("{exe}.cmd");
-            let has_cmd_shim = Self::is_cli_installed(&cmd_shim);
-            if has_cmd_shim {
-                Command::new("cmd")
-                    .args(["/C", "start", "", "cmd", "/K", &cmd_shim])
-                    .spawn()
-                    .map_err(|e| format!("erro ao abrir terminal: {e}"))?;
-                return Ok(());
-            }
+    fn terminal_working_dir(&self) -> PathBuf {
+        if let Some(project_file) = &self.current_project {
+            return project_file
+                .parent()
+                .map(PathBuf::from)
+                .unwrap_or_else(|| PathBuf::from("."));
+        }
+        std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."))
+    }
 
-            // Fallback: PowerShell com bypass de policy para evitar bloqueio de .ps1.
-            let ps_cmd = format!("& {exe}");
-            Command::new("cmd")
-                .args([
-                    "/C",
-                    "start",
-                    "",
-                    "powershell",
-                    "-NoExit",
-                    "-ExecutionPolicy",
-                    "Bypass",
-                    "-Command",
-                    &ps_cmd,
-                ])
-                .spawn()
-                .map_err(|e| format!("erro ao abrir terminal: {e}"))?;
-            Ok(())
+    fn shell_escape_path_for_cd(path: &Path, windows: bool) -> String {
+        let raw = path.to_string_lossy().to_string();
+        if windows {
+            format!("\"{}\"", raw.replace('"', "\"\""))
+        } else {
+            format!("\"{}\"", raw.replace('"', "\\\""))
         }
-        #[cfg(target_os = "macos")]
-        {
-            let script = format!("tell application \"Terminal\" to do script \"{exe}\"");
-            Command::new("osascript")
-                .args(["-e", &script])
-                .spawn()
-                .map_err(|e| format!("erro ao abrir terminal: {e}"))?;
-            Ok(())
-        }
-        #[cfg(all(unix, not(target_os = "macos")))]
-        {
-            let candidates: [(&str, Vec<&str>); 4] = [
-                ("x-terminal-emulator", vec!["-e", exe]),
-                ("gnome-terminal", vec!["--", exe]),
-                ("konsole", vec!["-e", exe]),
-                ("xfce4-terminal", vec!["-e", exe]),
-            ];
-            for (term, args) in candidates {
-                let launched = Command::new(term).args(args).spawn();
-                if launched.is_ok() {
-                    return Ok(());
+    }
+
+    fn start_embedded_cli_session(&mut self, model: TerminalCliModel) -> Result<(), String> {
+        self.stop_embedded_terminal_session();
+        let pty_system = native_pty_system();
+        let pair = pty_system
+            .openpty(PtySize {
+                rows: 34,
+                cols: 120,
+                pixel_width: 0,
+                pixel_height: 0,
+            })
+            .map_err(|e| format!("falha ao abrir PTY: {e}"))?;
+
+        let mut cmd = {
+            #[cfg(target_os = "windows")]
+            {
+                let comspec = std::env::var("COMSPEC").unwrap_or_else(|_| "cmd.exe".to_string());
+                let mut c = CommandBuilder::new(comspec);
+                c.arg("/Q");
+                c.arg("/K");
+                c
+            }
+            #[cfg(not(target_os = "windows"))]
+            {
+                let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/bash".to_string());
+                let mut c = CommandBuilder::new(shell);
+                c.arg("-i");
+                c
+            }
+        };
+        cmd.cwd(self.terminal_working_dir());
+        let child = pair
+            .slave
+            .spawn_command(cmd)
+            .map_err(|e| format!("falha ao iniciar sessão PTY: {e}"))?;
+        drop(pair.slave);
+
+        let mut reader = pair
+            .master
+            .try_clone_reader()
+            .map_err(|e| format!("falha ao clonar leitor PTY: {e}"))?;
+        let mut writer = pair
+            .master
+            .take_writer()
+            .map_err(|e| format!("falha ao abrir writer PTY: {e}"))?;
+        let (tx, rx) = mpsc::channel::<String>();
+        std::thread::spawn(move || {
+            let mut buf = [0_u8; 4096];
+            loop {
+                match reader.read(&mut buf) {
+                    Ok(0) => break,
+                    Ok(n) => {
+                        let text = String::from_utf8_lossy(&buf[..n]).to_string();
+                        if tx.send(text).is_err() {
+                            break;
+                        }
+                    }
+                    Err(_) => break,
                 }
             }
-            Err("nenhum emulador de terminal suportado foi encontrado (x-terminal-emulator/gnome-terminal/konsole/xfce4-terminal)".to_string())
+        });
+        // Primeiro entra no diretorio raiz do projeto, depois executa o CLI.
+        let project_dir = self.terminal_working_dir();
+        let cd_cmd = {
+            #[cfg(target_os = "windows")]
+            {
+                format!(
+                    "cd /d {}",
+                    Self::shell_escape_path_for_cd(&project_dir, true)
+                )
+            }
+            #[cfg(not(target_os = "windows"))]
+            {
+                format!("cd {}", Self::shell_escape_path_for_cd(&project_dir, false))
+            }
+        };
+        let mut cd_line = cd_cmd;
+        cd_line.push('\n');
+        let _ = writer.write_all(cd_line.as_bytes());
+        let _ = writer.flush();
+
+        let cli_cmd = {
+            #[cfg(target_os = "windows")]
+            {
+                let exe = model.exe_name();
+                let cmd_shim = format!("{exe}.cmd");
+                if Self::is_cli_installed(&cmd_shim) {
+                    cmd_shim
+                } else {
+                    exe.to_string()
+                }
+            }
+            #[cfg(not(target_os = "windows"))]
+            {
+                model.exe_name().to_string()
+            }
+        };
+        let mut line = cli_cmd;
+        line.push('\n');
+        let _ = writer.write_all(line.as_bytes());
+        let _ = writer.flush();
+
+        self.terminal_output.clear();
+        self.terminal_input.clear();
+        self.terminal_history_cursor = None;
+        self.terminal_output_rx = Some(rx);
+        self.terminal_session = Some(EmbeddedTerminalSession { child, writer });
+        self.terminal_status = Some(format!(
+            "{} iniciado no TerminAI em {}",
+            model.label(),
+            self.terminal_working_dir().display()
+        ));
+        Ok(())
+    }
+
+    fn stop_embedded_terminal_session(&mut self) {
+        if let Some(mut session) = self.terminal_session.take() {
+            let _ = session.child.kill();
+            let _ = session.child.wait();
         }
+        self.terminal_output_rx = None;
     }
 
     fn start_terminal_provision(&mut self, model: TerminalCliModel) {
         if self.terminal_busy {
             return;
         }
-        if let Err(err) = Self::node_tooling_ready() {
-            self.terminal_busy = false;
-            self.terminal_status = Some(err);
-            self.terminal_selected_model = None;
-            return;
-        }
         self.terminal_busy = true;
-        self.terminal_status = Some(format!("Verificando {}...", model.label()));
+        self.terminal_status = Some(format!("Verificando e preparando {}...", model.label()));
         let (tx, rx) = mpsc::channel::<TerminalProvisionResult>();
         self.terminal_job_rx = Some(rx);
         std::thread::spawn(move || {
+            if let Err(err) = Self::node_tooling_ready() {
+                let _ = tx.send(TerminalProvisionResult {
+                    ok: false,
+                    message: err,
+                    model: None,
+                });
+                return;
+            }
             let exe = model.exe_name();
             if !Self::is_cli_installed(exe) {
                 let install = Self::install_cli_npm(model);
@@ -1198,6 +1326,7 @@ impl EditorApp {
                     let _ = tx.send(TerminalProvisionResult {
                         ok: false,
                         message: format!("Falha ao instalar {}: {}", model.label(), err),
+                        model: None,
                     });
                     return;
                 }
@@ -1205,25 +1334,16 @@ impl EditorApp {
                     let _ = tx.send(TerminalProvisionResult {
                         ok: false,
                         message: format!("{} instalado, mas comando não foi encontrado no PATH", model.label()),
+                        model: None,
                     });
                     return;
                 }
             }
-
-            match Self::launch_cli_terminal(model) {
-                Ok(()) => {
-                    let _ = tx.send(TerminalProvisionResult {
-                        ok: true,
-                        message: format!("{} iniciado com sucesso", model.label()),
-                    });
-                }
-                Err(err) => {
-                    let _ = tx.send(TerminalProvisionResult {
-                        ok: false,
-                        message: format!("Falha ao abrir {}: {}", model.label(), err),
-                    });
-                }
-            }
+            let _ = tx.send(TerminalProvisionResult {
+                ok: true,
+                message: format!("{} pronto para iniciar no TerminAI", model.label()),
+                model: Some(model),
+            });
         });
     }
 
@@ -1248,6 +1368,7 @@ impl EditorApp {
                     return;
                 }
                 egui::CentralPanel::default().show(ctx, |ui| {
+                    self.poll_terminal_output();
                     ui.label("Escolha um modelo para abrir no terminal:");
                     ui.add_space(8.0);
 
@@ -1279,13 +1400,6 @@ impl EditorApp {
                         }
                     });
 
-                    ui.add_space(10.0);
-                    if let Some(model) = self.terminal_selected_model {
-                        ui.label(format!("Selecionado: {}", model.label()));
-                    } else {
-                        ui.label("Selecionado: nenhum");
-                    }
-
                     if self.terminal_busy {
                         ui.add_space(6.0);
                         ui.horizontal(|ui| {
@@ -1298,18 +1412,85 @@ impl EditorApp {
                         ui.label(status);
                     }
 
-                    ui.add_space(10.0);
-                    if ui
-                        .add_enabled(!self.terminal_busy, egui::Button::new("Trocar modelo"))
-                        .clicked()
-                    {
-                        self.terminal_selected_model = None;
-                        self.terminal_status = Some("Escolha outro modelo".to_string());
-                    }
+                    ui.separator();
+                    ui.label("Terminal embutido:");
+                    egui::ScrollArea::vertical()
+                        .id_salt("terminai_output_scroll")
+                        .stick_to_bottom(true)
+                        .max_height((ui.available_height() - 66.0).max(90.0))
+                        .show(ui, |ui| {
+                            ui.add(
+                                egui::TextEdit::multiline(&mut self.terminal_output)
+                                    .font(egui::TextStyle::Monospace)
+                                    .desired_width(f32::INFINITY)
+                                    .interactive(false),
+                            );
+                        });
+
+                    ui.horizontal(|ui| {
+                        let input_resp = ui.add_sized(
+                            [ui.available_width() - 80.0, 28.0],
+                            egui::TextEdit::singleline(&mut self.terminal_input)
+                                .hint_text("Digite comando e Enter"),
+                        );
+                        if input_resp.has_focus() {
+                            let up_pressed = ui.input(|i| i.key_pressed(egui::Key::ArrowUp));
+                            let down_pressed = ui.input(|i| i.key_pressed(egui::Key::ArrowDown));
+                            if up_pressed && !self.terminal_history.is_empty() {
+                                let next = match self.terminal_history_cursor {
+                                    Some(idx) if idx > 0 => idx - 1,
+                                    Some(_) => 0,
+                                    None => self.terminal_history.len().saturating_sub(1),
+                                };
+                                self.terminal_history_cursor = Some(next);
+                                self.terminal_input = self.terminal_history[next].clone();
+                            } else if down_pressed {
+                                if let Some(idx) = self.terminal_history_cursor {
+                                    if idx + 1 < self.terminal_history.len() {
+                                        let next = idx + 1;
+                                        self.terminal_history_cursor = Some(next);
+                                        self.terminal_input = self.terminal_history[next].clone();
+                                    } else {
+                                        self.terminal_history_cursor = None;
+                                        self.terminal_input.clear();
+                                    }
+                                }
+                            }
+                        }
+                        let enter_pressed = input_resp.lost_focus()
+                            && ui.input(|i| i.key_pressed(egui::Key::Enter));
+                        let send_clicked = ui
+                            .add_enabled(self.terminal_session.is_some(), egui::Button::new("Enviar"))
+                            .clicked();
+                        if enter_pressed || send_clicked {
+                            let cmd = self.terminal_input.trim().to_string();
+                            if !cmd.is_empty() {
+                                let is_dup = self
+                                    .terminal_history
+                                    .last()
+                                    .is_some_and(|last| last == &cmd);
+                                if !is_dup {
+                                    self.terminal_history.push(cmd.clone());
+                                    if self.terminal_history.len() > 300 {
+                                        self.terminal_history.remove(0);
+                                    }
+                                }
+                            }
+                            self.terminal_history_cursor = None;
+                            if let Some(session) = self.terminal_session.as_mut() {
+                                let mut line = self.terminal_input.clone();
+                                line.push('\n');
+                                let _ = session.writer.write_all(line.as_bytes());
+                                let _ = session.writer.flush();
+                            }
+                            self.terminal_input.clear();
+                        }
+                    });
                 });
             },
         );
         if close_terminal {
+            self.stop_embedded_terminal_session();
             self.terminal_enabled = false;
             ctx.send_viewport_cmd_to(viewport_id, egui::ViewportCommand::Close);
         }
@@ -2463,6 +2644,12 @@ fn main() -> eframe::Result<()> {
                 terminal_status: None,
                 terminal_busy: false,
                 terminal_job_rx: None,
+                terminal_output_rx: None,
+                terminal_output: String::new(),
+                terminal_input: String::new(),
+                terminal_session: None,
+                terminal_history: Vec::new(),
+                terminal_history_cursor: None,
             };
             app.refresh_hub_projects();
             app.refresh_hub_engines();
