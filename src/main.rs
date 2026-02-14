@@ -85,6 +85,7 @@ struct TerminalProvisionResult {
 
 struct EmbeddedTerminalSession {
     child: Box<dyn portable_pty::Child + Send>,
+    master: Box<dyn portable_pty::MasterPty + Send>,
     writer: Box<dyn Write + Send>,
 }
 
@@ -136,6 +137,8 @@ struct EditorApp {
     terminal_output_rx: Option<Receiver<Vec<u8>>>,
     terminal_output: String,
     terminal_parser: Option<Parser>,
+    terminal_cols: u16,
+    terminal_rows: u16,
     terminal_input: String,
     terminal_session: Option<EmbeddedTerminalSession>,
 }
@@ -1220,13 +1223,35 @@ impl EditorApp {
         }
     }
 
+    fn resize_embedded_terminal(&mut self, cols: u16, rows: u16) {
+        if cols == 0 || rows == 0 {
+            return;
+        }
+        if self.terminal_cols == cols && self.terminal_rows == rows {
+            return;
+        }
+        self.terminal_cols = cols;
+        self.terminal_rows = rows;
+        if let Some(parser) = self.terminal_parser.as_mut() {
+            parser.set_size(rows, cols);
+        }
+        if let Some(session) = self.terminal_session.as_mut() {
+            let _ = session.master.resize(PtySize {
+                rows,
+                cols,
+                pixel_width: 0,
+                pixel_height: 0,
+            });
+        }
+    }
+
     fn start_embedded_cli_session(&mut self, model: TerminalCliModel) -> Result<(), String> {
         self.stop_embedded_terminal_session();
         let pty_system = native_pty_system();
         let pair = pty_system
             .openpty(PtySize {
-                rows: 34,
-                cols: 120,
+                rows: self.terminal_rows,
+                cols: self.terminal_cols,
                 pixel_width: 0,
                 pixel_height: 0,
             })
@@ -1255,12 +1280,11 @@ impl EditorApp {
             .map_err(|e| format!("falha ao iniciar sessão PTY: {e}"))?;
         drop(pair.slave);
 
-        let mut reader = pair
-            .master
+        let master = pair.master;
+        let mut reader = master
             .try_clone_reader()
             .map_err(|e| format!("falha ao clonar leitor PTY: {e}"))?;
-        let mut writer = pair
-            .master
+        let mut writer = master
             .take_writer()
             .map_err(|e| format!("falha ao abrir writer PTY: {e}"))?;
         let (tx, rx) = mpsc::channel::<Vec<u8>>();
@@ -1327,9 +1351,13 @@ impl EditorApp {
 
         self.terminal_output.clear();
         self.terminal_input.clear();
-        self.terminal_parser = Some(Parser::new(34, 120, 10_000));
+        self.terminal_parser = Some(Parser::new(
+            self.terminal_rows,
+            self.terminal_cols,
+            10_000,
+        ));
         self.terminal_output_rx = Some(rx);
-        self.terminal_session = Some(EmbeddedTerminalSession { child, writer });
+        self.terminal_session = Some(EmbeddedTerminalSession { child, master, writer });
         let mut wd = self.terminal_working_dir().to_string_lossy().to_string();
         if wd.starts_with(r"\\?\") {
             wd = wd.trim_start_matches(r"\\?\").to_string();
@@ -1470,46 +1498,48 @@ impl EditorApp {
                     }
 
                     ui.separator();
-                    ui.label("Terminal embutido:");
-                    egui::ScrollArea::vertical()
-                        .id_salt("terminai_output_scroll")
-                        .stick_to_bottom(true)
-                        .max_height((ui.available_height() - 68.0).max(90.0))
-                        .show(ui, |ui| {
-                            ui.add(
-                                egui::TextEdit::multiline(&mut self.terminal_output)
-                                    .font(egui::TextStyle::Monospace)
-                                    .desired_width(f32::INFINITY)
-                                    .interactive(true),
-                            );
-                        });
-
-                    let input_resp = ui.add_sized(
-                        [ui.available_width() - 72.0, 28.0],
-                        egui::TextEdit::singleline(&mut self.terminal_input)
-                            .hint_text("Digite no terminal e Enter"),
-                    );
-                    let send_clicked = ui
-                        .add_enabled(self.terminal_session.is_some(), egui::Button::new("Enviar"))
-                        .clicked();
-                    let enter_pressed =
-                        input_resp.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
-                    if (send_clicked || enter_pressed) && self.terminal_session.is_some() {
-                        if let Some(session) = self.terminal_session.as_mut() {
-                            let mut line = self.terminal_input.clone();
-                            #[cfg(target_os = "windows")]
-                            line.push_str("\r\n");
-                            #[cfg(not(target_os = "windows"))]
-                            line.push('\n');
-                            let _ = session.writer.write_all(line.as_bytes());
-                            let _ = session.writer.flush();
-                        }
-                        self.terminal_input.clear();
+                    ui.label("Terminal virtual:");
+                    let term_id = ui.make_persistent_id("terminai_terminal_surface");
+                    let frame = egui::Frame::new()
+                        .fill(egui::Color32::from_rgb(14, 14, 14))
+                        .stroke(egui::Stroke::new(1.0, egui::Color32::from_gray(60)))
+                        .inner_margin(egui::Margin::same(6));
+                    let frame_resp = frame.show(ui, |ui| {
+                        let max = ui.available_size();
+                        let cols = (max.x / 8.2).floor().max(40.0) as u16;
+                        let rows = (max.y / 16.0).floor().max(10.0) as u16;
+                        self.resize_embedded_terminal(cols, rows);
+                        egui::ScrollArea::both()
+                            .id_salt("terminai_output_scroll")
+                            .stick_to_bottom(true)
+                            .show(ui, |ui| {
+                                ui.add(
+                                    egui::Label::new(
+                                        egui::RichText::new(&self.terminal_output)
+                                            .monospace()
+                                            .size(13.0),
+                                    )
+                                    .selectable(true),
+                                );
+                            });
+                    });
+                    let term_resp =
+                        ui.interact(frame_resp.response.rect, term_id, egui::Sense::click());
+                    if term_resp.clicked() {
+                        ui.memory_mut(|m| m.request_focus(term_id));
+                    }
+                    let terminal_has_focus = ui.memory(|m| m.has_focus(term_id));
+                    if terminal_has_focus {
+                        ui.painter().rect_stroke(
+                            frame_resp.response.rect,
+                            3.0,
+                            egui::Stroke::new(1.0, egui::Color32::from_rgb(15, 232, 121)),
+                            egui::StrokeKind::Outside,
+                        );
                     }
 
-                    // Entrada direta por teclado no terminal embutido.
                     if let Some(session) = self.terminal_session.as_mut() {
-                        if !input_resp.has_focus() {
+                        if terminal_has_focus {
                             let events = ctx.input(|i| i.events.clone());
                             for ev in events {
                                 match ev {
@@ -2711,6 +2741,8 @@ fn main() -> eframe::Result<()> {
                 terminal_output_rx: None,
                 terminal_output: String::new(),
                 terminal_parser: None,
+                terminal_cols: 120,
+                terminal_rows: 34,
                 terminal_input: String::new(),
                 terminal_session: None,
             };
