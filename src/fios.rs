@@ -1,7 +1,7 @@
 use crate::EngineLanguage;
-use eframe::egui;
+use eframe::egui::{self, UiKind};
 use mlua::{Function, Lua, MultiValue, RegistryKey, Table, Value};
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -12,6 +12,27 @@ enum FiosTab {
     Controls,
     Graph,
     Controller,
+}
+
+#[derive(Clone)]
+struct AvailableModule {
+    asset: String,
+    display_name: String,
+    category: String,
+}
+
+#[derive(Clone)]
+struct ModuleCategory {
+    name: String,
+    modules: Vec<AvailableModule>,
+}
+
+#[derive(Clone)]
+struct ModuleChainItem {
+    id: u32,
+    name: String,
+    asset: String,
+    enabled: bool,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -366,6 +387,9 @@ pub struct FiosState {
     capture_index: Option<usize>,
     status: Option<String>,
     add_icon_texture: Option<egui::TextureHandle>,
+    available_modules: Vec<ModuleCategory>,
+    module_chain: Vec<ModuleChainItem>,
+    next_module_id: u32,
     control_modes: Vec<FiosControlMode>,
     active_control_mode: FiosControlMode,
     tab: FiosTab,
@@ -419,6 +443,178 @@ impl FiosState {
             (EngineLanguage::En, FiosControlMode::Animation) => "Animation",
             (EngineLanguage::Es, FiosControlMode::Movement) => "Movimiento",
             (EngineLanguage::Es, FiosControlMode::Animation) => "Animacion",
+        }
+    }
+
+    fn friendly_module_name(asset: &str) -> String {
+        let stem = Path::new(asset)
+            .file_stem()
+            .and_then(|stem| stem.to_str())
+            .unwrap_or(asset);
+        stem.split(|c: char| c == '_' || c == '-')
+            .filter(|part| !part.trim().is_empty())
+            .map(|part| {
+                let mut chars = part.chars();
+                if let Some(first) = chars.next() {
+                    let mut result = first.to_uppercase().collect::<String>();
+                    result.push_str(chars.as_str());
+                    result
+                } else {
+                    String::new()
+                }
+            })
+            .collect::<Vec<_>>()
+            .join(" ")
+    }
+
+    fn module_category(module_name: &str) -> String {
+        let stem = Path::new(module_name)
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .unwrap_or(module_name)
+            .to_string();
+        if let Some(idx) = stem.find('_') {
+            let prefix = &stem[..idx];
+            if !prefix.trim().is_empty() {
+                return prefix.to_string();
+            }
+        }
+        if let Some(idx) = stem.find('-') {
+            let prefix = &stem[..idx];
+            if !prefix.trim().is_empty() {
+                return prefix.to_string();
+            }
+        }
+        "General".to_string()
+    }
+
+    fn parse_available_module(asset: String) -> AvailableModule {
+        let mut display = Self::friendly_module_name(&asset);
+        let mut category = String::new();
+        let path = Path::new("Assets")
+            .join("Animations")
+            .join("Modules")
+            .join(&asset);
+        if let Ok(contents) = fs::read_to_string(&path) {
+            for line in contents.lines() {
+                let trimmed = line.trim();
+                if trimmed.is_empty() || trimmed.starts_with('#') {
+                    continue;
+                }
+                if let Some((key, value)) = trimmed.split_once('=') {
+                    let key = key.trim().to_ascii_lowercase();
+                    let value = value.trim();
+                    if value.is_empty() {
+                        continue;
+                    }
+                    match key.as_str() {
+                        "name" => display = value.to_string(),
+                        "category" => category = value.to_string(),
+                        _ => {}
+                    }
+                }
+            }
+        }
+        if category.is_empty() {
+            category = Self::module_category(&asset);
+        }
+        AvailableModule {
+            asset,
+            display_name: display,
+            category,
+        }
+    }
+
+    fn group_modules_by_category(modules: Vec<AvailableModule>) -> Vec<ModuleCategory> {
+        let mut map: BTreeMap<String, Vec<AvailableModule>> = BTreeMap::new();
+        for module in modules {
+            map.entry(module.category.clone()).or_default().push(module);
+        }
+        let mut out = Vec::new();
+        for (category, mut modules) in map {
+            modules.sort_by_key(|m| m.display_name.clone());
+            out.push(ModuleCategory { name: category, modules });
+        }
+        out
+    }
+
+    pub fn set_available_modules(&mut self, modules: Vec<String>) {
+        let defs = modules
+            .into_iter()
+            .map(Self::parse_available_module)
+            .collect();
+        self.available_modules = Self::group_modules_by_category(defs);
+    }
+
+    fn instantiate_module_from_asset(&mut self, asset: &str) {
+        let key = asset.to_ascii_lowercase();
+        match key.as_str() {
+            "movimento_basico.animodule" => self.add_module_move_basic(),
+            "movimento_avancado.animodule" => self.add_module_move_advanced(),
+            "camera_fps.animodule" => self.add_module_look_basic(),
+            "camera_3p.animodule" => self.add_module_look_advanced(),
+            "acao_principal.animodule" => self.add_module_action_basic(FiosAction::Action1.index()),
+            "acao_pulo.animodule" => self.add_module_action_basic(FiosAction::Jump.index()),
+            "controlador_animacao.animodule" => self.add_module_animation_controls(),
+            "mapa_teclas.animodule" => {
+                // Placeholder for future key-mapping module
+            }
+            _ => {}
+        }
+    }
+
+    fn push_module_from_asset(&mut self, asset: &str) {
+        let id = self.next_module_id;
+        self.next_module_id = self.next_module_id.saturating_add(1);
+        let name = Self::friendly_module_name(asset);
+        self.module_chain.push(ModuleChainItem {
+            id,
+            name,
+            asset: asset.to_string(),
+            enabled: true,
+        });
+    }
+
+    fn module_menu_content(&mut self, ui: &mut egui::Ui, lang: EngineLanguage) -> bool {
+        if self.available_modules.is_empty() {
+            let no_modules_txt = match lang {
+                EngineLanguage::Pt => "Nenhum módulo disponível",
+                EngineLanguage::En => "No modules available",
+                EngineLanguage::Es => "No hay módulos disponibles",
+            };
+            ui.label(no_modules_txt);
+            return false;
+        }
+        let mut selected_asset: Option<String> = None;
+        for category in &self.available_modules {
+            if category.modules.is_empty() {
+                continue;
+            }
+            ui.menu_button(
+                egui::RichText::new(&category.name)
+                    .size(11.0)
+                    .strong()
+                    .color(egui::Color32::from_gray(200)),
+                |ui| {
+                    for module in &category.modules {
+                        if ui.button(&module.display_name).clicked() {
+                            selected_asset = Some(module.asset.clone());
+                            ui.close_kind(UiKind::Menu);
+                            return;
+                        }
+                    }
+                },
+            );
+            if selected_asset.is_some() {
+                break;
+            }
+        }
+        if let Some(asset) = selected_asset {
+            self.push_module_from_asset(&asset);
+            self.instantiate_module_from_asset(&asset);
+            true
+        } else {
+            false
         }
     }
 
@@ -771,6 +967,9 @@ impl FiosState {
             capture_index: None,
             status: None,
             add_icon_texture: None,
+            available_modules: Vec::new(),
+            module_chain: Vec::new(),
+            next_module_id: 1,
             control_modes: vec![FiosControlMode::Movement],
             active_control_mode: FiosControlMode::Movement,
             tab: FiosTab::Controls,
@@ -2326,31 +2525,11 @@ impl FiosState {
                         .color(egui::Color32::from_rgb(238, 232, 255))
                         .background_color(egui::Color32::from_rgb(108, 76, 156)),
                     |ui| {
-                    if ui.button(module_move_txt).clicked() {
-                        self.add_module_move_basic();
-                        ui.close();
-                    }
-                    if ui.button(module_move_adv_txt).clicked() {
-                        self.add_module_move_advanced();
-                        ui.close();
-                    }
-                    if ui.button(module_look_txt).clicked() {
-                        self.add_module_look_basic();
-                        ui.close();
-                    }
-                    if ui.button(module_look_adv_txt).clicked() {
-                        self.add_module_look_advanced();
-                        ui.close();
-                    }
-                    if ui.button(module_action1_txt).clicked() {
-                        self.add_module_action_basic(FiosAction::Action1.index());
-                        ui.close();
-                    }
-                    if ui.button(module_jump_txt).clicked() {
-                        self.add_module_action_basic(FiosAction::Jump.index());
-                        ui.close();
-                    }
-                });
+                        if self.module_menu_content(ui, lang) {
+                            ui.close_kind(UiKind::Menu);
+                        }
+                    },
+                );
             });
             ui.add_space(4.0);
             ui.horizontal_wrapped(|ui| {
@@ -3436,6 +3615,90 @@ impl FiosState {
             ui.checkbox(&mut self.controls_enabled, enabled_txt);
         });
         ui.add_space(8.0);
+        let add_module_txt = match lang {
+            EngineLanguage::Pt => "+ Add Module",
+            EngineLanguage::En => "+ Add Module",
+            EngineLanguage::Es => "+ Add Module",
+        };
+        if self.module_chain.is_empty() {
+            ui.vertical_centered(|ui| {
+                ui.horizontal_centered(|ui| {
+                    ui.menu_button(add_module_txt, |ui| {
+                        if self.module_menu_content(ui, lang) {
+                            ui.close_kind(UiKind::Menu);
+                        }
+                    });
+                });
+            });
+        } else {
+            let card_frame = egui::Frame::new()
+                .fill(egui::Color32::from_rgb(28, 30, 34))
+                .stroke(egui::Stroke::new(1.0, egui::Color32::from_gray(80)))
+                .corner_radius(12.0);
+            let mut pending_remove: Option<u32> = None;
+            egui::ScrollArea::horizontal()
+                .auto_shrink([false, false])
+                .show(ui, |ui| {
+                    ui.horizontal(|ui| {
+                        for module in &mut self.module_chain {
+                            ui.add_space(6.0);
+                            card_frame.show(ui, |ui| {
+                                ui.set_min_size(egui::vec2(190.0, 120.0));
+                                ui.vertical(|ui| {
+                                    ui.horizontal(|ui| {
+                                        ui.label(
+                                            egui::RichText::new(&module.name)
+                                                .strong()
+                                                .size(13.0),
+                                        );
+                                        ui.with_layout(
+                                            egui::Layout::right_to_left(egui::Align::Center),
+                                            |ui| {
+                                                let close_resp = ui.add(
+                                                    egui::Button::new("✕")
+                                                        .frame(false)
+                                                        .min_size(egui::vec2(20.0, 20.0))
+                                                        .stroke(egui::Stroke::new(1.0, egui::Color32::from_gray(90)))
+                                                        .fill(egui::Color32::TRANSPARENT),
+                                                );
+                                                if close_resp.clicked() {
+                                                    pending_remove = Some(module.id);
+                                                }
+                                                let checkbox = ui.checkbox(&mut module.enabled, "");
+                                                checkbox.on_hover_text(
+                                                    match lang {
+                                                        EngineLanguage::Pt => "Ativar módulo",
+                                                        EngineLanguage::En => "Enable module",
+                                                        EngineLanguage::Es => "Activar módulo",
+                                                    },
+                                                );
+                                            },
+                                        );
+                                    });
+                                    ui.add_space(6.0);
+                                    ui.separator();
+                                    ui.add_space(4.0);
+                                    ui.label(
+                                        egui::RichText::new(&module.asset)
+                                            .small()
+                                            .color(egui::Color32::from_gray(160)),
+                                    );
+                                });
+                            });
+                        }
+                        ui.add_space(6.0);
+                        ui.menu_button(add_module_txt, |ui| {
+                            if self.module_menu_content(ui, lang) {
+                                ui.close_kind(UiKind::Menu);
+                            }
+                        });
+                    });
+                });
+            if let Some(id) = pending_remove {
+                self.module_chain.retain(|m| m.id != id);
+            }
+        }
+        ui.add_space(12.0);
 
         let block_size = egui::vec2(172.0, 54.0);
         let mut to_remove: Option<FiosControlMode> = None;

@@ -1555,7 +1555,9 @@ impl App for EditorApp {
         // Janela Inspetor
         let animation_controllers = self.project.list_animation_controller_assets();
         let animation_modules = self.project.list_animation_modules();
+        self.fios.set_available_modules(animation_modules.clone());
         let fbx_animation_clips = self.project.list_fbx_animation_clips();
+        self.fios.set_available_modules(animation_modules.clone());
         self.inspector
             .show(
                 ctx,

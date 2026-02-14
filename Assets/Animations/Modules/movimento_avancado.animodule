@@ -1,0 +1,3 @@
+name = Movimento Avancado
+category = movimento
+description = Movement graph with deadzone, smoothing, and multipliers

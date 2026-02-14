@@ -1,0 +1,3 @@
+name = Camera 3P
+category = camera
+description = Third-person look control with extra smoothing
