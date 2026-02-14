@@ -14,7 +14,7 @@ use project::ProjectWindow;
 use viewport::ViewportPanel;
 use viewport_gpu::ViewportGpuRenderer;
 use raw_window_handle::{HasWindowHandle, RawWindowHandle};
-use std::fs::File;
+use std::fs::{self, File};
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -93,6 +93,62 @@ fn load_icon_data_from_png(png_path: &str) -> Option<Arc<egui::IconData>> {
 }
 
 impl EditorApp {
+    fn hub_registry_path() -> PathBuf {
+        PathBuf::from(".dengine_hub_projects.txt")
+    }
+
+    fn normalize_project_path(path: &Path) -> PathBuf {
+        fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf())
+    }
+
+    fn load_hub_registry() -> Vec<PathBuf> {
+        let mut out = Vec::new();
+        let path = Self::hub_registry_path();
+        let Ok(content) = fs::read_to_string(path) else {
+            return out;
+        };
+        for line in content.lines() {
+            let item = line.trim();
+            if item.is_empty() {
+                continue;
+            }
+            let p = PathBuf::from(item);
+            if p.exists()
+                && p.extension()
+                    .and_then(|e| e.to_str())
+                    .map(|e| e.eq_ignore_ascii_case("deng"))
+                    == Some(true)
+            {
+                out.push(Self::normalize_project_path(&p));
+            }
+        }
+        out
+    }
+
+    fn save_hub_registry(&self) {
+        let mut lines = String::new();
+        for p in &self.hub_projects {
+            lines.push_str(&p.to_string_lossy());
+            lines.push('\n');
+        }
+        let _ = fs::write(Self::hub_registry_path(), lines);
+    }
+
+    fn sort_and_dedupe_paths(paths: &mut Vec<PathBuf>) {
+        paths.sort_by_key(|p| p.to_string_lossy().to_ascii_lowercase());
+        paths.dedup_by(|a, b| {
+            a.to_string_lossy()
+                .eq_ignore_ascii_case(b.to_string_lossy().as_ref())
+        });
+    }
+
+    fn register_hub_project(&mut self, project_path: &Path) {
+        let normalized = Self::normalize_project_path(project_path);
+        self.hub_projects.push(normalized);
+        Self::sort_and_dedupe_paths(&mut self.hub_projects);
+        self.save_hub_registry();
+    }
+
     fn current_project_label(&self) -> String {
         self.current_project
             .as_ref()
@@ -104,8 +160,12 @@ impl EditorApp {
         let mut out = Vec::<PathBuf>::new();
         let root = Path::new(".");
         collect_deng_files(root, root, 0, &mut out);
-        out.sort_by_key(|p| p.to_string_lossy().to_string().to_ascii_lowercase());
+        for p in Self::load_hub_registry() {
+            out.push(p);
+        }
+        Self::sort_and_dedupe_paths(&mut out);
         self.hub_projects = out;
+        self.save_hub_registry();
         if let Some(sel) = self.hub_selected {
             if sel >= self.hub_projects.len() {
                 self.hub_selected = None;
@@ -143,7 +203,9 @@ impl EditorApp {
         if let Ok(mut f) = File::create(&project_file) {
             let _ = f.write_all(b"DENG1\n");
         }
-        self.current_project = Some(project_file.clone());
+        let normalized = Self::normalize_project_path(&project_file);
+        self.current_project = Some(normalized.clone());
+        self.register_hub_project(&normalized);
         self.show_hub = false;
         self.refresh_hub_projects();
     }
@@ -155,7 +217,9 @@ impl EditorApp {
         let Some(path) = picked else {
             return;
         };
-        self.current_project = Some(path);
+        let normalized = Self::normalize_project_path(&path);
+        self.current_project = Some(normalized.clone());
+        self.register_hub_project(&normalized);
         self.show_hub = false;
     }
 
@@ -1073,7 +1137,14 @@ impl App for EditorApp {
 
         // Janela Inspetor
         self.inspector
-            .show(ctx, 0.0, 0.0, project_bottom, self.language);
+            .show(
+                ctx,
+                0.0,
+                0.0,
+                project_bottom,
+                self.language,
+                self.hierarchy.selected_object_name(),
+            );
         let i_left = self.inspector.docked_left_width();
         let i_right = self.inspector.docked_right_width();
         self.hierarchy
@@ -1106,7 +1177,7 @@ impl App for EditorApp {
                     );
 
                     let icon_center_y = rect.top() + 15.0;
-                    let button_start_x = 18.0;
+                    let button_start_x = 28.0;
                     let button_spacing = 46.0;
                     let files_rect = egui::Rect::from_center_size(
                         egui::pos2(rect.left() + button_start_x, icon_center_y),

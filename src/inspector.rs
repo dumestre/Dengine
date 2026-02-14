@@ -2,8 +2,26 @@ use eframe::egui::{
     self, Align2, Color32, FontFamily, FontId, Id, Order, Pos2, Rect, Stroke, TextureHandle, Vec2,
 };
 use epaint::ColorImage;
+use std::collections::HashMap;
 use std::sync::Arc;
 use crate::EngineLanguage;
+
+#[derive(Clone, Copy)]
+struct TransformDraft {
+    position: [f32; 3],
+    rotation: [f32; 3],
+    scale: [f32; 3],
+}
+
+impl Default for TransformDraft {
+    fn default() -> Self {
+        Self {
+            position: [0.0, 0.0, 0.0],
+            rotation: [0.0, 0.0, 0.0],
+            scale: [1.0, 1.0, 1.0],
+        }
+    }
+}
 
 pub struct InspectorWindow {
     pub open: bool,
@@ -18,6 +36,7 @@ pub struct InspectorWindow {
     dragging_from_header: bool,
     resizing_width: bool,
     fonts_initialized: bool,
+    object_transforms: HashMap<String, TransformDraft>,
 }
 
 #[derive(Clone, Copy)]
@@ -69,6 +88,7 @@ impl InspectorWindow {
             dragging_from_header: false,
             resizing_width: false,
             fonts_initialized: false,
+            object_transforms: HashMap::new(),
         }
     }
 
@@ -79,6 +99,7 @@ impl InspectorWindow {
         right_reserved: f32,
         bottom_reserved: f32,
         language: EngineLanguage,
+        selected_object: &str,
     ) {
         if !self.open {
             return;
@@ -359,6 +380,99 @@ impl InspectorWindow {
                         }
 
                         let _ = ui.add(button);
+                    },
+                );
+
+                let content_rect = Rect::from_min_max(
+                    egui::pos2(inner.min.x, button_rect.max.y + 8.0),
+                    egui::pos2(inner.max.x, rect.bottom() - 10.0),
+                );
+                ui.scope_builder(
+                    egui::UiBuilder::new()
+                        .max_rect(content_rect)
+                        .layout(egui::Layout::top_down(egui::Align::Min)),
+                    |ui| {
+                        if selected_object.is_empty() {
+                            return;
+                        }
+
+                        let draft = self
+                            .object_transforms
+                            .entry(selected_object.to_string())
+                            .or_default();
+
+                        let title = match language {
+                            EngineLanguage::Pt => "Transformação",
+                            EngineLanguage::En => "Transform",
+                            EngineLanguage::Es => "Transformación",
+                        };
+                        let apply_text = match language {
+                            EngineLanguage::Pt => "Aplicar Transformações",
+                            EngineLanguage::En => "Apply Transformations",
+                            EngineLanguage::Es => "Aplicar Transformaciones",
+                        };
+
+                        egui::Frame::new()
+                            .fill(Color32::from_rgb(36, 36, 36))
+                            .stroke(Stroke::new(1.0, Color32::from_gray(62)))
+                            .corner_radius(6)
+                            .inner_margin(egui::Margin::same(8))
+                            .show(ui, |ui| {
+                                ui.label(
+                                    egui::RichText::new(title)
+                                        .size(13.0)
+                                        .strong()
+                                        .color(Color32::from_gray(220)),
+                                );
+                                ui.add_space(6.0);
+                                ui.label(
+                                    egui::RichText::new(selected_object)
+                                        .size(11.0)
+                                        .color(Color32::from_gray(160)),
+                                );
+                                ui.add_space(6.0);
+
+                                ui.horizontal(|ui| {
+                                    ui.add_sized([52.0, 18.0], egui::Label::new("Posição"));
+                                    for i in 0..3 {
+                                        ui.add_sized(
+                                            [44.0, 20.0],
+                                            egui::DragValue::new(&mut draft.position[i]).speed(0.1),
+                                        );
+                                    }
+                                });
+                                ui.horizontal(|ui| {
+                                    ui.add_sized([52.0, 18.0], egui::Label::new("Rotação"));
+                                    for i in 0..3 {
+                                        ui.add_sized(
+                                            [44.0, 20.0],
+                                            egui::DragValue::new(&mut draft.rotation[i]).speed(0.1),
+                                        );
+                                    }
+                                });
+                                ui.horizontal(|ui| {
+                                    ui.add_sized([52.0, 18.0], egui::Label::new("Escala"));
+                                    for i in 0..3 {
+                                        ui.add_sized(
+                                            [44.0, 20.0],
+                                            egui::DragValue::new(&mut draft.scale[i]).speed(0.05),
+                                        );
+                                    }
+                                });
+
+                                ui.add_space(10.0);
+                                let _ = ui.add_sized(
+                                    [ui.available_width(), 28.0],
+                                    egui::Button::new(
+                                        egui::RichText::new(apply_text)
+                                            .color(Color32::from_rgb(245, 240, 255))
+                                            .strong(),
+                                    )
+                                    .fill(Color32::from_rgb(148, 116, 186))
+                                    .stroke(Stroke::new(1.0, Color32::from_rgb(173, 140, 208)))
+                                    .corner_radius(6),
+                                );
+                            });
                     },
                 );
 
