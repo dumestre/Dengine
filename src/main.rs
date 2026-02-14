@@ -21,6 +21,7 @@ use std::process::Command;
 use std::sync::Arc;
 use std::sync::mpsc::{self, Receiver, TryRecvError};
 use portable_pty::{CommandBuilder, PtySize, native_pty_system};
+use vt100::Parser;
 #[cfg(target_os = "windows")]
 use windows_sys::Win32::Graphics::Dwm::DwmSetWindowAttribute;
 
@@ -132,8 +133,9 @@ struct EditorApp {
     terminal_status: Option<String>,
     terminal_busy: bool,
     terminal_job_rx: Option<Receiver<TerminalProvisionResult>>,
-    terminal_output_rx: Option<Receiver<String>>,
+    terminal_output_rx: Option<Receiver<Vec<u8>>>,
     terminal_output: String,
+    terminal_parser: Option<Parser>,
     terminal_input: String,
     terminal_session: Option<EmbeddedTerminalSession>,
 }
@@ -1009,10 +1011,20 @@ impl EditorApp {
         loop {
             match rx.try_recv() {
                 Ok(chunk) => {
-                    self.terminal_output.push_str(&chunk);
-                    if self.terminal_output.len() > 220_000 {
-                        let cut = self.terminal_output.len().saturating_sub(200_000);
-                        self.terminal_output.drain(..cut);
+                    if chunk.windows(4).any(|w| w == b"\x1b[6n")
+                        || chunk.windows(5).any(|w| w == b"\x1b[?6n")
+                    {
+                        if let Some(session) = self.terminal_session.as_mut() {
+                            let _ = session.writer.write_all(b"\x1b[1;1R");
+                            let _ = session.writer.flush();
+                        }
+                    }
+                    if let Some(parser) = self.terminal_parser.as_mut() {
+                        parser.process(&chunk);
+                        self.terminal_output = parser.screen().contents().to_string();
+                    } else {
+                        self.terminal_output
+                            .push_str(&String::from_utf8_lossy(&chunk));
                     }
                 }
                 Err(TryRecvError::Empty) => break,
@@ -1164,12 +1176,36 @@ impl EditorApp {
     fn terminal_working_dir(&self) -> PathBuf {
         if let Some(project_file) = &self.current_project {
             let normalized = Self::normalize_project_path(project_file);
-            return normalized
+            let parent = normalized
                 .parent()
                 .map(PathBuf::from)
                 .unwrap_or_else(|| PathBuf::from("."));
+            if parent.join("Assets").is_dir() {
+                return parent;
+            }
+            let stem = normalized
+                .file_stem()
+                .and_then(|s| s.to_str())
+                .unwrap_or("Projeto");
+            let candidate = parent.join(stem);
+            if candidate.is_dir() && candidate.join("Assets").is_dir() {
+                return candidate;
+            }
+            return parent;
         }
         std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."))
+    }
+
+    fn terminal_working_dir_for_spawn(&self) -> PathBuf {
+        let p = self.terminal_working_dir();
+        #[cfg(target_os = "windows")]
+        {
+            let s = p.to_string_lossy().to_string();
+            if s.starts_with(r"\\?\") {
+                return PathBuf::from(s.trim_start_matches(r"\\?\"));
+            }
+        }
+        p
     }
 
     fn shell_escape_path_for_cd(path: &Path, windows: bool) -> String {
@@ -1212,7 +1248,7 @@ impl EditorApp {
                 c
             }
         };
-        cmd.cwd(self.terminal_working_dir());
+        cmd.cwd(self.terminal_working_dir_for_spawn());
         let child = pair
             .slave
             .spawn_command(cmd)
@@ -1227,15 +1263,14 @@ impl EditorApp {
             .master
             .take_writer()
             .map_err(|e| format!("falha ao abrir writer PTY: {e}"))?;
-        let (tx, rx) = mpsc::channel::<String>();
+        let (tx, rx) = mpsc::channel::<Vec<u8>>();
         std::thread::spawn(move || {
             let mut buf = [0_u8; 4096];
             loop {
                 match reader.read(&mut buf) {
                     Ok(0) => break,
                     Ok(n) => {
-                        let text = String::from_utf8_lossy(&buf[..n]).to_string();
-                        if tx.send(text).is_err() {
+                        if tx.send(buf[..n].to_vec()).is_err() {
                             break;
                         }
                     }
@@ -1292,6 +1327,7 @@ impl EditorApp {
 
         self.terminal_output.clear();
         self.terminal_input.clear();
+        self.terminal_parser = Some(Parser::new(34, 120, 10_000));
         self.terminal_output_rx = Some(rx);
         self.terminal_session = Some(EmbeddedTerminalSession { child, writer });
         let mut wd = self.terminal_working_dir().to_string_lossy().to_string();
@@ -1312,10 +1348,16 @@ impl EditorApp {
             let _ = session.child.wait();
         }
         self.terminal_output_rx = None;
+        self.terminal_parser = None;
     }
 
     fn start_terminal_provision(&mut self, model: TerminalCliModel) {
         if self.terminal_busy {
+            return;
+        }
+        if self.current_project.is_none() {
+            self.terminal_status = Some("Abra um projeto (.deng) antes de iniciar o TerminAI".to_string());
+            self.terminal_selected_model = None;
             return;
         }
         self.terminal_busy = true;
@@ -1380,6 +1422,9 @@ impl EditorApp {
                     return;
                 }
                 egui::CentralPanel::default().show(ctx, |ui| {
+                    if self.terminal_busy || self.terminal_session.is_some() {
+                        ctx.request_repaint();
+                    }
                     self.poll_terminal_output();
                     ui.label("Escolha um modelo para abrir no terminal:");
                     ui.add_space(8.0);
@@ -2665,6 +2710,7 @@ fn main() -> eframe::Result<()> {
                 terminal_job_rx: None,
                 terminal_output_rx: None,
                 terminal_output: String::new(),
+                terminal_parser: None,
                 terminal_input: String::new(),
                 terminal_session: None,
             };
