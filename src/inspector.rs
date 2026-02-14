@@ -25,6 +25,13 @@ pub struct FiosControllerDraft {
     pub action_speed: f32,
 }
 
+#[derive(Clone, Copy)]
+pub struct RigidbodyDraft {
+    pub enabled: bool,
+    pub gravity: f32,
+    pub jump_impulse: f32,
+}
+
 impl Default for TransformDraft {
     fn default() -> Self {
         Self {
@@ -42,6 +49,16 @@ impl Default for FiosControllerDraft {
             move_speed: 3.5,
             rotate_speed: 90.0,
             action_speed: 2.0,
+        }
+    }
+}
+
+impl Default for RigidbodyDraft {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            gravity: -9.81,
+            jump_impulse: 5.2,
         }
     }
 }
@@ -65,6 +82,7 @@ pub struct InspectorWindow {
     pending_live_request: Option<(String, TransformDraft)>,
     pending_apply_request: Option<(String, TransformDraft)>,
     object_fios_controller: HashMap<String, FiosControllerDraft>,
+    object_rigidbody: HashMap<String, RigidbodyDraft>,
     apply_loading_until: Option<Instant>,
     last_cursor_wrap: Option<Instant>,
 }
@@ -124,6 +142,7 @@ impl InspectorWindow {
             pending_live_request: None,
             pending_apply_request: None,
             object_fios_controller: HashMap::new(),
+            object_rigidbody: HashMap::new(),
             apply_loading_until: None,
             last_cursor_wrap: None,
         }
@@ -131,6 +150,13 @@ impl InspectorWindow {
 
     pub fn fios_controller_targets(&self) -> Vec<(String, FiosControllerDraft)> {
         self.object_fios_controller
+            .iter()
+            .filter_map(|(name, cfg)| if cfg.enabled { Some((name.clone(), *cfg)) } else { None })
+            .collect()
+    }
+
+    pub fn rigidbody_targets(&self) -> Vec<(String, RigidbodyDraft)> {
+        self.object_rigidbody
             .iter()
             .filter_map(|(name, cfg)| if cfg.enabled { Some((name.clone(), *cfg)) } else { None })
             .collect()
@@ -710,10 +736,27 @@ impl InspectorWindow {
                             .min_size(egui::vec2(82.0, 16.0));
                         }
 
-                        if ui.add(button).clicked() && !selected_object.is_empty() {
-                            self.object_fios_controller
-                                .entry(selected_object.to_string())
-                                .or_default();
+                        let add_resp = ui.add(button);
+                        if !selected_object.is_empty() {
+                            add_resp.context_menu(|ui| {
+                                if ui.button("Fios Controller").clicked() {
+                                    self.object_fios_controller
+                                        .entry(selected_object.to_string())
+                                        .or_default();
+                                    ui.close();
+                                }
+                                if ui.button("Rigidbody").clicked() {
+                                    self.object_rigidbody
+                                        .entry(selected_object.to_string())
+                                        .or_default();
+                                    ui.close();
+                                }
+                            });
+                            if add_resp.clicked() {
+                                self.object_fios_controller
+                                    .entry(selected_object.to_string())
+                                    .or_default();
+                            }
                         }
                     },
                 );
@@ -847,6 +890,91 @@ impl InspectorWindow {
                         }
                         if remove_component {
                             self.object_fios_controller.remove(selected_object);
+                        }
+                    }
+                    if let Some(rb) = self.object_rigidbody.get_mut(selected_object) {
+                        let mut remove_component = false;
+                        let card_height = 138.0_f32;
+                        let card_rect = Rect::from_min_max(
+                            egui::pos2(inner.min.x, (button_rect.min.y - card_height - 196.0).max(sep_y + 38.0)),
+                            egui::pos2(inner.max.x, button_rect.min.y - 196.0),
+                        );
+                        if card_rect.height() > 70.0 {
+                            ui.scope_builder(
+                                egui::UiBuilder::new()
+                                    .max_rect(card_rect)
+                                    .layout(egui::Layout::top_down(egui::Align::Min)),
+                                |ui| {
+                                    egui::Frame::new()
+                                        .fill(Color32::from_rgb(34, 38, 42))
+                                        .stroke(Stroke::new(1.0, Color32::from_gray(62)))
+                                        .corner_radius(6)
+                                        .inner_margin(egui::Margin::same(8))
+                                        .show(ui, |ui| {
+                                            ui.horizontal(|ui| {
+                                                ui.label(
+                                                    egui::RichText::new("Rigidbody")
+                                                        .size(13.0)
+                                                        .strong()
+                                                        .color(Color32::from_gray(220)),
+                                                );
+                                                ui.with_layout(
+                                                    egui::Layout::right_to_left(egui::Align::Center),
+                                                    |ui| {
+                                                        let rm = ui
+                                                            .add_sized([44.0, 18.0], egui::Button::new("Remover"))
+                                                            .clicked();
+                                                        if rm {
+                                                            remove_component = true;
+                                                        }
+                                                    },
+                                                );
+                                            });
+                                            ui.add_space(6.0);
+                                            ui.horizontal(|ui| {
+                                                ui.label("Ativo");
+                                                let txt = if rb.enabled { "ON" } else { "OFF" };
+                                                let fill = if rb.enabled {
+                                                    Color32::from_rgb(58, 118, 84)
+                                                } else {
+                                                    Color32::from_rgb(78, 52, 52)
+                                                };
+                                                if ui
+                                                    .add_sized(
+                                                        [40.0, 18.0],
+                                                        egui::Button::new(txt)
+                                                            .fill(fill)
+                                                            .stroke(Stroke::new(1.0, Color32::from_gray(90))),
+                                                    )
+                                                    .clicked()
+                                                {
+                                                    rb.enabled = !rb.enabled;
+                                                }
+                                            });
+                                            ui.horizontal(|ui| {
+                                                ui.label("Gravity");
+                                                let _ = ui.add_sized(
+                                                    [90.0, 20.0],
+                                                    egui::DragValue::new(&mut rb.gravity)
+                                                        .range(-80.0..=80.0)
+                                                        .speed(0.1),
+                                                );
+                                            });
+                                            ui.horizontal(|ui| {
+                                                ui.label("Jump Impulse");
+                                                let _ = ui.add_sized(
+                                                    [90.0, 20.0],
+                                                    egui::DragValue::new(&mut rb.jump_impulse)
+                                                        .range(0.1..=40.0)
+                                                        .speed(0.1),
+                                                );
+                                            });
+                                        });
+                                },
+                            );
+                        }
+                        if remove_component {
+                            self.object_rigidbody.remove(selected_object);
                         }
                     }
                 }

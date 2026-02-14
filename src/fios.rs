@@ -51,6 +51,19 @@ impl FiosAction {
         }
     }
 
+    fn index(self) -> usize {
+        match self {
+            Self::Forward => 0,
+            Self::Backward => 1,
+            Self::Left => 2,
+            Self::Right => 3,
+            Self::Jump => 4,
+            Self::Interact => 5,
+            Self::Action1 => 6,
+            Self::Action2 => 7,
+        }
+    }
+
     fn label(self, lang: EngineLanguage) -> &'static str {
         match (lang, self) {
             (EngineLanguage::Pt, Self::Forward) => "Mover Frente",
@@ -302,6 +315,8 @@ pub struct FiosState {
     marquee_start: Option<egui::Pos2>,
     marquee_end: Option<egui::Pos2>,
     cut_points: Vec<egui::Pos2>,
+    graph_zoom: f32,
+    graph_pan: egui::Vec2,
     smooth_state: HashMap<(u32, u8), f32>,
     lua_enabled: bool,
     lua_script: String,
@@ -375,6 +390,8 @@ impl FiosState {
             marquee_start: None,
             marquee_end: None,
             cut_points: Vec::new(),
+            graph_zoom: 1.0,
+            graph_pan: egui::vec2(0.0, 0.0),
             smooth_state: HashMap::new(),
             lua_enabled: false,
             lua_script: "return { x = x, y = y }".to_string(),
@@ -1274,6 +1291,131 @@ impl FiosState {
         let _ = self.save_graph_to_disk();
     }
 
+    fn add_node_custom(
+        &mut self,
+        kind: FiosNodeKind,
+        pos: egui::Vec2,
+        value: f32,
+        param_a: f32,
+        param_b: f32,
+    ) -> u32 {
+        let id = self.alloc_node_id();
+        self.nodes.push(FiosNode {
+            id,
+            kind,
+            display_name: Self::default_node_name(kind).to_string(),
+            pos,
+            value,
+            param_a,
+            param_b,
+        });
+        id
+    }
+
+    fn first_node_id_of_kind(&self, kind: FiosNodeKind) -> Option<u32> {
+        self.nodes.iter().find(|n| n.kind == kind).map(|n| n.id)
+    }
+
+    fn add_module_move_basic(&mut self) {
+        let input_id = self
+            .first_node_id_of_kind(FiosNodeKind::InputAxis)
+            .unwrap_or_else(|| self.add_node_custom(FiosNodeKind::InputAxis, egui::vec2(60.0, 120.0), 0.0, 0.0, 0.0));
+        let output_id = self
+            .first_node_id_of_kind(FiosNodeKind::OutputMove)
+            .unwrap_or_else(|| self.add_node_custom(FiosNodeKind::OutputMove, egui::vec2(420.0, 120.0), 0.0, 0.0, 0.0));
+        self.create_link(input_id, 0, output_id, 0);
+        self.create_link(input_id, 1, output_id, 1);
+        let _ = self.save_graph_to_disk();
+    }
+
+    fn add_module_look_basic(&mut self) {
+        let input_id = self
+            .first_node_id_of_kind(FiosNodeKind::InputAxis)
+            .unwrap_or_else(|| self.add_node_custom(FiosNodeKind::InputAxis, egui::vec2(60.0, 240.0), 0.0, 0.0, 0.0));
+        let output_id = self
+            .first_node_id_of_kind(FiosNodeKind::OutputLook)
+            .unwrap_or_else(|| self.add_node_custom(FiosNodeKind::OutputLook, egui::vec2(420.0, 240.0), 0.0, 0.0, 0.0));
+        self.create_link(input_id, 0, output_id, 0);
+        self.create_link(input_id, 1, output_id, 1);
+        let _ = self.save_graph_to_disk();
+    }
+
+    fn add_module_action_basic(&mut self, action_idx: usize) {
+        let idx = action_idx.min(ACTION_COUNT.saturating_sub(1));
+        let input_id = self.add_node_custom(
+            FiosNodeKind::InputAction,
+            egui::vec2(60.0, 360.0),
+            0.0,
+            idx as f32,
+            0.0,
+        );
+        let output_id = self
+            .first_node_id_of_kind(FiosNodeKind::OutputAction)
+            .unwrap_or_else(|| self.add_node_custom(FiosNodeKind::OutputAction, egui::vec2(420.0, 360.0), 0.0, 0.0, 0.0));
+        self.create_link(input_id, 0, output_id, 0);
+        let _ = self.save_graph_to_disk();
+    }
+
+    fn add_module_move_advanced(&mut self) {
+        let input_id = self
+            .first_node_id_of_kind(FiosNodeKind::InputAxis)
+            .unwrap_or_else(|| self.add_node_custom(FiosNodeKind::InputAxis, egui::vec2(40.0, 110.0), 0.0, 0.0, 0.0));
+        let output_id = self
+            .first_node_id_of_kind(FiosNodeKind::OutputMove)
+            .unwrap_or_else(|| self.add_node_custom(FiosNodeKind::OutputMove, egui::vec2(700.0, 130.0), 0.0, 0.0, 0.0));
+
+        let dz_x = self.add_node_custom(FiosNodeKind::Deadzone, egui::vec2(190.0, 70.0), 0.0, 0.15, 0.0);
+        let dz_y = self.add_node_custom(FiosNodeKind::Deadzone, egui::vec2(190.0, 200.0), 0.0, 0.15, 0.0);
+        let sm_x = self.add_node_custom(FiosNodeKind::Smooth, egui::vec2(340.0, 70.0), 0.0, 0.25, 0.0);
+        let sm_y = self.add_node_custom(FiosNodeKind::Smooth, egui::vec2(340.0, 200.0), 0.0, 0.25, 0.0);
+        let kx = self.add_node_custom(FiosNodeKind::Constant, egui::vec2(480.0, 30.0), 1.0, 0.0, 0.0);
+        let ky = self.add_node_custom(FiosNodeKind::Constant, egui::vec2(480.0, 160.0), 1.0, 0.0, 0.0);
+        let mx = self.add_node_custom(FiosNodeKind::Multiply, egui::vec2(560.0, 70.0), 0.0, 0.0, 0.0);
+        let my = self.add_node_custom(FiosNodeKind::Multiply, egui::vec2(560.0, 200.0), 0.0, 0.0, 0.0);
+
+        self.create_link(input_id, 0, dz_x, 0);
+        self.create_link(input_id, 1, dz_y, 0);
+        self.create_link(dz_x, 0, sm_x, 0);
+        self.create_link(dz_y, 0, sm_y, 0);
+        self.create_link(sm_x, 0, mx, 0);
+        self.create_link(kx, 0, mx, 1);
+        self.create_link(sm_y, 0, my, 0);
+        self.create_link(ky, 0, my, 1);
+        self.create_link(mx, 0, output_id, 0);
+        self.create_link(my, 0, output_id, 1);
+        let _ = self.save_graph_to_disk();
+    }
+
+    fn add_module_look_advanced(&mut self) {
+        let input_id = self
+            .first_node_id_of_kind(FiosNodeKind::InputAxis)
+            .unwrap_or_else(|| self.add_node_custom(FiosNodeKind::InputAxis, egui::vec2(40.0, 360.0), 0.0, 0.0, 0.0));
+        let output_id = self
+            .first_node_id_of_kind(FiosNodeKind::OutputLook)
+            .unwrap_or_else(|| self.add_node_custom(FiosNodeKind::OutputLook, egui::vec2(700.0, 380.0), 0.0, 0.0, 0.0));
+
+        let dz_yaw = self.add_node_custom(FiosNodeKind::Deadzone, egui::vec2(190.0, 320.0), 0.0, 0.08, 0.0);
+        let dz_pitch = self.add_node_custom(FiosNodeKind::Deadzone, egui::vec2(190.0, 450.0), 0.0, 0.08, 0.0);
+        let sm_yaw = self.add_node_custom(FiosNodeKind::Smooth, egui::vec2(340.0, 320.0), 0.0, 0.18, 0.0);
+        let sm_pitch = self.add_node_custom(FiosNodeKind::Smooth, egui::vec2(340.0, 450.0), 0.0, 0.18, 0.0);
+        let kyaw = self.add_node_custom(FiosNodeKind::Constant, egui::vec2(480.0, 280.0), 1.0, 0.0, 0.0);
+        let kpitch = self.add_node_custom(FiosNodeKind::Constant, egui::vec2(480.0, 410.0), 1.0, 0.0, 0.0);
+        let myaw = self.add_node_custom(FiosNodeKind::Multiply, egui::vec2(560.0, 320.0), 0.0, 0.0, 0.0);
+        let mpitch = self.add_node_custom(FiosNodeKind::Multiply, egui::vec2(560.0, 450.0), 0.0, 0.0, 0.0);
+
+        self.create_link(input_id, 0, dz_yaw, 0);
+        self.create_link(input_id, 1, dz_pitch, 0);
+        self.create_link(dz_yaw, 0, sm_yaw, 0);
+        self.create_link(dz_pitch, 0, sm_pitch, 0);
+        self.create_link(sm_yaw, 0, myaw, 0);
+        self.create_link(kyaw, 0, myaw, 1);
+        self.create_link(sm_pitch, 0, mpitch, 0);
+        self.create_link(kpitch, 0, mpitch, 1);
+        self.create_link(myaw, 0, output_id, 0);
+        self.create_link(mpitch, 0, output_id, 1);
+        let _ = self.save_graph_to_disk();
+    }
+
     fn remove_selected_nodes(&mut self) -> bool {
         if self.selected_nodes.is_empty() {
             if let Some(id) = self.selected_node {
@@ -1387,6 +1529,13 @@ impl FiosState {
             apply_name_txt,
             hint_txt,
             add_block_txt,
+            modules_txt,
+            module_move_txt,
+            module_move_adv_txt,
+            module_look_txt,
+            module_look_adv_txt,
+            module_action1_txt,
+            module_jump_txt,
             actions_txt,
             shortcuts_txt,
             del_txt,
@@ -1417,6 +1566,13 @@ impl FiosState {
                 "Aplicar Nome",
                 "Ctrl: multi-selecao | Arraste no vazio: caixa | Clique perto do output e arraste: prever/ligar fio | Alt + botao direito no output: ligar fio | Botao direito + arrastar: cortar fio",
                 "Add Bloco",
+                "Modulos",
+                "Locomocao Basica",
+                "Locomocao Avancada",
+                "Look Basico",
+                "Look Avancado",
+                "Acao 1 Basica",
+                "Pulo Basico",
                 "Acoes",
                 "Atalhos",
                 "Excluir Selecionado",
@@ -1447,6 +1603,13 @@ impl FiosState {
                 "Apply Name",
                 "Ctrl: multi-select | Drag empty: marquee | Drag near output: predict/connect wire | Alt + right mouse on output: connect wire | Right mouse + drag: cut wire",
                 "Add Block",
+                "Modules",
+                "Basic Locomotion",
+                "Advanced Locomotion",
+                "Basic Look",
+                "Advanced Look",
+                "Basic Action 1",
+                "Basic Jump",
                 "Actions",
                 "Shortcuts",
                 "Delete Selected",
@@ -1477,6 +1640,13 @@ impl FiosState {
                 "Aplicar Nombre",
                 "Ctrl: multi-seleccion | Arrastrar vacio: caja | Arrastrar cerca de salida: predecir/conectar cable | Alt + boton derecho en salida: conectar cable | Boton derecho + arrastrar: cortar cable",
                 "Agregar Bloque",
+                "Modulos",
+                "Locomocion Basica",
+                "Locomocion Avanzada",
+                "Look Basico",
+                "Look Avanzado",
+                "Accion 1 Basica",
+                "Salto Basico",
                 "Acciones",
                 "Atajos",
                 "Eliminar Seleccionado",
@@ -1568,6 +1738,33 @@ impl FiosState {
                         }
                     },
                 );
+                ui.separator();
+                ui.menu_button(egui::RichText::new(modules_txt).strong(), |ui| {
+                    if ui.button(module_move_txt).clicked() {
+                        self.add_module_move_basic();
+                        ui.close();
+                    }
+                    if ui.button(module_move_adv_txt).clicked() {
+                        self.add_module_move_advanced();
+                        ui.close();
+                    }
+                    if ui.button(module_look_txt).clicked() {
+                        self.add_module_look_basic();
+                        ui.close();
+                    }
+                    if ui.button(module_look_adv_txt).clicked() {
+                        self.add_module_look_advanced();
+                        ui.close();
+                    }
+                    if ui.button(module_action1_txt).clicked() {
+                        self.add_module_action_basic(FiosAction::Action1.index());
+                        ui.close();
+                    }
+                    if ui.button(module_jump_txt).clicked() {
+                        self.add_module_action_basic(FiosAction::Jump.index());
+                        ui.close();
+                    }
+                });
             });
             ui.add_space(4.0);
             ui.horizontal_wrapped(|ui| {
@@ -1623,6 +1820,14 @@ impl FiosState {
                     .size(11.0)
                     .color(egui::Color32::from_gray(160)),
             );
+            ui.label(
+                egui::RichText::new(format!(
+                    "Zoom: {:.0}% | 2 dedos/wheel: pan | Ctrl + wheel: zoom | Ctrl+0 reset",
+                    self.graph_zoom * 100.0
+                ))
+                .size(11.0)
+                .color(egui::Color32::from_gray(150)),
+            );
         });
         ui.add_space(6.0);
 
@@ -1637,8 +1842,50 @@ impl FiosState {
             egui::StrokeKind::Outside,
         );
 
-        let grid = 24.0;
-        let mut x = canvas_rect.left();
+        let pointer_pos = ui.ctx().input(|i| i.pointer.interact_pos());
+        if canvas_resp.hovered() {
+            let scroll = ui.ctx().input(|i| i.raw_scroll_delta);
+            let ctrl_zoom = ui.ctx().input(|i| i.modifiers.ctrl);
+            if ctrl_zoom && scroll.y.abs() > 0.0 {
+                let old_zoom = self.graph_zoom;
+                let zoom_mul = (1.0 + scroll.y * 0.0008).clamp(0.94, 1.06);
+                self.graph_zoom = (self.graph_zoom * zoom_mul).clamp(0.35, 2.8);
+                if let Some(mouse) = pointer_pos {
+                    let world =
+                        (mouse - canvas_rect.min - self.graph_pan) / old_zoom.max(0.0001);
+                    self.graph_pan = mouse - canvas_rect.min - world * self.graph_zoom;
+                }
+            } else if scroll.length_sq() > 0.0 {
+                // Touchpad 2-fingers / mouse wheel scroll moves the canvas.
+                self.graph_pan += egui::vec2(scroll.x, scroll.y);
+            }
+            if ui.ctx().input(|i| i.pointer.middle_down()) {
+                self.graph_pan += ui.ctx().input(|i| i.pointer.delta());
+            }
+            let kb_zoom_in = ui.ctx().input(|i| {
+                i.modifiers.ctrl
+                    && (i.key_pressed(egui::Key::Plus) || i.key_pressed(egui::Key::Equals))
+            });
+            let kb_zoom_out =
+                ui.ctx().input(|i| i.modifiers.ctrl && i.key_pressed(egui::Key::Minus));
+            let kb_zoom_reset =
+                ui.ctx().input(|i| i.modifiers.ctrl && i.key_pressed(egui::Key::Num0));
+            if kb_zoom_in {
+                self.graph_zoom = (self.graph_zoom * 1.12).clamp(0.35, 2.8);
+            }
+            if kb_zoom_out {
+                self.graph_zoom = (self.graph_zoom / 1.12).clamp(0.35, 2.8);
+            }
+            if kb_zoom_reset {
+                self.graph_zoom = 1.0;
+                self.graph_pan = egui::vec2(0.0, 0.0);
+            }
+        }
+
+        let grid = 24.0 * self.graph_zoom.max(0.35);
+        let grid_off_x = ((self.graph_pan.x % grid) + grid) % grid;
+        let grid_off_y = ((self.graph_pan.y % grid) + grid) % grid;
+        let mut x = canvas_rect.left() + grid_off_x;
         while x < canvas_rect.right() {
             painter.line_segment(
                 [egui::pos2(x, canvas_rect.top()), egui::pos2(x, canvas_rect.bottom())],
@@ -1646,7 +1893,7 @@ impl FiosState {
             );
             x += grid;
         }
-        let mut y = canvas_rect.top();
+        let mut y = canvas_rect.top() + grid_off_y;
         while y < canvas_rect.bottom() {
             painter.line_segment(
                 [egui::pos2(canvas_rect.left(), y), egui::pos2(canvas_rect.right(), y)],
@@ -1655,13 +1902,16 @@ impl FiosState {
             y += grid;
         }
 
+        let graph_origin = canvas_rect.min + self.graph_pan;
         let mut rect_by_id = HashMap::<u32, egui::Rect>::new();
         for node in &self.nodes {
-            let rect = egui::Rect::from_min_size(canvas_rect.min + node.pos, Self::node_size(node.kind));
+            let rect = egui::Rect::from_min_size(
+                graph_origin + node.pos * self.graph_zoom,
+                Self::node_size(node.kind) * self.graph_zoom,
+            );
             rect_by_id.insert(node.id, rect);
         }
 
-        let pointer_pos = ui.ctx().input(|i| i.pointer.interact_pos());
         let ctrl = ui.ctx().input(|i| i.modifiers.ctrl);
         let alt = ui.ctx().input(|i| i.modifiers.alt);
         let primary_pressed = ui.ctx().input(|i| i.pointer.primary_pressed());
@@ -1844,6 +2094,32 @@ impl FiosState {
                         ui.close();
                     }
                 });
+            });
+            ui.menu_button(modules_txt, |ui| {
+                if ui.button(module_move_txt).clicked() {
+                    self.add_module_move_basic();
+                    ui.close();
+                }
+                if ui.button(module_move_adv_txt).clicked() {
+                    self.add_module_move_advanced();
+                    ui.close();
+                }
+                if ui.button(module_look_txt).clicked() {
+                    self.add_module_look_basic();
+                    ui.close();
+                }
+                if ui.button(module_look_adv_txt).clicked() {
+                    self.add_module_look_advanced();
+                    ui.close();
+                }
+                if ui.button(module_action1_txt).clicked() {
+                    self.add_module_action_basic(FiosAction::Action1.index());
+                    ui.close();
+                }
+                if ui.button(module_jump_txt).clicked() {
+                    self.add_module_action_basic(FiosAction::Jump.index());
+                    ui.close();
+                }
             });
             if ui.button(group_txt).clicked() {
                 do_group = true;
@@ -2029,7 +2305,10 @@ impl FiosState {
         }
         let mut pending_group_drag_delta: Option<egui::Vec2> = None;
         for node in &mut self.nodes {
-            let rect = egui::Rect::from_min_size(canvas_rect.min + node.pos, Self::node_size(node.kind));
+            let rect = egui::Rect::from_min_size(
+                graph_origin + node.pos * self.graph_zoom,
+                Self::node_size(node.kind) * self.graph_zoom,
+            );
             let id = ui.id().with(("fios_node_drag", node.id));
             let drag_resp = ui.interact(rect, id, egui::Sense::click_and_drag());
             if drag_resp.clicked() {
@@ -2052,9 +2331,9 @@ impl FiosState {
             }
             if drag_resp.dragged() {
                 if self.selected_nodes.contains(&node.id) && self.selected_nodes.len() > 1 {
-                    pending_group_drag_delta = Some(ui.ctx().input(|i| i.pointer.delta()));
+                    pending_group_drag_delta = Some(ui.ctx().input(|i| i.pointer.delta()) / self.graph_zoom.max(0.0001));
                 } else {
-                    node.pos += ui.ctx().input(|i| i.pointer.delta());
+                    node.pos += ui.ctx().input(|i| i.pointer.delta()) / self.graph_zoom.max(0.0001);
                     ui.ctx().request_repaint();
                 }
             }

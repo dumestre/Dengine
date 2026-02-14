@@ -17,6 +17,7 @@ use project::ProjectWindow;
 use viewport::ViewportPanel;
 use viewport_gpu::ViewportGpuRenderer;
 use raw_window_handle::{HasWindowHandle, RawWindowHandle};
+use std::collections::{HashMap, HashSet};
 use std::fs::{self, File};
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
@@ -89,6 +90,7 @@ struct EditorApp {
     current_project: Option<PathBuf>,
     terminai: terminai::TerminAiState,
     fios: fios::FiosState,
+    rigidbody_vertical_vel: HashMap<String, f32>,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -1567,7 +1569,7 @@ impl App for EditorApp {
             let dt = ctx.input(|i| i.stable_dt).max(1.0 / 240.0);
             let len = (axis[0] * axis[0] + axis[1] * axis[1]).sqrt().max(1.0);
             let dir_x = axis[0] / len;
-            let dir_z = -axis[1] / len;
+            let dir_z = axis[1] / len;
             for (name, ctrl) in self.inspector.fios_controller_targets() {
                 let step = ctrl.move_speed * dt;
                 if axis[0].abs() > 1e-4 || axis[1].abs() > 1e-4 {
@@ -1581,13 +1583,49 @@ impl App for EditorApp {
                         .viewport
                         .rotate_object_by(&name, [-look[1] * r_step, look[0] * r_step, 0.0]);
                 }
-                if action.abs() > 1e-4 {
+                if action.abs() > 1e-4 && !self.rigidbody_vertical_vel.contains_key(&name) {
                     let a_step = ctrl.action_speed * dt;
                     let _ = self
                         .viewport
                         .move_object_by(&name, [0.0, action * a_step, 0.0]);
                 }
             }
+        }
+        if self.is_playing {
+            let dt = ctx.input(|i| i.stable_dt).max(1.0 / 240.0);
+            let rb_targets = self.inspector.rigidbody_targets();
+            let live_names: HashSet<String> = rb_targets.iter().map(|(n, _)| n.clone()).collect();
+            self.rigidbody_vertical_vel
+                .retain(|name, _| live_names.contains(name));
+
+            for (name, rb) in rb_targets {
+                let mut vy = *self.rigidbody_vertical_vel.get(&name).unwrap_or(&0.0);
+                if let Some((pos, _, _)) = self.viewport.object_transform_components(&name) {
+                    let on_ground = pos[1] <= 0.001;
+                    if action > 0.5 && on_ground {
+                        vy = rb.jump_impulse;
+                    }
+                }
+                vy += rb.gravity * dt;
+                let dy = vy * dt;
+                if dy.abs() > 1e-6 {
+                    let _ = self.viewport.move_object_by(&name, [0.0, dy, 0.0]);
+                }
+                if let Some((mut pos, rot, scale)) = self.viewport.object_transform_components(&name) {
+                    if pos[1] < 0.0 {
+                        pos[1] = 0.0;
+                        if vy < 0.0 {
+                            vy = 0.0;
+                        }
+                        let _ = self
+                            .viewport
+                            .set_object_transform_components(&name, pos, rot, scale);
+                    }
+                }
+                self.rigidbody_vertical_vel.insert(name, vy);
+            }
+        } else {
+            self.rigidbody_vertical_vel.clear();
         }
         let i_left = self.inspector.docked_left_width();
         let i_right = self.inspector.docked_right_width();
@@ -2179,6 +2217,7 @@ fn main() -> eframe::Result<()> {
                 current_project: None,
                 terminai: terminai::TerminAiState::new(),
                 fios: fios::FiosState::new(),
+                rigidbody_vertical_vel: HashMap::new(),
             };
             app.refresh_hub_projects();
             app.refresh_hub_engines();
