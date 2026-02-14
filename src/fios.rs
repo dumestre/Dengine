@@ -1,10 +1,10 @@
 use crate::EngineLanguage;
 use eframe::egui;
 use mlua::{Function, Lua, MultiValue, RegistryKey, Table, Value};
-use rfd::FileDialog;
 use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::PathBuf;
+use std::sync::Arc;
 
 const ACTION_COUNT: usize = 8;
 
@@ -12,6 +12,13 @@ const ACTION_COUNT: usize = 8;
 enum FiosTab {
     Controls,
     Graph,
+    Controller,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum FiosControlMode {
+    Movement,
+    Animation,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -90,6 +97,38 @@ impl FiosAction {
             (EngineLanguage::Es, Self::Interact) => "Interactuar",
             (EngineLanguage::Es, Self::Action1) => "Accion 1",
             (EngineLanguage::Es, Self::Action2) => "Accion 2",
+        }
+    }
+
+    fn label_for_mode(self, lang: EngineLanguage, mode: FiosControlMode) -> &'static str {
+        match mode {
+            FiosControlMode::Movement => self.label(lang),
+            FiosControlMode::Animation => match (lang, self) {
+                (EngineLanguage::Pt, Self::Forward) => "Animacao Anterior",
+                (EngineLanguage::Pt, Self::Backward) => "Proxima Animacao",
+                (EngineLanguage::Pt, Self::Left) => "Frame -",
+                (EngineLanguage::Pt, Self::Right) => "Frame +",
+                (EngineLanguage::Pt, Self::Jump) => "Play/Pause",
+                (EngineLanguage::Pt, Self::Interact) => "Stop",
+                (EngineLanguage::Pt, Self::Action1) => "Blend +",
+                (EngineLanguage::Pt, Self::Action2) => "Blend -",
+                (EngineLanguage::En, Self::Forward) => "Previous Anim",
+                (EngineLanguage::En, Self::Backward) => "Next Anim",
+                (EngineLanguage::En, Self::Left) => "Frame -",
+                (EngineLanguage::En, Self::Right) => "Frame +",
+                (EngineLanguage::En, Self::Jump) => "Play/Pause",
+                (EngineLanguage::En, Self::Interact) => "Stop",
+                (EngineLanguage::En, Self::Action1) => "Blend +",
+                (EngineLanguage::En, Self::Action2) => "Blend -",
+                (EngineLanguage::Es, Self::Forward) => "Animacion Anterior",
+                (EngineLanguage::Es, Self::Backward) => "Siguiente Animacion",
+                (EngineLanguage::Es, Self::Left) => "Frame -",
+                (EngineLanguage::Es, Self::Right) => "Frame +",
+                (EngineLanguage::Es, Self::Jump) => "Play/Pause",
+                (EngineLanguage::Es, Self::Interact) => "Stop",
+                (EngineLanguage::Es, Self::Action1) => "Blend +",
+                (EngineLanguage::Es, Self::Action2) => "Blend -",
+            },
         }
     }
 }
@@ -300,6 +339,12 @@ pub struct FiosState {
     just_pressed: [bool; ACTION_COUNT],
     capture_index: Option<usize>,
     status: Option<String>,
+    add_icon_texture: Option<egui::TextureHandle>,
+    creator_status: Option<String>,
+    shader_name: String,
+    anim_controller_name: String,
+    control_modes: Vec<FiosControlMode>,
+    active_control_mode: FiosControlMode,
     tab: FiosTab,
     nodes: Vec<FiosNode>,
     links: Vec<FiosLink>,
@@ -330,6 +375,37 @@ pub struct FiosState {
 }
 
 impl FiosState {
+    fn control_mode_label(mode: FiosControlMode, lang: EngineLanguage) -> &'static str {
+        match (lang, mode) {
+            (EngineLanguage::Pt, FiosControlMode::Movement) => "Movimento",
+            (EngineLanguage::Pt, FiosControlMode::Animation) => "Animacao",
+            (EngineLanguage::En, FiosControlMode::Movement) => "Movement",
+            (EngineLanguage::En, FiosControlMode::Animation) => "Animation",
+            (EngineLanguage::Es, FiosControlMode::Movement) => "Movimiento",
+            (EngineLanguage::Es, FiosControlMode::Animation) => "Animacion",
+        }
+    }
+
+    fn load_window_icon_from_png(path: &str) -> Option<Arc<egui::IconData>> {
+        let bytes = fs::read(path).ok()?;
+        let rgba = image::load_from_memory(&bytes).ok()?.to_rgba8();
+        let width = rgba.width();
+        let height = rgba.height();
+        Some(Arc::new(egui::IconData {
+            rgba: rgba.into_raw(),
+            width,
+            height,
+        }))
+    }
+
+    fn load_png_texture(ctx: &egui::Context, path: &str) -> Option<egui::TextureHandle> {
+        let bytes = fs::read(path).ok()?;
+        let rgba = image::load_from_memory(&bytes).ok()?.to_rgba8();
+        let size = [rgba.width() as usize, rgba.height() as usize];
+        let color_image = egui::ColorImage::from_rgba_unmultiplied(size, rgba.as_raw());
+        Some(ctx.load_texture(path.to_owned(), color_image, egui::TextureOptions::LINEAR))
+    }
+
     fn default_node_name(kind: FiosNodeKind) -> &'static str {
         match kind {
             FiosNodeKind::InputAxis => "Input Axis",
@@ -366,6 +442,20 @@ impl FiosState {
             .replace("%25", "%")
     }
 
+    fn unique_file_path(dir: &std::path::Path, stem: &str, ext: &str) -> PathBuf {
+        let mut candidate = dir.join(format!("{stem}.{ext}"));
+        if !candidate.exists() {
+            return candidate;
+        }
+        for i in 1..10000 {
+            candidate = dir.join(format!("{stem}_{i}.{ext}"));
+            if !candidate.exists() {
+                return candidate;
+            }
+        }
+        dir.join(format!("{stem}.{ext}"))
+    }
+
     pub fn new() -> Self {
         let lua_runtime = Lua::new();
         let mut out = Self {
@@ -375,6 +465,12 @@ impl FiosState {
             just_pressed: [false; ACTION_COUNT],
             capture_index: None,
             status: None,
+            add_icon_texture: None,
+            creator_status: None,
+            shader_name: "NewShader".to_string(),
+            anim_controller_name: "NewAnimController".to_string(),
+            control_modes: vec![FiosControlMode::Movement],
+            active_control_mode: FiosControlMode::Movement,
             tab: FiosTab::Controls,
             nodes: Vec::new(),
             links: Vec::new(),
@@ -656,10 +752,6 @@ impl FiosState {
         }
     }
 
-    fn save_lua_script_to_disk(&self) -> Result<(), String> {
-        fs::write(Self::lua_script_path(), &self.lua_script).map_err(|e| e.to_string())
-    }
-
     fn save_graph_to_disk(&self) -> Result<(), String> {
         let mut out = String::new();
         out.push_str("version=1\n");
@@ -824,6 +916,7 @@ impl FiosState {
     }
 
     pub fn update_input(&mut self, ctx: &egui::Context) {
+        self.controls_enabled = true;
         if !self.controls_enabled {
             self.pressed = [false; ACTION_COUNT];
             self.just_pressed = [false; ACTION_COUNT];
@@ -1416,6 +1509,63 @@ impl FiosState {
         let _ = self.save_graph_to_disk();
     }
 
+    fn add_module_animation_controls(&mut self) {
+        let out_id = self
+            .first_node_id_of_kind(FiosNodeKind::OutputAction)
+            .unwrap_or_else(|| {
+                self.add_node_custom(
+                    FiosNodeKind::OutputAction,
+                    egui::vec2(760.0, 340.0),
+                    0.0,
+                    0.0,
+                    0.0,
+                )
+            });
+
+        let in_play = self.add_node_custom(
+            FiosNodeKind::InputAction,
+            egui::vec2(120.0, 260.0),
+            0.0,
+            FiosAction::Jump.index() as f32,
+            1.0,
+        );
+        let in_next = self.add_node_custom(
+            FiosNodeKind::InputAction,
+            egui::vec2(120.0, 340.0),
+            0.0,
+            FiosAction::Action1.index() as f32,
+            1.0,
+        );
+        let in_prev = self.add_node_custom(
+            FiosNodeKind::InputAction,
+            egui::vec2(120.0, 420.0),
+            0.0,
+            FiosAction::Action2.index() as f32,
+            1.0,
+        );
+        let c_play = self.add_node_custom(FiosNodeKind::Constant, egui::vec2(300.0, 220.0), 2.0, 0.0, 0.0);
+        let c_next = self.add_node_custom(FiosNodeKind::Constant, egui::vec2(300.0, 300.0), 1.0, 0.0, 0.0);
+        let c_prev = self.add_node_custom(FiosNodeKind::Constant, egui::vec2(300.0, 380.0), -1.0, 0.0, 0.0);
+        let m_play = self.add_node_custom(FiosNodeKind::Multiply, egui::vec2(430.0, 260.0), 0.0, 0.0, 0.0);
+        let m_next = self.add_node_custom(FiosNodeKind::Multiply, egui::vec2(430.0, 340.0), 0.0, 0.0, 0.0);
+        let m_prev = self.add_node_custom(FiosNodeKind::Multiply, egui::vec2(430.0, 420.0), 0.0, 0.0, 0.0);
+        let add_1 = self.add_node_custom(FiosNodeKind::Add, egui::vec2(590.0, 320.0), 0.0, 0.0, 0.0);
+        let add_2 = self.add_node_custom(FiosNodeKind::Add, egui::vec2(680.0, 360.0), 0.0, 0.0, 0.0);
+
+        self.create_link(in_play, 0, m_play, 0);
+        self.create_link(c_play, 0, m_play, 1);
+        self.create_link(in_next, 0, m_next, 0);
+        self.create_link(c_next, 0, m_next, 1);
+        self.create_link(in_prev, 0, m_prev, 0);
+        self.create_link(c_prev, 0, m_prev, 1);
+        self.create_link(m_next, 0, add_1, 0);
+        self.create_link(m_prev, 0, add_1, 1);
+        self.create_link(add_1, 0, add_2, 0);
+        self.create_link(m_play, 0, add_2, 1);
+        self.create_link(add_2, 0, out_id, 0);
+        let _ = self.save_graph_to_disk();
+    }
+
     fn remove_selected_nodes(&mut self) -> bool {
         if self.selected_nodes.is_empty() {
             if let Some(id) = self.selected_node {
@@ -1527,7 +1677,6 @@ impl FiosState {
             none_txt,
             rename_txt,
             apply_name_txt,
-            hint_txt,
             add_block_txt,
             modules_txt,
             module_move_txt,
@@ -1537,7 +1686,6 @@ impl FiosState {
             module_action1_txt,
             module_jump_txt,
             actions_txt,
-            shortcuts_txt,
             del_txt,
         ) = match lang {
             EngineLanguage::Pt => (
@@ -1564,7 +1712,6 @@ impl FiosState {
                 "Nenhum",
                 "Renomear",
                 "Aplicar Nome",
-                "Ctrl: multi-selecao | Arraste no vazio: caixa | Clique perto do output e arraste: prever/ligar fio | Alt + botao direito no output: ligar fio | Botao direito + arrastar: cortar fio",
                 "Add Bloco",
                 "Modulos",
                 "Locomocao Basica",
@@ -1574,7 +1721,6 @@ impl FiosState {
                 "Acao 1 Basica",
                 "Pulo Basico",
                 "Acoes",
-                "Atalhos",
                 "Excluir Selecionado",
             ),
             EngineLanguage::En => (
@@ -1601,7 +1747,6 @@ impl FiosState {
                 "None",
                 "Rename",
                 "Apply Name",
-                "Ctrl: multi-select | Drag empty: marquee | Drag near output: predict/connect wire | Alt + right mouse on output: connect wire | Right mouse + drag: cut wire",
                 "Add Block",
                 "Modules",
                 "Basic Locomotion",
@@ -1611,7 +1756,6 @@ impl FiosState {
                 "Basic Action 1",
                 "Basic Jump",
                 "Actions",
-                "Shortcuts",
                 "Delete Selected",
             ),
             EngineLanguage::Es => (
@@ -1638,7 +1782,6 @@ impl FiosState {
                 "Ninguno",
                 "Renombrar",
                 "Aplicar Nombre",
-                "Ctrl: multi-seleccion | Arrastrar vacio: caja | Arrastrar cerca de salida: predecir/conectar cable | Alt + boton derecho en salida: conectar cable | Boton derecho + arrastrar: cortar cable",
                 "Agregar Bloque",
                 "Modulos",
                 "Locomocion Basica",
@@ -1648,7 +1791,6 @@ impl FiosState {
                 "Accion 1 Basica",
                 "Salto Basico",
                 "Acciones",
-                "Atajos",
                 "Eliminar Seleccionado",
             ),
         };
@@ -1658,7 +1800,10 @@ impl FiosState {
                 ui.label(egui::RichText::new(add_block_txt).strong().color(egui::Color32::from_gray(220)));
                 ui.separator();
                 ui.menu_button(
-                    egui::RichText::new(add_block_txt).strong(),
+                    egui::RichText::new(add_block_txt)
+                        .strong()
+                        .color(egui::Color32::from_rgb(20, 24, 20))
+                        .background_color(egui::Color32::from_rgb(15, 232, 121)),
                     |ui| {
                         if ui.button(input_axis_txt).clicked() {
                             self.add_node(FiosNodeKind::InputAxis);
@@ -1739,7 +1884,12 @@ impl FiosState {
                     },
                 );
                 ui.separator();
-                ui.menu_button(egui::RichText::new(modules_txt).strong(), |ui| {
+                ui.menu_button(
+                    egui::RichText::new(modules_txt)
+                        .strong()
+                        .color(egui::Color32::from_rgb(238, 232, 255))
+                        .background_color(egui::Color32::from_rgb(108, 76, 156)),
+                    |ui| {
                     if ui.button(module_move_txt).clicked() {
                         self.add_module_move_basic();
                         ui.close();
@@ -1782,7 +1932,7 @@ impl FiosState {
                 if ui
                     .add_sized(
                         egui::vec2(140.0, 26.0),
-                        egui::Button::new(del_txt).fill(egui::Color32::from_rgb(96, 50, 50)),
+                        egui::Button::new(del_txt).fill(egui::Color32::from_rgb(128, 72, 78)),
                     )
                     .clicked()
                     && self.remove_selected_nodes()
@@ -1815,19 +1965,6 @@ impl FiosState {
                 }
             });
             ui.add_space(2.0);
-            ui.label(
-                egui::RichText::new(format!("{shortcuts_txt}: {hint_txt}"))
-                    .size(11.0)
-                    .color(egui::Color32::from_gray(160)),
-            );
-            ui.label(
-                egui::RichText::new(format!(
-                    "Zoom: {:.0}% | 2 dedos/wheel: pan | Ctrl + wheel: zoom | Ctrl+0 reset",
-                    self.graph_zoom * 100.0
-                ))
-                .size(11.0)
-                .color(egui::Color32::from_gray(150)),
-            );
         });
         ui.add_space(6.0);
 
@@ -2156,11 +2293,18 @@ impl FiosState {
         }
 
         let mut link_curves: Vec<(usize, Vec<egui::Pos2>)> = Vec::new();
-        for g in &self.groups {
+        let mut group_rects: Vec<(u32, egui::Rect)> = Vec::new();
+        let mut pending_group_drag_delta: Option<egui::Vec2> = None;
+        let mut pending_group_select: Option<u32> = None;
+        for gi in 0..self.groups.len() {
+            let (group_id, group_name, group_color, group_nodes): (u32, String, egui::Color32, Vec<u32>) = {
+                let g = &self.groups[gi];
+                (g.id, g.name.clone(), g.color, g.nodes.iter().copied().collect())
+            };
             let mut min = egui::pos2(f32::INFINITY, f32::INFINITY);
             let mut max = egui::pos2(f32::NEG_INFINITY, f32::NEG_INFINITY);
             let mut count = 0usize;
-            for id in &g.nodes {
+            for id in &group_nodes {
                 if let Some(r) = rect_by_id.get(id) {
                     min.x = min.x.min(r.min.x);
                     min.y = min.y.min(r.min.y);
@@ -2173,22 +2317,81 @@ impl FiosState {
                 continue;
             }
             let gr = egui::Rect::from_min_max(min, max).expand2(egui::vec2(12.0, 18.0));
-            let fill = egui::Color32::from_rgba_unmultiplied(g.color.r(), g.color.g(), g.color.b(), 26);
+            group_rects.push((group_id, gr));
+            let g_resp = ui.interact(
+                gr,
+                ui.id().with(("fios_group_drag", group_id)),
+                egui::Sense::click_and_drag(),
+            );
+            if g_resp.clicked() {
+                pending_group_select = Some(group_id);
+            }
+            if g_resp.dragged() {
+                pending_group_drag_delta =
+                    Some(ui.ctx().input(|i| i.pointer.delta()) / self.graph_zoom.max(0.0001));
+            }
+            let fill = egui::Color32::from_rgba_unmultiplied(
+                group_color.r(),
+                group_color.g(),
+                group_color.b(),
+                26,
+            );
             painter.rect_filled(gr, 8.0, fill);
             painter.rect_stroke(
                 gr,
                 8.0,
-                egui::Stroke::new(1.2, g.color),
+                egui::Stroke::new(1.2, group_color),
                 egui::StrokeKind::Outside,
             );
             painter.text(
                 gr.left_top() + egui::vec2(8.0, 6.0),
                 egui::Align2::LEFT_TOP,
-                &g.name,
+                &group_name,
                 egui::FontId::proportional(11.0),
-                g.color,
+                group_color,
             );
+            let color_btn_rect = egui::Rect::from_center_size(
+                egui::pos2(gr.right() - 12.0, gr.top() + 12.0),
+                egui::vec2(16.0, 16.0),
+            );
+            let color_resp = ui.interact(
+                color_btn_rect,
+                ui.id().with(("fios_group_color_btn", group_id)),
+                egui::Sense::click(),
+            );
+            painter.circle_filled(color_btn_rect.center(), 5.0, group_color);
+            painter.circle_stroke(
+                color_btn_rect.center(),
+                5.0,
+                egui::Stroke::new(1.0, egui::Color32::from_gray(25)),
+            );
+            egui::Popup::menu(&color_resp)
+                .id(ui.id().with(("fios_group_color_popup", group_id)))
+                .width(170.0)
+                .show(|ui| {
+                    let mut c = self.groups[gi].color;
+                    if ui.color_edit_button_srgba(&mut c).changed() {
+                        self.groups[gi].color = c;
+                        graph_dirty = true;
+                    }
+                });
         }
+        if let Some(group_id) = pending_group_select {
+            if let Some(group) = self.groups.iter().find(|g| g.id == group_id) {
+                if !ctrl {
+                    self.selected_nodes.clear();
+                }
+                for id in &group.nodes {
+                    self.selected_nodes.insert(*id);
+                }
+                self.selected_node = self.selected_nodes.iter().next().copied();
+            }
+        }
+        let hovered_group = pointer_pos.and_then(|p| {
+            group_rects
+                .iter()
+                .find_map(|(gid, r)| if r.contains(p) { Some(*gid) } else { None })
+        });
         for (link_idx, link) in self.links.iter().enumerate() {
             let Some(fi) = self.node_index_by_id(link.from_node) else { continue; };
             let Some(ti) = self.node_index_by_id(link.to_node) else { continue; };
@@ -2242,7 +2445,12 @@ impl FiosState {
                 }
             }
         }
-        if secondary_pressed && !started_alt_wire_drag && self.drag_from_output.is_none() {
+        if secondary_pressed
+            && !started_alt_wire_drag
+            && self.drag_from_output.is_none()
+            && hovered_node.is_none()
+            && hovered_group.is_none()
+        {
             self.cut_points.clear();
             if let Some(p) = pointer_pos {
                 self.cut_points.push(p);
@@ -2295,6 +2503,8 @@ impl FiosState {
 
         let mut pending_new_link: Option<(u32, u8, u32, u8)> = None;
         let mut pending_remove_links: Vec<(u32, u8)> = Vec::new();
+        let mut pending_context_rename_node: Option<u32> = None;
+        let mut pending_context_delete_node: Option<u32> = None;
         let mut next_drag_from_output = self.drag_from_output;
         if next_drag_from_output.is_none() {
             if let Some((from_node, from_port, from_pos)) = auto_start_wire {
@@ -2303,7 +2513,6 @@ impl FiosState {
                 self.wire_drag_path.push(from_pos);
             }
         }
-        let mut pending_group_drag_delta: Option<egui::Vec2> = None;
         for node in &mut self.nodes {
             let rect = egui::Rect::from_min_size(
                 graph_origin + node.pos * self.graph_zoom,
@@ -2329,6 +2538,16 @@ impl FiosState {
                 self.rename_node = Some(node.id);
                 self.rename_buffer = node.display_name.clone();
             }
+            drag_resp.context_menu(|ui| {
+                if ui.button(rename_txt).clicked() {
+                    pending_context_rename_node = Some(node.id);
+                    ui.close();
+                }
+                if ui.button(del_txt).clicked() {
+                    pending_context_delete_node = Some(node.id);
+                    ui.close();
+                }
+            });
             if drag_resp.dragged() {
                 if self.selected_nodes.contains(&node.id) && self.selected_nodes.len() > 1 {
                     pending_group_drag_delta = Some(ui.ctx().input(|i| i.pointer.delta()) / self.graph_zoom.max(0.0001));
@@ -2503,6 +2722,20 @@ impl FiosState {
             }
         }
         self.drag_from_output = next_drag_from_output;
+        if let Some(id) = pending_context_rename_node {
+            self.rename_node = Some(id);
+            if let Some(i) = self.node_index_by_id(id) {
+                self.rename_buffer = self.nodes[i].display_name.clone();
+            }
+        }
+        if let Some(id) = pending_context_delete_node {
+            self.selected_nodes.clear();
+            self.selected_nodes.insert(id);
+            self.selected_node = Some(id);
+            if self.remove_selected_nodes() {
+                graph_dirty = true;
+            }
+        }
         for (to_node, to_port) in pending_remove_links {
             self.links
                 .retain(|l| !(l.to_node == to_node && l.to_port == to_port));
@@ -2681,7 +2914,6 @@ impl FiosState {
         let card_fill = egui::Color32::from_rgb(29, 32, 34);
         let card_stroke = egui::Stroke::new(1.0, egui::Color32::from_rgb(60, 66, 70));
         let accent = egui::Color32::from_rgb(15, 232, 121);
-        let warn = egui::Color32::from_rgb(220, 130, 80);
         let section_title = |ui: &mut egui::Ui, text: &str| {
             ui.label(egui::RichText::new(text).strong().color(egui::Color32::from_gray(225)));
             ui.add_space(4.0);
@@ -2692,10 +2924,10 @@ impl FiosState {
             EngineLanguage::En => "Controls",
             EngineLanguage::Es => "Controles",
         };
-        let runtime_title = match lang {
-            EngineLanguage::Pt => "Runtime",
-            EngineLanguage::En => "Runtime",
-            EngineLanguage::Es => "Runtime",
+        let add_control_txt = match lang {
+            EngineLanguage::Pt => "Add",
+            EngineLanguage::En => "Add",
+            EngineLanguage::Es => "Add",
         };
         let action_header = match lang {
             EngineLanguage::Pt => "Acao",
@@ -2712,16 +2944,6 @@ impl FiosState {
             EngineLanguage::En => "State",
             EngineLanguage::Es => "Estado",
         };
-        let controls_enabled_txt = match lang {
-            EngineLanguage::Pt => "Ativar Controles",
-            EngineLanguage::En => "Enable Controls",
-            EngineLanguage::Es => "Activar Controles",
-        };
-        let lua_toggle_txt = match lang {
-            EngineLanguage::Pt => "Ativar Lua",
-            EngineLanguage::En => "Enable Lua",
-            EngineLanguage::Es => "Activar Lua",
-        };
         let save_txt = match lang {
             EngineLanguage::Pt => "Salvar",
             EngineLanguage::En => "Save",
@@ -2732,83 +2954,72 @@ impl FiosState {
             EngineLanguage::En => "Restore Defaults",
             EngineLanguage::Es => "Restaurar Pred.",
         };
-        let lua_tools_title = match lang {
-            EngineLanguage::Pt => "Ferramentas Lua",
-            EngineLanguage::En => "Lua Tools",
-            EngineLanguage::Es => "Herramientas Lua",
-        };
-
+        if let Some(status) = &self.status {
+            ui.label(egui::RichText::new(status).color(egui::Color32::from_gray(185)));
+            ui.add_space(6.0);
+        }
         egui::Frame::new()
             .fill(card_fill)
             .stroke(card_stroke)
             .corner_radius(8)
             .inner_margin(egui::Margin::same(10))
             .show(ui, |ui| {
-                section_title(ui, runtime_title);
-                ui.horizontal_wrapped(|ui| {
-                    if ui
-                        .checkbox(&mut self.controls_enabled, controls_enabled_txt)
-                        .changed()
-                    {
-                        let _ = self.save_to_disk();
-                    }
-                    if ui.checkbox(&mut self.lua_enabled, lua_toggle_txt).changed() {
-                        let _ = self.save_to_disk();
-                    }
-
-                    let controls_state = if self.controls_enabled {
-                        match lang {
-                            EngineLanguage::Pt => "Controles ON",
-                            EngineLanguage::En => "Controls ON",
-                            EngineLanguage::Es => "Controles ON",
+                ui.with_layout(
+                    egui::Layout::left_to_right(egui::Align::Center).with_main_align(egui::Align::Center),
+                    |ui| {
+                    section_title(ui, controls_title);
+                    for mode in self.control_modes.clone() {
+                        let selected = self.active_control_mode == mode;
+                        if ui
+                            .add(
+                                egui::Button::new(Self::control_mode_label(mode, lang))
+                                    .fill(if selected {
+                                        egui::Color32::from_rgb(58, 84, 64)
+                                    } else {
+                                        egui::Color32::from_rgb(48, 52, 55)
+                                    }),
+                            )
+                            .clicked()
+                        {
+                            self.active_control_mode = mode;
                         }
+                    }
+                    ui.add_space(6.0);
+                    let add_fill = egui::Color32::from_rgb(15, 232, 121);
+                    let add_btn = if let Some(icon) = &self.add_icon_texture {
+                        egui::Button::image_and_text(
+                            egui::Image::new(icon).fit_to_exact_size(egui::vec2(12.0, 12.0)),
+                            egui::RichText::new(add_control_txt).strong().color(egui::Color32::from_rgb(20, 24, 20)),
+                        )
+                        .fill(add_fill)
                     } else {
-                        match lang {
-                            EngineLanguage::Pt => "Controles OFF",
-                            EngineLanguage::En => "Controls OFF",
-                            EngineLanguage::Es => "Controles OFF",
-                        }
+                        egui::Button::new(
+                            egui::RichText::new(add_control_txt)
+                                .strong()
+                                .color(egui::Color32::from_rgb(20, 24, 20)),
+                        )
+                        .fill(add_fill)
                     };
-                    ui.label(
-                        egui::RichText::new(controls_state).color(if self.controls_enabled {
-                            accent
-                        } else {
-                            warn
-                        }),
-                    );
+                    let add_resp = ui.add(add_btn);
+                    egui::Popup::menu(&add_resp)
+                        .id(ui.id().with("fios_add_control_mode_popup"))
+                        .show(|ui| {
+                        if !self.control_modes.contains(&FiosControlMode::Animation)
+                            && ui.button(Self::control_mode_label(FiosControlMode::Animation, lang)).clicked()
+                        {
+                            self.control_modes.push(FiosControlMode::Animation);
+                            self.active_control_mode = FiosControlMode::Animation;
+                            ui.close();
+                        }
+                        if !self.control_modes.contains(&FiosControlMode::Movement)
+                            && ui.button(Self::control_mode_label(FiosControlMode::Movement, lang)).clicked()
+                        {
+                            self.control_modes.push(FiosControlMode::Movement);
+                            self.active_control_mode = FiosControlMode::Movement;
+                            ui.close();
+                        }
+                    });
                 });
-                let lua_status_txt = self.lua_status.clone().unwrap_or_else(|| match lang {
-                    EngineLanguage::Pt => "Lua inativo".to_string(),
-                    EngineLanguage::En => "Lua inactive".to_string(),
-                    EngineLanguage::Es => "Lua inactivo".to_string(),
-                });
-                let [mx, my] = self.last_axis;
-                let [lx, ly] = self.last_look;
-                let a = self.last_action;
-                ui.add_space(2.0);
-                ui.horizontal_wrapped(|ui| {
-                    ui.label(format!("Lua: {lua_status_txt}"));
-                    ui.separator();
-                    ui.label(format!("Move Axis: X={mx:.2} Y={my:.2}"));
-                    ui.separator();
-                    ui.label(format!("Look: Yaw={lx:.2} Pitch={ly:.2}"));
-                    ui.separator();
-                    ui.label(format!("Action={a:.2}"));
-                    if let Some(status) = &self.status {
-                        ui.separator();
-                        ui.label(egui::RichText::new(status).color(egui::Color32::from_gray(190)));
-                    }
-                });
-            });
-
-        ui.add_space(8.0);
-        egui::Frame::new()
-            .fill(card_fill)
-            .stroke(card_stroke)
-            .corner_radius(8)
-            .inner_margin(egui::Margin::same(10))
-            .show(ui, |ui| {
-                section_title(ui, controls_title);
                 egui::Grid::new("fios_bind_grid")
                     .num_columns(3)
                     .spacing([10.0, 8.0])
@@ -2820,7 +3031,7 @@ impl FiosState {
                         ui.end_row();
 
                         for (i, action) in FiosAction::ALL.iter().enumerate() {
-                            ui.label(action.label(lang));
+                            ui.label(action.label_for_mode(lang, self.active_control_mode));
                             let capture = self.capture_index == Some(i);
                             let key_text = if capture {
                                 match lang {
@@ -2889,84 +3100,142 @@ impl FiosState {
                     }
                 });
             });
+    }
+
+    fn draw_controller_tab(&mut self, ui: &mut egui::Ui, lang: EngineLanguage) {
+        let title = match lang {
+            EngineLanguage::Pt => "Controlador: Shader e Animation",
+            EngineLanguage::En => "Controller: Shader and Animation",
+            EngineLanguage::Es => "Controlador: Shader y Animation",
+        };
+        let shader_label = match lang {
+            EngineLanguage::Pt => "Shader",
+            EngineLanguage::En => "Shader",
+            EngineLanguage::Es => "Shader",
+        };
+        let anim_label = match lang {
+            EngineLanguage::Pt => "Animation Controller",
+            EngineLanguage::En => "Animation Controller",
+            EngineLanguage::Es => "Animation Controller",
+        };
+        let create_shader_txt = match lang {
+            EngineLanguage::Pt => "Criar Shader",
+            EngineLanguage::En => "Create Shader",
+            EngineLanguage::Es => "Crear Shader",
+        };
+        let create_anim_txt = match lang {
+            EngineLanguage::Pt => "Criar Animation Controller",
+            EngineLanguage::En => "Create Animation Controller",
+            EngineLanguage::Es => "Crear Animation Controller",
+        };
+        let add_anim_nodes_txt = match lang {
+            EngineLanguage::Pt => "Adicionar Modulo de Animacao (Nos)",
+            EngineLanguage::En => "Add Animation Module (Nodes)",
+            EngineLanguage::Es => "Agregar Modulo de Animacion (Nodos)",
+        };
+
+        ui.heading(title);
+        ui.add_space(8.0);
+        ui.horizontal(|ui| {
+            ui.label(shader_label);
+            ui.add_sized([240.0, 24.0], egui::TextEdit::singleline(&mut self.shader_name));
+            if ui
+                .add(
+                    egui::Button::new(create_shader_txt)
+                        .fill(egui::Color32::from_rgb(15, 232, 121)),
+                )
+                .clicked()
+            {
+                let base = self.shader_name.trim();
+                if base.is_empty() {
+                    self.creator_status = Some("Nome de shader invalido".to_string());
+                } else {
+                    let dir = PathBuf::from("Assets").join("Shaders");
+                    if fs::create_dir_all(&dir).is_ok() {
+                        let path = Self::unique_file_path(&dir, base, "shader");
+                        let shader_template = "shader Standard\n{\n  albedo = 1,1,1,1\n  metallic = 0.0\n  smoothness = 0.5\n}\n";
+                        match fs::write(&path, shader_template) {
+                            Ok(()) => {
+                                self.creator_status =
+                                    Some(format!("Shader criado: {}", path.display()));
+                            }
+                            Err(e) => {
+                                self.creator_status = Some(format!("Falha ao criar shader: {e}"));
+                            }
+                        }
+                    } else {
+                        self.creator_status = Some("Falha ao criar pasta Assets/Shaders".to_string());
+                    }
+                }
+            }
+        });
 
         ui.add_space(8.0);
-        egui::Frame::new()
-            .fill(card_fill)
-            .stroke(card_stroke)
-            .corner_radius(8)
-            .inner_margin(egui::Margin::same(10))
-            .show(ui, |ui| {
-                section_title(ui, lua_tools_title);
-                ui.horizontal_wrapped(|ui| {
-                    if ui.button(match lang {
-                        EngineLanguage::Pt => "Salvar Script Lua",
-                        EngineLanguage::En => "Save Lua Script",
-                        EngineLanguage::Es => "Guardar Script Lua",
-                    }).clicked() {
-                        self.lua_dirty = true;
-                        self.lua_fn_key = None;
-                        self.lua_status = match self.save_lua_script_to_disk() {
-                            Ok(()) => Some(match lang {
-                                EngineLanguage::Pt => "Script Lua salvo",
-                                EngineLanguage::En => "Lua script saved",
-                                EngineLanguage::Es => "Script Lua guardado",
-                            }.to_string()),
-                            Err(err) => Some(format!("Lua save failed: {err}")),
-                        };
-                    }
-                    if ui.button(match lang {
-                        EngineLanguage::Pt => "Criar Arquivo .lua",
-                        EngineLanguage::En => "Create .lua File",
-                        EngineLanguage::Es => "Crear Archivo .lua",
-                    }).clicked() {
-                        if let Some(path) = FileDialog::new()
-                            .add_filter("Lua", &["lua"])
-                            .set_file_name("fios_controller.lua")
-                            .save_file()
-                        {
-                            self.lua_status = match fs::write(&path, &self.lua_script) {
-                                Ok(()) => Some(format!("Lua file created: {}", path.display())),
-                                Err(err) => Some(format!("Lua file create failed: {err}")),
-                            };
+        ui.horizontal(|ui| {
+            ui.label(anim_label);
+            ui.add_sized(
+                [240.0, 24.0],
+                egui::TextEdit::singleline(&mut self.anim_controller_name),
+            );
+            if ui
+                .add(
+                    egui::Button::new(create_anim_txt)
+                        .fill(egui::Color32::from_rgb(108, 76, 156)),
+                )
+                .clicked()
+            {
+                let base = self.anim_controller_name.trim();
+                if base.is_empty() {
+                    self.creator_status = Some("Nome de animation controller invalido".to_string());
+                } else {
+                    let dir = PathBuf::from("Assets").join("Animations");
+                    if fs::create_dir_all(&dir).is_ok() {
+                        let path = Self::unique_file_path(&dir, base, "animctrl");
+                        let template = "controller\n{\n  default_state = Idle\n  state Idle\n  state Walk\n  state Run\n  transition Idle -> Walk when speed > 0.1\n  transition Walk -> Idle when speed <= 0.1\n}\n";
+                        match fs::write(&path, template) {
+                            Ok(()) => {
+                                self.creator_status = Some(format!(
+                                    "Animation Controller criado: {}",
+                                    path.display()
+                                ));
+                            }
+                            Err(e) => {
+                                self.creator_status =
+                                    Some(format!("Falha ao criar animation controller: {e}"));
+                            }
                         }
+                    } else {
+                        self.creator_status =
+                            Some("Falha ao criar pasta Assets/Animations".to_string());
                     }
-                    if ui.button(match lang {
-                        EngineLanguage::Pt => "Abrir Arquivo .lua",
-                        EngineLanguage::En => "Open .lua File",
-                        EngineLanguage::Es => "Abrir Archivo .lua",
-                    }).clicked() {
-                        if let Some(path) = FileDialog::new().add_filter("Lua", &["lua"]).pick_file() {
-                            self.lua_status = match fs::read_to_string(&path) {
-                                Ok(raw) => {
-                                    self.lua_script = raw;
-                                    self.lua_dirty = true;
-                                    self.lua_fn_key = None;
-                                    Some(format!("Lua file loaded: {}", path.display()))
-                                }
-                                Err(err) => Some(format!("Lua file open failed: {err}")),
-                            };
-                        }
-                    }
-                });
-                ui.add_space(4.0);
-                ui.label(match lang {
-                    EngineLanguage::Pt => "Script recebe (x, y, dt) e deve retornar {x=..., y=...} ou x, y",
-                    EngineLanguage::En => "Script receives (x, y, dt) and should return {x=..., y=...} or x, y",
-                    EngineLanguage::Es => "El script recibe (x, y, dt) y debe devolver {x=..., y=...} o x, y",
-                });
-                if ui
-                    .add_sized(
-                        [ui.available_width(), 150.0],
-                        egui::TextEdit::multiline(&mut self.lua_script)
-                            .font(egui::TextStyle::Monospace),
-                    )
-                    .changed()
-                {
-                    self.lua_dirty = true;
-                    self.lua_fn_key = None;
                 }
-            });
+            }
+        });
+
+        ui.add_space(10.0);
+        if ui
+            .add(
+                egui::Button::new(add_anim_nodes_txt)
+                    .fill(egui::Color32::from_rgb(108, 76, 156)),
+            )
+            .clicked()
+        {
+            self.add_module_animation_controls();
+            self.tab = FiosTab::Graph;
+            self.creator_status = Some(
+                match lang {
+                    EngineLanguage::Pt => "Modulo de animacao adicionado em Fios",
+                    EngineLanguage::En => "Animation module added in Fios",
+                    EngineLanguage::Es => "Modulo de animacion agregado en Fios",
+                }
+                .to_string(),
+            );
+        }
+
+        ui.add_space(10.0);
+        if let Some(s) = &self.creator_status {
+            ui.label(s);
+        }
     }
 
     pub fn draw_window(&mut self, ctx: &egui::Context, open: &mut bool, lang: EngineLanguage) {
@@ -2975,44 +3244,63 @@ impl FiosState {
         }
         let viewport_id = egui::ViewportId::from_hash_of("dengine_fios_viewport");
         let mut close_req = false;
+        let mut builder = egui::ViewportBuilder::default()
+            .with_title("Fios")
+            .with_inner_size([860.0, 560.0])
+            .with_min_inner_size([680.0, 420.0])
+            .with_resizable(true)
+            .with_decorations(true);
+        if let Some(icon) = Self::load_window_icon_from_png("src/assets/icons/fios.png") {
+            builder = builder.with_icon(icon);
+        }
         ctx.show_viewport_immediate(
             viewport_id,
-            egui::ViewportBuilder::default()
-                .with_title("Fios")
-                .with_inner_size([860.0, 560.0])
-                .with_min_inner_size([680.0, 420.0])
-                .with_resizable(true)
-                .with_decorations(true),
+            builder,
             |ctx, _class| {
                 if ctx.input(|i| i.viewport().close_requested()) {
                     close_req = true;
                     return;
                 }
+                if self.add_icon_texture.is_none() {
+                    self.add_icon_texture = Self::load_png_texture(ctx, "src/assets/icons/add.png");
+                }
                 egui::CentralPanel::default().show(ctx, |ui| {
-                    ui.horizontal(|ui| {
+                    ui.with_layout(
+                        egui::Layout::left_to_right(egui::Align::Center).with_main_align(egui::Align::Center),
+                        |ui| {
                         let controls_txt = match lang {
                             EngineLanguage::Pt => "Controles",
                             EngineLanguage::En => "Controls",
                             EngineLanguage::Es => "Controles",
                         };
                         let graph_txt = match lang {
-                            EngineLanguage::Pt => "Grafo",
-                            EngineLanguage::En => "Graph",
-                            EngineLanguage::Es => "Grafo",
+                            EngineLanguage::Pt => "Fios",
+                            EngineLanguage::En => "Fios",
+                            EngineLanguage::Es => "Fios",
+                        };
+                        let creator_txt = match lang {
+                            EngineLanguage::Pt => "Controlador",
+                            EngineLanguage::En => "Controller",
+                            EngineLanguage::Es => "Controlador",
                         };
                         let c = self.tab == FiosTab::Controls;
                         let g = self.tab == FiosTab::Graph;
+                        let k = self.tab == FiosTab::Controller;
                         if ui.add(egui::Button::new(controls_txt).fill(if c { egui::Color32::from_rgb(58, 84, 64) } else { egui::Color32::from_rgb(52, 52, 52) })).clicked() {
                             self.tab = FiosTab::Controls;
                         }
-                        if ui.add(egui::Button::new(graph_txt).fill(if g { egui::Color32::from_rgb(58, 84, 64) } else { egui::Color32::from_rgb(52, 52, 52) })).clicked() {
+                        if ui.add(egui::Button::new(graph_txt).fill(if g { egui::Color32::from_rgb(108, 76, 156) } else { egui::Color32::from_rgb(52, 52, 52) })).clicked() {
                             self.tab = FiosTab::Graph;
+                        }
+                        if ui.add(egui::Button::new(creator_txt).fill(if k { egui::Color32::from_rgb(76, 96, 156) } else { egui::Color32::from_rgb(52, 52, 52) })).clicked() {
+                            self.tab = FiosTab::Controller;
                         }
                     });
                     ui.separator();
                     match self.tab {
                         FiosTab::Controls => self.draw_controls_tab(ui, lang),
                         FiosTab::Graph => self.draw_graph(ui, lang),
+                        FiosTab::Controller => self.draw_controller_tab(ui, lang),
                     }
                 });
             },

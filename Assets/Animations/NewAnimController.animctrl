@@ -1,0 +1,9 @@
+controller
+{
+  default_state = Idle
+  state Idle
+  state Walk
+  state Run
+  transition Idle -> Walk when speed > 0.1
+  transition Walk -> Idle when speed <= 0.1
+}
