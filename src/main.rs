@@ -1061,6 +1061,49 @@ impl App for EditorApp {
                             self.refresh_hub_engines();
                         }
                         ui.add_space(8.0);
+                        let fios_clicked = if let Some(fios_icon) = &self.fios_icon {
+                            ui.add_sized(
+                                [94.0, 22.0],
+                                egui::Button::image_and_text(
+                                    egui::Image::new(fios_icon)
+                                        .fit_to_exact_size(egui::Vec2::new(13.0, 13.0)),
+                                    egui::RichText::new("Fios").size(12.0),
+                                )
+                                .corner_radius(6)
+                                .fill(if self.fios_enabled {
+                                    egui::Color32::from_rgb(58, 84, 64)
+                                } else {
+                                    egui::Color32::from_rgb(44, 44, 44)
+                                })
+                                .stroke(if self.fios_enabled {
+                                    egui::Stroke::new(1.0, egui::Color32::from_rgb(15, 232, 121))
+                                } else {
+                                    egui::Stroke::new(1.0, egui::Color32::from_gray(70))
+                                }),
+                            )
+                            .clicked()
+                        } else {
+                            ui.add_sized(
+                                [94.0, 22.0],
+                                egui::Button::new("Fios")
+                                    .corner_radius(6)
+                                    .fill(if self.fios_enabled {
+                                        egui::Color32::from_rgb(58, 84, 64)
+                                    } else {
+                                        egui::Color32::from_rgb(44, 44, 44)
+                                    })
+                                    .stroke(if self.fios_enabled {
+                                        egui::Stroke::new(1.0, egui::Color32::from_rgb(15, 232, 121))
+                                    } else {
+                                        egui::Stroke::new(1.0, egui::Color32::from_gray(70))
+                                    }),
+                            )
+                            .clicked()
+                        };
+                        if fios_clicked {
+                            self.fios_enabled = !self.fios_enabled;
+                        }
+                        ui.add_space(6.0);
 
                         egui::MenuBar::new().ui(ui, |ui| {
                             ui.menu_button(self.tr("menu_file"), |ui| {
@@ -1430,6 +1473,9 @@ impl App for EditorApp {
                                 .clicked();
                             if play_pause_clicked {
                                 self.is_playing = !self.is_playing;
+                                if self.is_playing {
+                                    self.selected_mode = ToolbarMode::Game;
+                                }
                             }
                         }
 
@@ -1446,6 +1492,7 @@ impl App for EditorApp {
                                 .clicked();
                             if stop_clicked {
                                 self.is_playing = false;
+                                self.selected_mode = ToolbarMode::Cena;
                             }
                         }
                     },
@@ -1508,7 +1555,7 @@ impl App for EditorApp {
                 .apply_object_transform_components(&object_name, pos, rot, scale);
         }
         let axis = self.fios.movement_axis();
-        if axis[0].abs() > 1e-4 || axis[1].abs() > 1e-4 {
+        if self.is_playing && (axis[0].abs() > 1e-4 || axis[1].abs() > 1e-4) {
             let dt = ctx.input(|i| i.stable_dt).max(1.0 / 240.0);
             let len = (axis[0] * axis[0] + axis[1] * axis[1]).sqrt().max(1.0);
             let dir_x = axis[0] / len;
