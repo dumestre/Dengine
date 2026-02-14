@@ -46,6 +46,7 @@ pub struct InspectorWindow {
     pending_live_request: Option<(String, TransformDraft)>,
     pending_apply_request: Option<(String, TransformDraft)>,
     apply_loading_until: Option<Instant>,
+    last_cursor_wrap: Option<Instant>,
 }
 
 #[derive(Clone, Copy)]
@@ -103,6 +104,7 @@ impl InspectorWindow {
             pending_live_request: None,
             pending_apply_request: None,
             apply_loading_until: None,
+            last_cursor_wrap: None,
         }
     }
 
@@ -514,44 +516,86 @@ impl InspectorWindow {
                                 let field_w = (fields_total / 3.0).max(20.0);
 
                                 let mut transform_changed = false;
+                                let mut numeric_dragging = false;
                                 ui.add_enabled_ui(*enabled, |ui| {
                                     ui.horizontal(|ui| {
                                         ui.add_sized([52.0, 18.0], egui::Label::new("Posição"));
                                         for i in 0..3 {
-                                            let changed = ui
+                                            let resp = ui
                                                 .add_sized(
                                                 [field_w, 20.0],
                                                 egui::DragValue::new(&mut draft.position[i]).speed(0.1),
-                                            )
-                                                .changed();
+                                            );
+                                            let changed = resp.changed();
+                                            numeric_dragging |= resp.dragged();
                                             transform_changed |= changed;
                                         }
                                     });
                                     ui.horizontal(|ui| {
                                         ui.add_sized([52.0, 18.0], egui::Label::new("Rotação"));
                                         for i in 0..3 {
-                                            let changed = ui
+                                            let resp = ui
                                                 .add_sized(
                                                 [field_w, 20.0],
                                                 egui::DragValue::new(&mut draft.rotation[i]).speed(0.1),
-                                            )
-                                                .changed();
+                                            );
+                                            let changed = resp.changed();
+                                            numeric_dragging |= resp.dragged();
                                             transform_changed |= changed;
                                         }
                                     });
                                     ui.horizontal(|ui| {
                                         ui.add_sized([52.0, 18.0], egui::Label::new("Escala"));
                                         for i in 0..3 {
-                                            let changed = ui
+                                            let resp = ui
                                                 .add_sized(
                                                 [field_w, 20.0],
                                                 egui::DragValue::new(&mut draft.scale[i]).speed(0.05),
-                                            )
-                                                .changed();
+                                            );
+                                            let changed = resp.changed();
+                                            numeric_dragging |= resp.dragged();
                                             transform_changed |= changed;
                                         }
                                     });
                                 });
+                                if numeric_dragging {
+                                    let now = Instant::now();
+                                    let can_wrap = self
+                                        .last_cursor_wrap
+                                        .is_none_or(|t| now.duration_since(t) >= Duration::from_millis(16));
+                                    if can_wrap {
+                                        let pointer_pos = ui.ctx().input(|i| i.pointer.hover_pos());
+                                        let vp_rect = ui.ctx().input(|i| {
+                                            i.viewport()
+                                                .inner_rect
+                                                .or(i.viewport().outer_rect)
+                                        });
+                                        if let (Some(mut p), Some(vr)) = (pointer_pos, vp_rect) {
+                                            let margin = 2.0_f32;
+                                            let mut wrapped = false;
+                                            if p.x <= vr.left() + margin {
+                                                p.x = vr.right() - margin;
+                                                wrapped = true;
+                                            } else if p.x >= vr.right() - margin {
+                                                p.x = vr.left() + margin;
+                                                wrapped = true;
+                                            }
+                                            if p.y <= vr.top() + margin {
+                                                p.y = vr.bottom() - margin;
+                                                wrapped = true;
+                                            } else if p.y >= vr.bottom() - margin {
+                                                p.y = vr.top() + margin;
+                                                wrapped = true;
+                                            }
+                                            if wrapped {
+                                                ui.ctx().send_viewport_cmd(
+                                                    egui::ViewportCommand::CursorPosition(p),
+                                                );
+                                                self.last_cursor_wrap = Some(now);
+                                            }
+                                        }
+                                    }
+                                }
                                 if *enabled && transform_changed {
                                     self.pending_live_request =
                                         Some((selected_object.to_string(), *draft));

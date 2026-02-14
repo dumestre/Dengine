@@ -204,6 +204,10 @@ impl ViewportPanel {
         self.selected_scene_object.as_deref()
     }
 
+    pub fn scene_object_names(&self) -> Vec<String> {
+        self.scene_entries.iter().map(|o| o.name.clone()).collect()
+    }
+
     pub fn set_selected_object(&mut self, object_name: &str) {
         if self.scene_entries.iter().any(|o| o.name == object_name) {
             self.selected_scene_object = Some(object_name.to_string());
@@ -212,6 +216,23 @@ impl ViewportPanel {
             self.selected_scene_object = None;
             self.object_selected = false;
         }
+    }
+
+    pub fn remove_scene_object(&mut self, object_name: &str) -> bool {
+        let Some(idx) = self.scene_entries.iter().position(|o| o.name == object_name) else {
+            return false;
+        };
+        self.push_undo_snapshot();
+        self.scene_entries.remove(idx);
+        if self
+            .selected_scene_object
+            .as_ref()
+            .is_some_and(|n| n == object_name)
+        {
+            self.selected_scene_object = None;
+            self.object_selected = false;
+        }
+        true
     }
 
     pub fn object_transform_components(
@@ -670,6 +691,49 @@ impl ViewportPanel {
                         {
                             self.is_3d = !self.is_3d;
                         }
+                        ui.add_space(6.0);
+
+                        let local_selected = self.gizmo_orientation == GizmoOrientation::Local;
+                        if ui
+                            .add_sized(
+                                [58.0, 22.0],
+                                egui::Button::new("Local")
+                                    .corner_radius(6)
+                                    .fill(if local_selected {
+                                        Color32::from_rgb(62, 62, 62)
+                                    } else {
+                                        Color32::from_rgb(44, 44, 44)
+                                    })
+                                    .stroke(if local_selected {
+                                        Stroke::new(1.0, Color32::from_rgb(15, 232, 121))
+                                    } else {
+                                        Stroke::new(1.0, Color32::from_gray(70))
+                                    }),
+                            )
+                            .clicked()
+                        {
+                            self.gizmo_orientation = GizmoOrientation::Local;
+                        }
+                        if ui
+                            .add_sized(
+                                [62.0, 22.0],
+                                egui::Button::new("Global")
+                                    .corner_radius(6)
+                                    .fill(if !local_selected {
+                                        Color32::from_rgb(62, 62, 62)
+                                    } else {
+                                        Color32::from_rgb(44, 44, 44)
+                                    })
+                                    .stroke(if !local_selected {
+                                        Stroke::new(1.0, Color32::from_rgb(15, 232, 121))
+                                    } else {
+                                        Stroke::new(1.0, Color32::from_gray(70))
+                                    }),
+                            )
+                            .clicked()
+                        {
+                            self.gizmo_orientation = GizmoOrientation::Global;
+                        }
                         ui.add_space(10.0);
 
                         if Self::gizmo_icon_button(
@@ -783,12 +847,31 @@ impl ViewportPanel {
 
                     if can_navigate_camera && self.move_view_mode {
                         ui.output_mut(|o| {
-                            o.cursor_icon = if primary_down {
-                                egui::CursorIcon::Grabbing
-                            } else {
-                                egui::CursorIcon::Grab
-                            };
+                            let _ = primary_down;
+                            o.cursor_icon = egui::CursorIcon::Move;
                         });
+                    }
+
+                    let key_front =
+                        ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Num1));
+                    let key_side =
+                        ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Num3));
+                    let key_top =
+                        ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Num7));
+                    if key_front {
+                        self.camera_yaw = -std::f32::consts::FRAC_PI_2;
+                        self.camera_pitch = 0.0;
+                        ui.ctx().request_repaint();
+                    }
+                    if key_side {
+                        self.camera_yaw = 0.0;
+                        self.camera_pitch = 0.0;
+                        ui.ctx().request_repaint();
+                    }
+                    if key_top {
+                        self.camera_yaw = -std::f32::consts::FRAC_PI_2;
+                        self.camera_pitch = 1.45;
+                        ui.ctx().request_repaint();
                     }
 
                     if can_navigate_camera {
@@ -801,31 +884,107 @@ impl ViewportPanel {
                             ui.ctx().request_repaint();
                         }
 
-                        // Unity-like orbit: Alt + LMB.
+                        // Alt + LMB:
+                        // - Local: orbit around selected object center.
+                        // - Global: keep previous orbit behavior around current target.
                         if alt_down && primary_down && !self.move_view_mode {
-                            self.camera_yaw -= pointer_delta.x * 0.012;
-                            self.camera_pitch =
-                                (self.camera_pitch - pointer_delta.y * 0.009).clamp(-1.45, 1.45);
+                            let pivot_local = if self.gizmo_orientation == GizmoOrientation::Local {
+                                self.selected_scene_object.as_ref().and_then(|name| {
+                                    self.scene_entries
+                                        .iter()
+                                        .find(|o| &o.name == name)
+                                        .map(Self::scene_entry_world_center)
+                                })
+                            } else {
+                                None
+                            };
+
+                            if let Some(pivot) = pivot_local {
+                                let old_orbit = Vec3::new(
+                                    self.camera_yaw.cos() * self.camera_pitch.cos(),
+                                    self.camera_pitch.sin(),
+                                    self.camera_yaw.sin() * self.camera_pitch.cos(),
+                                );
+                                let eye = self.camera_target + old_orbit * self.camera_distance;
+                                let pivot_to_eye = eye - pivot;
+                                let len = pivot_to_eye.length();
+                                if len > 1e-4 {
+                                    let dir = pivot_to_eye / len;
+                                    let base_yaw = dir.z.atan2(dir.x);
+                                    let base_pitch = dir.y.clamp(-1.0, 1.0).asin();
+                                    self.camera_yaw = base_yaw + pointer_delta.x * 0.012;
+                                    self.camera_pitch =
+                                        (base_pitch - pointer_delta.y * 0.009).clamp(-1.45, 1.45);
+                                    self.camera_target = pivot;
+                                    self.camera_distance = len.clamp(0.8, 80.0);
+                                } else {
+                                    self.camera_yaw -= pointer_delta.x * 0.012;
+                                    self.camera_pitch = (self.camera_pitch - pointer_delta.y * 0.009)
+                                        .clamp(-1.45, 1.45);
+                                }
+                            } else {
+                                self.camera_yaw -= pointer_delta.x * 0.012;
+                                self.camera_pitch = (self.camera_pitch - pointer_delta.y * 0.009)
+                                    .clamp(-1.45, 1.45);
+                            }
                             ui.ctx().request_repaint();
                         }
 
-                        // Free-look: RMB drag rotates view, keeping camera position fixed.
+                        // RMB drag:
+                        // - Local: orbit around selected object center.
+                        // - Global: keep previous free-look behavior (fixed eye).
                         if secondary_down && !alt_down {
-                            let old_orbit = Vec3::new(
-                                self.camera_yaw.cos() * self.camera_pitch.cos(),
-                                self.camera_pitch.sin(),
-                                self.camera_yaw.sin() * self.camera_pitch.cos(),
-                            );
-                            let eye = self.camera_target + old_orbit * self.camera_distance;
-                            self.camera_yaw -= pointer_delta.x * 0.012;
-                            self.camera_pitch =
-                                (self.camera_pitch - pointer_delta.y * 0.009).clamp(-1.45, 1.45);
-                            let new_orbit = Vec3::new(
-                                self.camera_yaw.cos() * self.camera_pitch.cos(),
-                                self.camera_pitch.sin(),
-                                self.camera_yaw.sin() * self.camera_pitch.cos(),
-                            );
-                            self.camera_target = eye - new_orbit * self.camera_distance;
+                            let pivot_local = if self.gizmo_orientation == GizmoOrientation::Local {
+                                self.selected_scene_object.as_ref().and_then(|name| {
+                                    self.scene_entries
+                                        .iter()
+                                        .find(|o| &o.name == name)
+                                        .map(Self::scene_entry_world_center)
+                                })
+                            } else {
+                                None
+                            };
+
+                            if let Some(pivot) = pivot_local {
+                                let old_orbit = Vec3::new(
+                                    self.camera_yaw.cos() * self.camera_pitch.cos(),
+                                    self.camera_pitch.sin(),
+                                    self.camera_yaw.sin() * self.camera_pitch.cos(),
+                                );
+                                let eye = self.camera_target + old_orbit * self.camera_distance;
+                                let pivot_to_eye = eye - pivot;
+                                let len = pivot_to_eye.length();
+                                if len > 1e-4 {
+                                    let dir = pivot_to_eye / len;
+                                    let base_yaw = dir.z.atan2(dir.x);
+                                    let base_pitch = dir.y.clamp(-1.0, 1.0).asin();
+                                    self.camera_yaw = base_yaw + pointer_delta.x * 0.012;
+                                    self.camera_pitch =
+                                        (base_pitch - pointer_delta.y * 0.009).clamp(-1.45, 1.45);
+                                    self.camera_target = pivot;
+                                    self.camera_distance = len.clamp(0.8, 80.0);
+                                } else {
+                                    self.camera_yaw -= pointer_delta.x * 0.012;
+                                    self.camera_pitch = (self.camera_pitch - pointer_delta.y * 0.009)
+                                        .clamp(-1.45, 1.45);
+                                }
+                            } else {
+                                let old_orbit = Vec3::new(
+                                    self.camera_yaw.cos() * self.camera_pitch.cos(),
+                                    self.camera_pitch.sin(),
+                                    self.camera_yaw.sin() * self.camera_pitch.cos(),
+                                );
+                                let eye = self.camera_target + old_orbit * self.camera_distance;
+                                self.camera_yaw -= pointer_delta.x * 0.012;
+                                self.camera_pitch = (self.camera_pitch - pointer_delta.y * 0.009)
+                                    .clamp(-1.45, 1.45);
+                                let new_orbit = Vec3::new(
+                                    self.camera_yaw.cos() * self.camera_pitch.cos(),
+                                    self.camera_pitch.sin(),
+                                    self.camera_yaw.sin() * self.camera_pitch.cos(),
+                                );
+                                self.camera_target = eye - new_orbit * self.camera_distance;
+                            }
                             ui.ctx().request_repaint();
                         }
 

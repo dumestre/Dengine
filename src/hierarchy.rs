@@ -5,6 +5,21 @@ use epaint::ColorImage;
 use std::collections::{HashMap, HashSet};
 use crate::EngineLanguage;
 
+#[derive(Clone, Copy)]
+pub enum Primitive3DKind {
+    Cube,
+    Sphere,
+    Cone,
+    Cylinder,
+    Plane,
+}
+
+#[derive(Clone)]
+pub struct Primitive3DSpawnRequest {
+    pub kind: Primitive3DKind,
+    pub object_name: String,
+}
+
 pub struct HierarchyWindow {
     pub open: bool,
     selector_icon_texture: Option<TextureHandle>,
@@ -35,6 +50,7 @@ pub struct HierarchyWindow {
     color_picker_open: bool,
     picker_color: Color32,
     pending_delete_object: Option<String>,
+    pending_spawn_primitive: Option<Primitive3DSpawnRequest>,
     language: EngineLanguage,
     last_panel_rect: Option<Rect>,
 }
@@ -142,6 +158,7 @@ impl HierarchyWindow {
             color_picker_open: false,
             picker_color: Color32::from_rgb(15, 232, 121),
             pending_delete_object: None,
+            pending_spawn_primitive: None,
             language: EngineLanguage::Pt,
             last_panel_rect: None,
         }
@@ -172,6 +189,35 @@ impl HierarchyWindow {
         object_name
     }
 
+    pub fn take_spawn_primitive_request(&mut self) -> Option<Primitive3DSpawnRequest> {
+        self.pending_spawn_primitive.take()
+    }
+
+    fn create_top_object_unique(&mut self, base_name: &str) -> String {
+        let mut object_name = base_name.to_string();
+        let mut idx = 1;
+        while self.top_level_order.iter().any(|n| n == &object_name) {
+            idx += 1;
+            object_name = format!("{base_name} {idx}");
+        }
+        self.top_level_order.push(object_name.clone());
+        self.deleted_objects.remove(&object_name);
+        self.selected_object = object_name.clone();
+        object_name
+    }
+
+    fn request_spawn_primitive(&mut self, kind: Primitive3DKind) {
+        let base_name = match kind {
+            Primitive3DKind::Cube => "Cube",
+            Primitive3DKind::Sphere => "Sphere",
+            Primitive3DKind::Cone => "Cone",
+            Primitive3DKind::Cylinder => "Cylinder",
+            Primitive3DKind::Plane => "Plane",
+        };
+        let object_name = self.create_top_object_unique(base_name);
+        self.pending_spawn_primitive = Some(Primitive3DSpawnRequest { kind, object_name });
+    }
+
     pub fn selected_object_name(&self) -> &str {
         &self.selected_object
     }
@@ -180,6 +226,10 @@ impl HierarchyWindow {
         if self.top_level_order.iter().any(|n| n == object_name) && !self.is_deleted(object_name) {
             self.selected_object = object_name.to_string();
         }
+    }
+
+    pub fn object_is_deleted(&self, object_name: &str) -> bool {
+        self.is_deleted(object_name)
     }
 
     fn tr(&self, key: &'static str) -> &'static str {
@@ -554,10 +604,19 @@ impl HierarchyWindow {
         object_id: &str,
         label: &str,
     ) {
+        let full_row_rect = Rect::from_min_max(
+            resp.rect.min,
+            egui::pos2(ui.max_rect().right(), resp.rect.max.y),
+        );
+        let drag_resp = ui.interact(
+            full_row_rect,
+            ui.id().with(("hierarchy_drag_row", object_id)),
+            egui::Sense::click_and_drag(),
+        );
         if !self.is_deleted(object_id) {
             let mut copy_clicked = false;
             let mut delete_clicked = false;
-            resp.context_menu(|ui| {
+            drag_resp.context_menu(|ui| {
                 if ui.button(self.tr("copy")).clicked() {
                     copy_clicked = true;
                     ui.close();
@@ -574,12 +633,6 @@ impl HierarchyWindow {
                 self.request_delete_object(object_id);
             }
         }
-
-        let drag_resp = ui.interact(
-            resp.rect,
-            ui.id().with(("hierarchy_drag_row", object_id)),
-            egui::Sense::click_and_drag(),
-        );
         if resp.clicked() || drag_resp.clicked() {
             self.selected_object = object_id.to_string();
         }
@@ -589,15 +642,15 @@ impl HierarchyWindow {
         }
         if let Some(dragging) = self.dragging_object.as_deref() {
             let hover_pos = ui.ctx().input(|i| i.pointer.hover_pos());
-            let hovering_row = hover_pos.map(|p| resp.rect.contains(p)).unwrap_or(false);
+            let hovering_row = hover_pos.map(|p| full_row_rect.contains(p)).unwrap_or(false);
             if dragging != object_id && hovering_row {
                 let now = ui.ctx().input(|i| i.time);
                 let hover_y = ui
                     .ctx()
                     .input(|i| i.pointer.hover_pos().map(|p| p.y))
-                    .unwrap_or(resp.rect.center().y);
-                let top_band = resp.rect.top() + resp.rect.height() * 0.28;
-                let bottom_band = resp.rect.bottom() - resp.rect.height() * 0.28;
+                    .unwrap_or(full_row_rect.center().y);
+                let top_band = full_row_rect.top() + full_row_rect.height() * 0.28;
+                let bottom_band = full_row_rect.bottom() - full_row_rect.height() * 0.28;
                 let as_container = match object_id {
                     "Player" => Some(HierarchyContainer::Player),
                     "Armature" => Some(HierarchyContainer::Armature),
@@ -609,7 +662,7 @@ impl HierarchyWindow {
                     if hover_y > top_band && hover_y < bottom_band {
                         self.drop_target = Some(HierarchyDropTarget::Container(container));
                         ui.painter().rect_stroke(
-                            resp.rect.shrink(1.0),
+                            full_row_rect.shrink(1.0),
                             3.0,
                             Stroke::new(1.5, Color32::from_rgb(15, 232, 121)),
                             egui::StrokeKind::Outside,
@@ -630,27 +683,41 @@ impl HierarchyWindow {
                             self.drag_hover_parent = None;
                         }
                     } else {
-                        let after = hover_y > resp.rect.center().y;
+                        let after = hover_y > full_row_rect.center().y;
                         self.drop_target = Some(HierarchyDropTarget::Row {
                             target: object_id.to_string(),
                             after,
                         });
-                        let y = if after { resp.rect.bottom() } else { resp.rect.top() };
+                        let y = if after {
+                            full_row_rect.bottom()
+                        } else {
+                            full_row_rect.top()
+                        };
                         ui.painter().line_segment(
-                            [egui::pos2(resp.rect.left(), y), egui::pos2(resp.rect.right(), y)],
+                            [
+                                egui::pos2(full_row_rect.left(), y),
+                                egui::pos2(full_row_rect.right(), y),
+                            ],
                             Stroke::new(2.0, Color32::from_rgb(15, 232, 121)),
                         );
                         self.drag_hover_parent = None;
                     }
                 } else {
-                    let after = hover_y > resp.rect.center().y;
+                    let after = hover_y > full_row_rect.center().y;
                     self.drop_target = Some(HierarchyDropTarget::Row {
                         target: object_id.to_string(),
                         after,
                     });
-                    let y = if after { resp.rect.bottom() } else { resp.rect.top() };
+                    let y = if after {
+                        full_row_rect.bottom()
+                    } else {
+                        full_row_rect.top()
+                    };
                     ui.painter().line_segment(
-                        [egui::pos2(resp.rect.left(), y), egui::pos2(resp.rect.right(), y)],
+                        [
+                            egui::pos2(full_row_rect.left(), y),
+                            egui::pos2(full_row_rect.right(), y),
+                        ],
                         Stroke::new(2.0, Color32::from_rgb(15, 232, 121)),
                     );
                     self.drag_hover_parent = None;
@@ -1056,6 +1123,28 @@ impl HierarchyWindow {
                                     if ui.button(self.tr("create_empty")).clicked() {
                                         ui.close();
                                     }
+                                    ui.menu_button("3D", |ui| {
+                                        if ui.button("Cube").clicked() {
+                                            self.request_spawn_primitive(Primitive3DKind::Cube);
+                                            ui.close();
+                                        }
+                                        if ui.button("Sphere").clicked() {
+                                            self.request_spawn_primitive(Primitive3DKind::Sphere);
+                                            ui.close();
+                                        }
+                                        if ui.button("Cone").clicked() {
+                                            self.request_spawn_primitive(Primitive3DKind::Cone);
+                                            ui.close();
+                                        }
+                                        if ui.button("Cylinder").clicked() {
+                                            self.request_spawn_primitive(Primitive3DKind::Cylinder);
+                                            ui.close();
+                                        }
+                                        if ui.button("Plane").clicked() {
+                                            self.request_spawn_primitive(Primitive3DKind::Plane);
+                                            ui.close();
+                                        }
+                                    });
                                     ui.menu_button(self.tr("lights"), |ui| {
                                         if ui.button("Directional Light").clicked() {
                                             self.deleted_objects.remove("Directional Light");
