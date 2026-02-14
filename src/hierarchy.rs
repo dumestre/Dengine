@@ -34,6 +34,7 @@ pub struct HierarchyWindow {
     drag_hover_parent: Option<(String, f64)>,
     color_picker_open: bool,
     picker_color: Color32,
+    pending_delete_object: Option<String>,
     language: EngineLanguage,
     last_panel_rect: Option<Rect>,
 }
@@ -140,6 +141,7 @@ impl HierarchyWindow {
             drag_hover_parent: None,
             color_picker_open: false,
             picker_color: Color32::from_rgb(15, 232, 121),
+            pending_delete_object: None,
             language: EngineLanguage::Pt,
             last_panel_rect: None,
         }
@@ -422,6 +424,13 @@ impl HierarchyWindow {
         }
     }
 
+    fn request_delete_object(&mut self, object_id: &str) {
+        if self.is_deleted(object_id) {
+            return;
+        }
+        self.pending_delete_object = Some(object_id.to_string());
+    }
+
     fn draw_object_row(
         &mut self,
         ui: &mut egui::Ui,
@@ -557,7 +566,7 @@ impl HierarchyWindow {
                 ui.ctx().copy_text(label.to_owned());
             }
             if delete_clicked {
-                self.delete_object_recursive(object_id);
+                self.request_delete_object(object_id);
             }
         }
 
@@ -1105,6 +1114,58 @@ impl HierarchyWindow {
                             self.object_colors
                                 .insert(self.selected_object.clone(), color);
                             self.color_picker_open = false;
+                        }
+                    });
+                });
+        }
+
+        let pointer_over_panel = ctx
+            .input(|i| i.pointer.hover_pos())
+            .is_some_and(|p| panel_rect.contains(p));
+        if pointer_over_panel {
+            let delete_pressed = ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Delete))
+                || ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Backspace));
+            if delete_pressed {
+                let selected = self.selected_object.clone();
+                self.request_delete_object(&selected);
+            }
+        }
+
+        if let Some(target) = self.pending_delete_object.clone() {
+            let title = match self.language {
+                EngineLanguage::Pt => "Confirmar exclusao",
+                EngineLanguage::En => "Confirm deletion",
+                EngineLanguage::Es => "Confirmar eliminacion",
+            };
+            let question = match self.language {
+                EngineLanguage::Pt => format!("Deseja deletar \"{target}\"?"),
+                EngineLanguage::En => format!("Do you want to delete \"{target}\"?"),
+                EngineLanguage::Es => format!("Desea eliminar \"{target}\"?"),
+            };
+            let cancel_label = match self.language {
+                EngineLanguage::Pt => "Cancelar",
+                EngineLanguage::En => "Cancel",
+                EngineLanguage::Es => "Cancelar",
+            };
+            let delete_label = self.tr("delete");
+            egui::Window::new(title)
+                .collapsible(false)
+                .resizable(false)
+                .anchor(Align2::CENTER_CENTER, egui::vec2(0.0, 0.0))
+                .show(ctx, |ui| {
+                    ui.set_min_width(300.0);
+                    ui.label(question);
+                    ui.add_space(10.0);
+                    ui.horizontal(|ui| {
+                        if ui.button(cancel_label).clicked() {
+                            self.pending_delete_object = None;
+                        }
+                        let delete_btn = egui::Button::new(delete_label)
+                            .fill(Color32::from_rgb(160, 56, 56))
+                            .stroke(Stroke::new(1.0, Color32::from_rgb(210, 90, 90)));
+                        if ui.add(delete_btn).clicked() {
+                            self.delete_object_recursive(&target);
+                            self.pending_delete_object = None;
                         }
                     });
                 });

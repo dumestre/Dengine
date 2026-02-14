@@ -137,6 +137,20 @@ impl AssetImportPipeline {
 }
 
 impl ViewportPanel {
+    fn scene_entry_world_center(entry: &SceneEntry) -> Vec3 {
+        let verts = &entry.proxy.vertices;
+        if verts.is_empty() {
+            return entry.transform.transform_point3(Vec3::ZERO);
+        }
+        let sample = verts.len().min(256);
+        let mut acc = Vec3::ZERO;
+        for v in verts.iter().take(sample) {
+            acc += *v;
+        }
+        let local_center = acc / sample as f32;
+        entry.transform.transform_point3(local_center)
+    }
+
     pub fn new() -> Self {
         let import_pipeline = AssetImportPipeline::new();
         let mut s = Self {
@@ -242,10 +256,20 @@ impl ViewportPanel {
             return false;
         }
         self.push_undo_snapshot();
-        self.scene_entries[idx].transform = new_transform;
-        self.model_matrix = new_transform;
+        {
+            let entry = &mut self.scene_entries[idx];
+            for v in &mut entry.full.vertices {
+                *v = new_transform.transform_point3(*v);
+            }
+            for v in &mut entry.proxy.vertices {
+                *v = new_transform.transform_point3(*v);
+            }
+            entry.transform = Mat4::IDENTITY;
+        }
+        self.model_matrix = Mat4::IDENTITY;
         self.object_selected = true;
         self.selected_scene_object = Some(object_name.to_string());
+        self.mesh_status = Some("Transformacoes aplicadas e zeradas".to_string());
         true
     }
 
@@ -832,7 +856,7 @@ impl ViewportPanel {
                         if let Some(cursor) = hover_pos {
                             let mut best: Option<(f32, String)> = None;
                             for entry in &self.scene_entries {
-                                let center = entry.transform.transform_point3(Vec3::ZERO);
+                                let center = Self::scene_entry_world_center(entry);
                                 if let Some(screen) = project_point(viewport_rect, proj * view, center) {
                                     let dist = cursor.distance(screen);
                                     if dist <= 22.0 {
@@ -874,6 +898,13 @@ impl ViewportPanel {
                             if !gpu_drawn {
                                 draw_solid_mesh(ui, viewport_rect, mvp_one, mesh);
                             }
+                            let selected = self
+                                .selected_scene_object
+                                .as_ref()
+                                .is_some_and(|name| name == &entry.name);
+                            if selected {
+                                draw_wire_mesh(ui, viewport_rect, mvp_one, &entry.proxy, true);
+                            }
                         } else {
                             for entry in &self.scene_entries {
                                 let model = entry.transform;
@@ -884,6 +915,13 @@ impl ViewportPanel {
                                     &entry.full
                                 };
                                 draw_solid_mesh(ui, viewport_rect, mvp_obj, mesh);
+                                let selected = self
+                                    .selected_scene_object
+                                    .as_ref()
+                                    .is_some_and(|name| name == &entry.name);
+                                if selected {
+                                    draw_wire_mesh(ui, viewport_rect, mvp_obj, &entry.proxy, true);
+                                }
                             }
                         }
                     } else {
@@ -892,6 +930,25 @@ impl ViewportPanel {
 
                     if self.object_selected {
                         let selected_name = self.selected_scene_object.clone();
+                        if let Some(name) = selected_name.clone() {
+                            if let Some(entry) = self.scene_entries.iter().find(|o| o.name == name) {
+                                let center_world = Self::scene_entry_world_center(entry);
+                                if let Some(center_screen) =
+                                    project_point(viewport_rect, proj * view, center_world)
+                                {
+                                    ui.painter().circle_stroke(
+                                        center_screen,
+                                        14.0,
+                                        Stroke::new(2.0, Color32::from_rgb(15, 232, 121)),
+                                    );
+                                    ui.painter().circle_filled(
+                                        center_screen,
+                                        3.0,
+                                        Color32::from_rgb(15, 232, 121),
+                                    );
+                                }
+                            }
+                        }
                         let selected_transform = selected_name
                             .as_ref()
                             .and_then(|name| {

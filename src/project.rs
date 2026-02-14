@@ -1090,7 +1090,9 @@ impl ProjectWindow {
                                 let spacing = egui::vec2(8.0, 8.0);
                                 ui.spacing_mut().item_spacing = spacing;
                                 let tile_w = self.icon_scale.clamp(56.0, 98.0);
-                                let tile_size = Vec2::new(tile_w, tile_w + 20.0);
+                                let tile_name_h = 18.0;
+                                let tile_pad = 6.0;
+                                let tile_size = Vec2::new(tile_w, tile_w + tile_name_h + tile_pad * 2.0);
                                 let cols = (((ui.available_width() + spacing.x) / (tile_size.x + spacing.x))
                                     .floor() as usize)
                                     .max(1);
@@ -1103,7 +1105,7 @@ impl ProjectWindow {
                                     .show(ui, |ui| {
                                         for (idx, asset) in filtered_assets.iter().enumerate() {
                                         let asset = *asset;
-                                        let tile_size = Vec2::new(tile_w, tile_w + 20.0);
+                                        let tile_size = Vec2::new(tile_w, tile_w + tile_name_h + tile_pad * 2.0);
                                         let selected = self.selected_asset.as_ref() == Some(asset);
                                         let (tile_rect, tile_resp) =
                                             ui.allocate_exact_size(tile_size, Sense::click_and_drag());
@@ -1129,13 +1131,22 @@ impl ProjectWindow {
                                         );
 
                                         let preview_rect = Rect::from_min_max(
-                                            tile_rect.min + egui::vec2(7.0, 7.0),
-                                            egui::pos2(tile_rect.max.x - 7.0, tile_rect.max.y - 20.0),
+                                            tile_rect.min + egui::vec2(tile_pad, tile_pad),
+                                            egui::pos2(
+                                                tile_rect.max.x - tile_pad,
+                                                tile_rect.max.y - tile_name_h - tile_pad,
+                                            ),
+                                        );
+                                        ui.painter().rect_filled(
+                                            preview_rect,
+                                            3.0,
+                                            Color32::from_rgb(38, 40, 42),
                                         );
                                         if let Some(tex) = self.asset_preview_texture(ui.ctx(), asset) {
+                                            let image_rect = preview_rect.shrink(1.0);
                                             let _ = ui.put(
-                                                preview_rect,
-                                                egui::Image::new(tex).fit_to_exact_size(preview_rect.size()),
+                                                image_rect,
+                                                egui::Image::new(tex).fit_to_exact_size(image_rect.size()),
                                             );
                                             ui.painter().rect_stroke(
                                                 preview_rect,
@@ -1145,7 +1156,7 @@ impl ProjectWindow {
                                             );
                                         } else {
                                             let (icon_color, icon_tag) = Self::icon_style(asset);
-                                            ui.painter().rect_filled(preview_rect, 2.0, icon_color);
+                                            ui.painter().rect_filled(preview_rect.shrink(1.0), 2.0, icon_color);
                                             ui.painter().text(
                                                 preview_rect.center(),
                                                 egui::Align2::CENTER_CENTER,
@@ -1157,8 +1168,11 @@ impl ProjectWindow {
                                         let name_font = FontId::proportional(11.0);
                                         let name_color = Color32::from_gray(210);
                                         let name_rect = Rect::from_min_max(
-                                            egui::pos2(tile_rect.left() + 5.0, tile_rect.bottom() - 16.0),
-                                            egui::pos2(tile_rect.right() - 5.0, tile_rect.bottom() - 2.0),
+                                            egui::pos2(
+                                                tile_rect.left() + tile_pad,
+                                                tile_rect.bottom() - tile_name_h - 2.0,
+                                            ),
+                                            egui::pos2(tile_rect.right() - tile_pad, tile_rect.bottom() - 2.0),
                                         );
                                         let clipped_painter = ui.painter().with_clip_rect(name_rect);
                                         let full_w = ui
