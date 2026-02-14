@@ -933,7 +933,13 @@ impl ViewportPanel {
                                 .as_ref()
                                 .is_some_and(|name| name == &entry.name);
                             if selected {
-                                draw_mesh_outline(ui, viewport_rect, mvp_one, &entry.proxy);
+                                draw_mesh_silhouette(
+                                    ui,
+                                    viewport_rect,
+                                    mvp_one,
+                                    view * model,
+                                    &entry.proxy,
+                                );
                             }
                         } else {
                             for entry in &self.scene_entries {
@@ -950,7 +956,13 @@ impl ViewportPanel {
                                     .as_ref()
                                     .is_some_and(|name| name == &entry.name);
                                 if selected {
-                                    draw_mesh_outline(ui, viewport_rect, mvp_obj, &entry.proxy);
+                                    draw_mesh_silhouette(
+                                        ui,
+                                        viewport_rect,
+                                        mvp_obj,
+                                        view * model,
+                                        &entry.proxy,
+                                    );
                                 }
                             }
                         }
@@ -1632,33 +1644,72 @@ fn draw_solid_mesh(ui: &mut egui::Ui, viewport: Rect, mvp: Mat4, mesh: &MeshData
     }
 }
 
-fn draw_mesh_outline(ui: &mut egui::Ui, viewport: Rect, mvp: Mat4, mesh: &MeshData) {
+fn draw_mesh_silhouette(
+    ui: &mut egui::Ui,
+    viewport: Rect,
+    mvp: Mat4,
+    _model_view: Mat4,
+    mesh: &MeshData,
+) {
     if mesh.vertices.is_empty() {
         return;
     }
-    let mut min = egui::pos2(f32::INFINITY, f32::INFINITY);
-    let mut max = egui::pos2(f32::NEG_INFINITY, f32::NEG_INFINITY);
-    let mut count = 0usize;
-    for v in &mesh.vertices {
-        if let Some(p) = project_point(viewport, mvp, *v) {
-            count += 1;
-            min.x = min.x.min(p.x);
-            min.y = min.y.min(p.y);
-            max.x = max.x.max(p.x);
-            max.y = max.y.max(p.y);
-        }
-    }
-    if count == 0 {
+    let max_points = mesh.vertices.len().min(5000);
+    let mut pts: Vec<Pos2> = mesh
+        .vertices
+        .iter()
+        .take(max_points)
+        .filter_map(|v| project_point(viewport, mvp, *v))
+        .collect();
+    if pts.len() < 3 {
         return;
     }
-    let mut rect = Rect::from_min_max(min, max);
-    rect = rect.expand(3.0);
-    let border = Stroke::new(2.0, Color32::from_rgb(15, 232, 121));
-    let glow = Stroke::new(4.0, Color32::from_rgba_unmultiplied(15, 232, 121, 54));
-    ui.painter()
-        .rect_stroke(rect, 4.0, glow, egui::StrokeKind::Outside);
-    ui.painter()
-        .rect_stroke(rect, 4.0, border, egui::StrokeKind::Outside);
+    pts.sort_by(|a, b| a.x.total_cmp(&b.x).then(a.y.total_cmp(&b.y)));
+
+    fn cross(o: Pos2, a: Pos2, b: Pos2) -> f32 {
+        (a.x - o.x) * (b.y - o.y) - (a.y - o.y) * (b.x - o.x)
+    }
+
+    let mut lower: Vec<Pos2> = Vec::new();
+    for p in &pts {
+        while lower.len() >= 2
+            && cross(lower[lower.len() - 2], lower[lower.len() - 1], *p) <= 0.0
+        {
+            lower.pop();
+        }
+        lower.push(*p);
+    }
+
+    let mut upper: Vec<Pos2> = Vec::new();
+    for p in pts.iter().rev() {
+        while upper.len() >= 2
+            && cross(upper[upper.len() - 2], upper[upper.len() - 1], *p) <= 0.0
+        {
+            upper.pop();
+        }
+        upper.push(*p);
+    }
+
+    if !lower.is_empty() {
+        lower.pop();
+    }
+    if !upper.is_empty() {
+        upper.pop();
+    }
+    let mut hull = lower;
+    hull.extend(upper);
+    if hull.len() < 3 {
+        return;
+    }
+
+    let glow = Stroke::new(3.0, Color32::from_rgba_unmultiplied(15, 232, 121, 70));
+    let line = Stroke::new(1.7, Color32::from_rgb(15, 232, 121));
+    for i in 0..hull.len() {
+        let a = hull[i];
+        let b = hull[(i + 1) % hull.len()];
+        ui.painter().line_segment([a, b], glow);
+        ui.painter().line_segment([a, b], line);
+    }
 }
 
 fn draw_wire_cube(ui: &mut egui::Ui, viewport: Rect, mvp: Mat4, selected: bool) {

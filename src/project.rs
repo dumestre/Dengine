@@ -724,6 +724,7 @@ impl ProjectWindow {
         &mut self,
         ctx: &egui::Context,
         language: EngineLanguage,
+        bottom_offset: f32,
     ) -> bool {
         if !self.open {
             return false;
@@ -734,7 +735,11 @@ impl ProjectWindow {
         }
         self.poll_preview_jobs(ctx);
 
-        let dock_rect = ctx.available_rect();
+        let dock_rect_full = ctx.available_rect();
+        let dock_rect = Rect::from_min_max(
+            dock_rect_full.min,
+            egui::pos2(dock_rect_full.max.x, dock_rect_full.max.y - bottom_offset.max(0.0)),
+        );
         let pointer_down = ctx.input(|i| i.pointer.primary_down());
 
         let min_h = 185.0;

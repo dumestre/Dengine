@@ -1445,6 +1445,9 @@ impl App for EditorApp {
                 project_bottom,
                 self.viewport_gpu.as_ref(),
             );
+        if let Some(selected_in_viewport) = self.viewport.selected_object_name() {
+            self.hierarchy.set_selected_object(selected_in_viewport);
+        }
 
         // Janela Inspetor
         self.inspector
@@ -1473,13 +1476,10 @@ impl App for EditorApp {
         let i_right = self.inspector.docked_right_width();
         self.hierarchy
             .show(ctx, i_left, i_right, project_bottom, self.language);
-        if let Some(selected_in_viewport) = self.viewport.selected_object_name() {
-            self.hierarchy.set_selected_object(selected_in_viewport);
-        }
 
         let engine_busy = self.is_playing;
 
-        if !self.project_collapsed && self.project.show(ctx, self.language) {
+        if !self.project_collapsed && self.project.show(ctx, self.language, dock_bar_h) {
             self.project_collapsed = true;
         }
         let dock_rect = ctx.available_rect();

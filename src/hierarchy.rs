@@ -431,6 +431,11 @@ impl HierarchyWindow {
         self.pending_delete_object = Some(object_id.to_string());
     }
 
+    pub fn request_delete_selected(&mut self) {
+        let selected = self.selected_object.clone();
+        self.request_delete_object(&selected);
+    }
+
     fn draw_object_row(
         &mut self,
         ui: &mut egui::Ui,
@@ -1119,16 +1124,10 @@ impl HierarchyWindow {
                 });
         }
 
-        let pointer_over_panel = ctx
-            .input(|i| i.pointer.hover_pos())
-            .is_some_and(|p| panel_rect.contains(p));
-        if pointer_over_panel {
-            let delete_pressed = ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Delete))
-                || ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Backspace));
-            if delete_pressed {
-                let selected = self.selected_object.clone();
-                self.request_delete_object(&selected);
-            }
+        let delete_pressed = ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Delete))
+            || ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Backspace));
+        if delete_pressed && !ctx.wants_keyboard_input() {
+            self.request_delete_selected();
         }
 
         if let Some(target) = self.pending_delete_object.clone() {
