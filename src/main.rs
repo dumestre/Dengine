@@ -31,6 +31,15 @@ pub enum EngineLanguage {
 impl EngineLanguage {
 }
 
+#[derive(Clone)]
+struct InstalledEngine {
+    name: String,
+    version: String,
+    available_version: Option<String>,
+    path: PathBuf,
+    is_current: bool,
+}
+
 struct EditorApp {
     inspector: InspectorWindow,
     hierarchy: HierarchyWindow,
@@ -47,6 +56,9 @@ struct EditorApp {
     rig_icon: Option<TextureHandle>,
     animador_icon: Option<TextureHandle>,
     fios_icon: Option<TextureHandle>,
+    log_icon: Option<TextureHandle>,
+    git_icon: Option<TextureHandle>,
+    terminal_icon: Option<TextureHandle>,
     lang_pt_icon: Option<TextureHandle>,
     lang_en_icon: Option<TextureHandle>,
     lang_es_icon: Option<TextureHandle>,
@@ -56,13 +68,18 @@ struct EditorApp {
     rig_enabled: bool,
     animator_enabled: bool,
     fios_enabled: bool,
+    log_enabled: bool,
+    git_enabled: bool,
+    terminal_enabled: bool,
     language: EngineLanguage,
     project_collapsed: bool,
     windows_blur_initialized: bool,
     last_pointer_pos: Option<egui::Pos2>,
     show_hub: bool,
     hub_projects: Vec<PathBuf>,
+    hub_engines: Vec<InstalledEngine>,
     hub_selected: Option<usize>,
+    hub_engine_status: Option<String>,
     current_project: Option<PathBuf>,
 }
 
@@ -93,6 +110,44 @@ fn load_icon_data_from_png(png_path: &str) -> Option<Arc<egui::IconData>> {
 }
 
 impl EditorApp {
+    fn parse_version_key(version: &str) -> Vec<u32> {
+        version
+            .trim()
+            .trim_start_matches(['v', 'V'])
+            .split('.')
+            .map(|p| p.parse::<u32>().unwrap_or(0))
+            .collect()
+    }
+
+    fn is_version_newer(candidate: &str, current: &str) -> bool {
+        let mut a = Self::parse_version_key(candidate);
+        let mut b = Self::parse_version_key(current);
+        let max_len = a.len().max(b.len());
+        a.resize(max_len, 0);
+        b.resize(max_len, 0);
+        a > b
+    }
+
+    fn discover_available_engine_version(installed: &[InstalledEngine]) -> Option<String> {
+        let mut best = installed
+            .iter()
+            .map(|e| e.version.clone())
+            .max_by(|a, b| Self::parse_version_key(a).cmp(&Self::parse_version_key(b)));
+
+        let latest_file = Path::new("engines").join("latest_version.txt");
+        if let Ok(raw) = fs::read_to_string(latest_file) {
+            let candidate = raw.trim().to_string();
+            if !candidate.is_empty() {
+                match &best {
+                    Some(b) if Self::is_version_newer(&candidate, b) => best = Some(candidate),
+                    None => best = Some(candidate),
+                    _ => {}
+                }
+            }
+        }
+        best
+    }
+
     fn hub_registry_path() -> PathBuf {
         PathBuf::from(".dengine_hub_projects.txt")
     }
@@ -154,6 +209,85 @@ impl EditorApp {
             .as_ref()
             .map(|p| p.to_string_lossy().to_string())
             .unwrap_or_else(|| "Sem projeto".to_string())
+    }
+
+    fn refresh_hub_engines(&mut self) {
+        let mut out = Vec::<InstalledEngine>::new();
+        out.push(InstalledEngine {
+            name: "Dengine".to_string(),
+            version: env!("CARGO_PKG_VERSION").to_string(),
+            available_version: None,
+            path: PathBuf::from("."),
+            is_current: true,
+        });
+
+        let engines_root = Path::new("engines");
+        if let Ok(entries) = fs::read_dir(engines_root) {
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if !path.is_dir() {
+                    continue;
+                }
+                let version = path
+                    .file_name()
+                    .and_then(|n| n.to_str())
+                    .unwrap_or("unknown")
+                    .to_string();
+                out.push(InstalledEngine {
+                    name: "Dengine".to_string(),
+                    version,
+                    available_version: None,
+                    path,
+                    is_current: false,
+                });
+            }
+        }
+
+        out.sort_by_key(|e| e.version.to_ascii_lowercase());
+        out.dedup_by(|a, b| a.path == b.path || a.version.eq_ignore_ascii_case(&b.version));
+        if let Some(latest) = Self::discover_available_engine_version(&out) {
+            for engine in &mut out {
+                if Self::is_version_newer(&latest, &engine.version) {
+                    engine.available_version = Some(latest.clone());
+                }
+            }
+        }
+        self.hub_engines = out;
+    }
+
+    fn update_engine_entry(&mut self, idx: usize) {
+        if let Some(engine) = self.hub_engines.get(idx) {
+            if let Some(target) = &engine.available_version {
+                self.hub_engine_status = Some(format!(
+                    "Atualizacao solicitada para {} {} -> {}",
+                    engine.name, engine.version, target
+                ));
+            } else {
+                self.hub_engine_status = Some(format!(
+                    "{} {} ja esta na versao mais recente",
+                    engine.name, engine.version
+                ));
+            }
+        }
+    }
+
+    fn remove_engine_entry(&mut self, idx: usize) {
+        let Some(engine) = self.hub_engines.get(idx).cloned() else {
+            return;
+        };
+        if engine.is_current {
+            self.hub_engine_status = Some("Nao e possivel remover a engine em uso".to_string());
+            return;
+        }
+        match fs::remove_dir_all(&engine.path) {
+            Ok(_) => {
+                self.hub_engine_status = Some(format!("Engine {} removida", engine.version));
+                self.refresh_hub_engines();
+            }
+            Err(err) => {
+                self.hub_engine_status = Some(format!("Falha ao remover engine: {err}"));
+            }
+        }
     }
 
     fn refresh_hub_projects(&mut self) {
@@ -392,6 +526,7 @@ impl EditorApp {
                                         .clicked()
                                     {
                                         self.refresh_hub_projects();
+                                        self.refresh_hub_engines();
                                     }
                                     ui.add_space(10.0);
                                     ui.separator();
@@ -409,6 +544,137 @@ impl EditorApp {
                                             .size(11.0)
                                             .color(egui::Color32::from_gray(140)),
                                     );
+                                    ui.add_space(10.0);
+                                    ui.separator();
+                                    ui.add_space(10.0);
+                                    ui.vertical_centered(|ui| {
+                                        ui.label(
+                                            egui::RichText::new("Engines instaladas")
+                                                .size(13.0)
+                                                .color(egui::Color32::from_gray(220)),
+                                        );
+                                        if let Some(status) = &self.hub_engine_status {
+                                            ui.label(
+                                                egui::RichText::new(status)
+                                                    .size(10.0)
+                                                    .color(egui::Color32::from_gray(155)),
+                                            );
+                                        }
+                                    });
+                                    ui.add_space(6.0);
+                                    let mut update_idx: Option<usize> = None;
+                                    let mut remove_idx: Option<usize> = None;
+                                    for idx in 0..self.hub_engines.len() {
+                                        let engine = &self.hub_engines[idx];
+                                        ui.vertical_centered(|ui| {
+                                            egui::Frame::new()
+                                                .fill(egui::Color32::from_rgb(35, 39, 40))
+                                                .stroke(egui::Stroke::new(
+                                                    1.0,
+                                                    egui::Color32::from_gray(70),
+                                                ))
+                                                .corner_radius(6)
+                                                .inner_margin(egui::Margin::same(8))
+                                                .show(ui, |ui| {
+                                                    ui.vertical_centered(|ui| {
+                                                        ui.label(
+                                                            egui::RichText::new(format!(
+                                                                "{} {}",
+                                                                engine.name, engine.version
+                                                            ))
+                                                            .size(11.0)
+                                                            .color(egui::Color32::from_gray(235)),
+                                                        );
+                                                        ui.label(
+                                                            egui::RichText::new(
+                                                                match &engine.available_version {
+                                                                    Some(v) => format!(
+                                                                        "Disponivel: {v}"
+                                                                    ),
+                                                                    None => {
+                                                                        "Disponivel: atual"
+                                                                            .to_string()
+                                                                    }
+                                                                },
+                                                            )
+                                                            .size(9.5)
+                                                            .color(egui::Color32::from_gray(168)),
+                                                        );
+                                                        ui.label(
+                                                            egui::RichText::new(
+                                                                engine.path
+                                                                    .to_string_lossy()
+                                                                    .to_string(),
+                                                            )
+                                                            .size(9.0)
+                                                            .color(egui::Color32::from_gray(150)),
+                                                        );
+                                                        ui.add_space(4.0);
+                                                        ui.horizontal(|ui| {
+                                                            if ui
+                                                                .add_sized(
+                                                                    [80.0, 22.0],
+                                                                    egui::Button::new(
+                                                                        if let Some(v) =
+                                                                            &engine.available_version
+                                                                        {
+                                                                            format!(
+                                                                                "Atualizar {v}"
+                                                                            )
+                                                                        } else {
+                                                                            "Atualizar".to_string()
+                                                                        },
+                                                                    )
+                                                                    .corner_radius(6)
+                                                                    .fill(egui::Color32::from_rgb(
+                                                                        44, 44, 44,
+                                                                    ))
+                                                                    .stroke(egui::Stroke::new(
+                                                                        1.0, accent,
+                                                                    )),
+                                                                )
+                                                                .on_hover_text(
+                                                                    match &engine.available_version {
+                                                                        Some(v) => format!(
+                                                                            "Versao disponivel: {v}"
+                                                                        ),
+                                                                        None => "Nao ha versao mais nova detectada".to_string(),
+                                                                    },
+                                                                )
+                                                                .clicked()
+                                                            {
+                                                                update_idx = Some(idx);
+                                                            }
+                                                            let remove_btn = egui::Button::new(
+                                                                "Remover",
+                                                            )
+                                                            .corner_radius(6)
+                                                            .fill(egui::Color32::from_rgb(58, 41, 41))
+                                                            .stroke(egui::Stroke::new(
+                                                                1.0,
+                                                                egui::Color32::from_rgb(171, 84, 84),
+                                                            ));
+                                                            if ui
+                                                                .add_enabled(
+                                                                    !engine.is_current,
+                                                                    remove_btn,
+                                                                )
+                                                                .clicked()
+                                                            {
+                                                                remove_idx = Some(idx);
+                                                            }
+                                                        });
+                                                    });
+                                                });
+                                        });
+                                        ui.add_space(6.0);
+                                    }
+                                    if let Some(idx) = update_idx {
+                                        self.update_engine_entry(idx);
+                                    }
+                                    if let Some(idx) = remove_idx {
+                                        self.remove_engine_entry(idx);
+                                    }
                                 });
                         },
                     );
@@ -437,6 +703,7 @@ impl EditorApp {
                             egui::ScrollArea::vertical()
                                 .max_height((ui.available_height() - 46.0).max(80.0))
                                 .show(ui, |ui| {
+                                    let mut open_project_now: Option<PathBuf> = None;
                                     if self.hub_projects.is_empty() {
                                         ui.label(
                                             egui::RichText::new(
@@ -453,56 +720,86 @@ impl EditorApp {
                                             .and_then(|s| s.to_str())
                                             .unwrap_or("Projeto");
                                         let full = path.to_string_lossy();
+                                        let parent = path
+                                            .parent()
+                                            .map(|p| p.to_string_lossy().to_string())
+                                            .unwrap_or_else(|| ".".to_string());
                                         let stroke = if selected {
-                                            egui::Stroke::new(1.0, accent)
+                                            egui::Stroke::new(1.0, egui::Color32::from_rgb(123, 168, 255))
                                         } else {
                                             egui::Stroke::new(1.0, egui::Color32::from_gray(66))
                                         };
                                         let fill = if selected {
-                                            egui::Color32::from_rgb(40, 51, 46)
+                                            egui::Color32::from_rgb(38, 48, 66)
                                         } else {
                                             egui::Color32::from_rgb(34, 38, 39)
                                         };
-
-                                        let button = egui::Button::new(
-                                            egui::RichText::new(name).color(egui::Color32::WHITE),
-                                        )
-                                        .fill(fill)
-                                        .stroke(stroke)
-                                        .corner_radius(6);
-                                        let resp = ui
-                                            .add_sized([ui.available_width(), 28.0], button)
+                                        egui::Frame::new()
+                                            .fill(fill)
+                                            .stroke(stroke)
+                                            .corner_radius(8)
+                                            .inner_margin(egui::Margin::same(8))
+                                            .show(ui, |ui| {
+                                                ui.horizontal(|ui| {
+                                                    ui.vertical(|ui| {
+                                                        let title_resp = ui.selectable_label(
+                                                            selected,
+                                                            egui::RichText::new(name)
+                                                                .size(13.0)
+                                                                .color(egui::Color32::from_gray(242)),
+                                                        );
+                                                        if title_resp.clicked() {
+                                                            self.hub_selected = Some(idx);
+                                                        }
+                                                        if title_resp.double_clicked() {
+                                                            open_project_now = Some(path.clone());
+                                                        }
+                                                        ui.label(
+                                                            egui::RichText::new(parent)
+                                                                .size(10.0)
+                                                                .color(egui::Color32::from_gray(150)),
+                                                        );
+                                                    });
+                                                    ui.with_layout(
+                                                        egui::Layout::right_to_left(egui::Align::Center),
+                                                        |ui| {
+                                                            let open_clicked = ui
+                                                                .add_sized(
+                                                                    [62.0, 24.0],
+                                                                    egui::Button::new(
+                                                                        egui::RichText::new("Abrir")
+                                                                            .size(11.0),
+                                                                    )
+                                                                    .fill(if selected {
+                                                                        egui::Color32::from_rgb(32, 126, 84)
+                                                                    } else {
+                                                                        egui::Color32::from_rgb(36, 96, 72)
+                                                                    })
+                                                                    .stroke(egui::Stroke::new(
+                                                                        1.0,
+                                                                        egui::Color32::from_rgb(82, 162, 126),
+                                                                    ))
+                                                                    .corner_radius(6),
+                                                                )
+                                                                .clicked();
+                                                            if open_clicked {
+                                                                self.hub_selected = Some(idx);
+                                                                open_project_now = Some(path.clone());
+                                                            }
+                                                        },
+                                                    );
+                                                });
+                                            })
+                                            .response
                                             .on_hover_text(full.as_ref());
-                                        if resp.clicked() {
-                                            self.hub_selected = Some(idx);
-                                        }
+                                        ui.add_space(6.0);
+                                    }
+                                    if let Some(path) = open_project_now {
+                                        self.current_project = Some(path);
+                                        self.show_hub = false;
                                     }
                                 });
 
-                            ui.add_space(8.0);
-                            let can_enter = self.hub_selected.is_some();
-                            ui.with_layout(
-                                egui::Layout::right_to_left(egui::Align::Center),
-                                |ui| {
-                                    if ui
-                                        .add_enabled(
-                                            can_enter,
-                                            egui::Button::new("Entrar no Projeto")
-                                                .corner_radius(6)
-                                                .fill(egui::Color32::from_rgb(44, 44, 44))
-                                                .stroke(egui::Stroke::new(1.0, accent)),
-                                        )
-                                        .clicked()
-                                    {
-                                        if let Some(idx) = self.hub_selected {
-                                            if let Some(path) = self.hub_projects.get(idx) {
-                                                self.current_project = Some(path.clone());
-                                                self.show_hub = false;
-                                            }
-                                        }
-                                    }
-                                },
-                            );
                         });
                 });
             });
@@ -599,6 +896,15 @@ impl EditorApp {
         }
         if self.fios_icon.is_none() {
             self.fios_icon = load_png_as_texture(ctx, "src/assets/icons/fios.png");
+        }
+        if self.log_icon.is_none() {
+            self.log_icon = load_png_as_texture(ctx, "src/assets/icons/log.png");
+        }
+        if self.git_icon.is_none() {
+            self.git_icon = load_png_as_texture(ctx, "src/assets/icons/git.png");
+        }
+        if self.terminal_icon.is_none() {
+            self.terminal_icon = load_png_as_texture(ctx, "src/assets/icons/terminal.png");
         }
         if self.lang_pt_icon.is_none() {
             self.lang_pt_icon = load_png_as_texture(ctx, "src/assets/icons/portugues.png");
@@ -722,6 +1028,7 @@ impl App for EditorApp {
                         {
                             self.show_hub = true;
                             self.refresh_hub_projects();
+                            self.refresh_hub_engines();
                         }
                         ui.add_space(8.0);
 
@@ -1111,11 +1418,12 @@ impl App for EditorApp {
             });
 
         let dock_bar_h = 48.0;
-        let project_bottom = if self.project_collapsed {
-            dock_bar_h
+        let project_panel_h = if self.project_collapsed {
+            0.0
         } else {
             self.project.docked_bottom_height()
         };
+        let project_bottom = project_panel_h + dock_bar_h;
         let left_reserved = self.inspector.docked_left_width() + self.hierarchy.docked_left_width();
         let right_reserved = self.inspector.docked_right_width() + self.hierarchy.docked_right_width();
         let mode_label = if self.selected_mode == ToolbarMode::Cena {
@@ -1125,6 +1433,9 @@ impl App for EditorApp {
         };
         let hierarchy_selected = self.hierarchy.selected_object_name().to_string();
         self.viewport.set_selected_object(&hierarchy_selected);
+        let inspector_transform = self
+            .viewport
+            .object_transform_components(&hierarchy_selected);
         self.viewport
             .show(
                 ctx,
@@ -1144,7 +1455,14 @@ impl App for EditorApp {
                 project_bottom,
                 self.language,
                 self.hierarchy.selected_object_name(),
+                inspector_transform,
             );
+        if let Some((object_name, pos, rot, scale)) = self.inspector.take_transform_apply_request()
+        {
+            let _ = self
+                .viewport
+                .apply_object_transform_components(&object_name, pos, rot, scale);
+        }
         let i_left = self.inspector.docked_left_width();
         let i_right = self.inspector.docked_right_width();
         self.hierarchy
@@ -1155,17 +1473,19 @@ impl App for EditorApp {
 
         let engine_busy = self.is_playing;
 
-        if self.project_collapsed {
-            let dock_rect = ctx.available_rect();
-            let bar_rect = egui::Rect::from_min_max(
-                egui::pos2(dock_rect.left(), dock_rect.bottom() - dock_bar_h),
-                egui::pos2(dock_rect.right(), dock_rect.bottom()),
-            );
+        if !self.project_collapsed && self.project.show(ctx, self.language) {
+            self.project_collapsed = true;
+        }
+        let dock_rect = ctx.available_rect();
+        let bar_rect = egui::Rect::from_min_max(
+            egui::pos2(dock_rect.left(), dock_rect.bottom() - dock_bar_h),
+            egui::pos2(dock_rect.right(), dock_rect.bottom()),
+        );
 
-            egui::Area::new(egui::Id::new("bottom_multi_dock_bar"))
-                .order(egui::Order::Foreground)
-                .fixed_pos(bar_rect.min)
-                .show(ctx, |ui| {
+        egui::Area::new(egui::Id::new("bottom_multi_dock_bar"))
+            .order(egui::Order::Foreground)
+            .fixed_pos(bar_rect.min)
+            .show(ctx, |ui| {
                     let (rect, _) = ui.allocate_exact_size(bar_rect.size(), egui::Sense::hover());
                     ui.painter()
                         .rect_filled(rect, 0.0, egui::Color32::from_rgb(35, 35, 35));
@@ -1197,7 +1517,7 @@ impl App for EditorApp {
                         );
                     }
                     if files_resp.clicked() {
-                        self.project_collapsed = false;
+                        self.project_collapsed = !self.project_collapsed;
                     }
 
                     if let Some(files_icon) = &self.files_icon {
@@ -1310,35 +1630,146 @@ impl App for EditorApp {
                         );
                     }
 
+                    let right_padding = 28.0;
+                    let log_rect = egui::Rect::from_center_size(
+                        egui::pos2(
+                            rect.right() - right_padding - button_spacing * 2.0,
+                            icon_center_y,
+                        ),
+                        egui::vec2(28.0, 22.0),
+                    );
+                    let log_resp = ui.interact(
+                        log_rect,
+                        ui.id().with("toggle_log_mode"),
+                        egui::Sense::click(),
+                    );
+                    if log_resp.hovered() || self.log_enabled {
+                        ui.output_mut(|o| o.cursor_icon = egui::CursorIcon::PointingHand);
+                        ui.painter().rect_filled(
+                            log_rect.expand(2.0),
+                            3.0,
+                            if self.log_enabled {
+                                egui::Color32::from_rgb(58, 84, 64)
+                            } else {
+                                egui::Color32::from_rgb(58, 58, 58)
+                            },
+                        );
+                    }
+                    if log_resp.clicked() {
+                        self.log_enabled = !self.log_enabled;
+                    }
+                    if let Some(log_icon) = &self.log_icon {
+                        let _ = ui.put(
+                            log_rect,
+                            egui::Image::new(log_icon)
+                                .fit_to_exact_size(egui::Vec2::new(20.0, 20.0)),
+                        );
+                    }
+
+                    let git_rect = egui::Rect::from_center_size(
+                        egui::pos2(rect.right() - right_padding - button_spacing, icon_center_y),
+                        egui::vec2(28.0, 22.0),
+                    );
+                    let git_resp = ui.interact(
+                        git_rect,
+                        ui.id().with("toggle_git_mode"),
+                        egui::Sense::click(),
+                    );
+                    if git_resp.hovered() || self.git_enabled {
+                        ui.output_mut(|o| o.cursor_icon = egui::CursorIcon::PointingHand);
+                        ui.painter().rect_filled(
+                            git_rect.expand(2.0),
+                            3.0,
+                            if self.git_enabled {
+                                egui::Color32::from_rgb(58, 84, 64)
+                            } else {
+                                egui::Color32::from_rgb(58, 58, 58)
+                            },
+                        );
+                    }
+                    if git_resp.clicked() {
+                        self.git_enabled = !self.git_enabled;
+                    }
+                    if let Some(git_icon) = &self.git_icon {
+                        let _ = ui.put(
+                            git_rect,
+                            egui::Image::new(git_icon)
+                                .fit_to_exact_size(egui::Vec2::new(20.0, 20.0)),
+                        );
+                    }
+
+                    let terminal_rect = egui::Rect::from_center_size(
+                        egui::pos2(rect.right() - right_padding, icon_center_y),
+                        egui::vec2(28.0, 22.0),
+                    );
+                    let terminal_resp = ui.interact(
+                        terminal_rect,
+                        ui.id().with("toggle_terminal_mode"),
+                        egui::Sense::click(),
+                    );
+                    if terminal_resp.hovered() || self.terminal_enabled {
+                        ui.output_mut(|o| o.cursor_icon = egui::CursorIcon::PointingHand);
+                        ui.painter().rect_filled(
+                            terminal_rect.expand(2.0),
+                            3.0,
+                            if self.terminal_enabled {
+                                egui::Color32::from_rgb(58, 84, 64)
+                            } else {
+                                egui::Color32::from_rgb(58, 58, 58)
+                            },
+                        );
+                    }
+                    if terminal_resp.clicked() {
+                        self.terminal_enabled = !self.terminal_enabled;
+                    }
+                    if let Some(terminal_icon) = &self.terminal_icon {
+                        let _ = ui.put(
+                            terminal_rect,
+                            egui::Image::new(terminal_icon)
+                                .fit_to_exact_size(egui::Vec2::new(20.0, 20.0)),
+                        );
+                    }
+
                     let label_y = rect.bottom() - 10.0;
-                    ui.painter().text(
-                        egui::pos2(files_rect.center().x, label_y),
-                        egui::Align2::CENTER_CENTER,
-                        "Projeto",
-                        egui::FontId::proportional(12.0),
-                        egui::Color32::from_gray(190),
-                    );
-                    ui.painter().text(
-                        egui::pos2(rig_rect.center().x, label_y),
-                        egui::Align2::CENTER_CENTER,
-                        "Rig",
-                        egui::FontId::proportional(12.0),
-                        egui::Color32::from_gray(190),
-                    );
-                    ui.painter().text(
-                        egui::pos2(animator_rect.center().x, label_y),
-                        egui::Align2::CENTER_CENTER,
-                        "Animador",
-                        egui::FontId::proportional(12.0),
-                        egui::Color32::from_gray(190),
-                    );
-                    ui.painter().text(
-                        egui::pos2(fios_rect.center().x, label_y),
-                        egui::Align2::CENTER_CENTER,
-                        "Fios",
-                        egui::FontId::proportional(12.0),
-                        egui::Color32::from_gray(190),
-                    );
+                    let label_font = egui::FontId::proportional(12.0);
+                    let label_color = egui::Color32::from_gray(190);
+                    let letter_spacing = 0.8_f32;
+                    let draw_spaced_label = |center: egui::Pos2, text: &str| {
+                        let mut widths = Vec::new();
+                        let mut total_w = 0.0_f32;
+                        for ch in text.chars() {
+                            let s = ch.to_string();
+                            let w = ui
+                                .painter()
+                                .layout_no_wrap(s, label_font.clone(), label_color)
+                                .size()
+                                .x;
+                            widths.push(w);
+                            total_w += w;
+                        }
+                        if widths.len() > 1 {
+                            total_w += letter_spacing * (widths.len() as f32 - 1.0);
+                        }
+                        let mut x = center.x - total_w * 0.5;
+                        for (idx, ch) in text.chars().enumerate() {
+                            let w = widths[idx];
+                            ui.painter().text(
+                                egui::pos2(x + (w * 0.5), center.y),
+                                egui::Align2::CENTER_CENTER,
+                                ch,
+                                label_font.clone(),
+                                label_color,
+                            );
+                            x += w + letter_spacing;
+                        }
+                    };
+                    draw_spaced_label(egui::pos2(files_rect.center().x, label_y), "Projeto");
+                    draw_spaced_label(egui::pos2(rig_rect.center().x, label_y), "Rig");
+                    draw_spaced_label(egui::pos2(animator_rect.center().x, label_y), "Animador");
+                    draw_spaced_label(egui::pos2(fios_rect.center().x, label_y), "Fios");
+                    draw_spaced_label(egui::pos2(log_rect.center().x, label_y), "Log");
+                    draw_spaced_label(egui::pos2(git_rect.center().x, label_y), "Git");
+                    draw_spaced_label(egui::pos2(terminal_rect.center().x, label_y), "Terminal");
 
                     if engine_busy {
                         ui.ctx().request_repaint();
@@ -1363,9 +1794,6 @@ impl App for EditorApp {
                         );
                     }
                 });
-        } else if self.project.show(ctx, self.language) {
-            self.project_collapsed = true;
-        }
 
         let pointer_pos = ctx.input(|i| i.pointer.hover_pos().or(i.pointer.latest_pos()));
         if pointer_pos.is_some() {
@@ -1589,6 +2017,9 @@ fn main() -> eframe::Result<()> {
                 rig_icon: None,
                 animador_icon: None,
                 fios_icon: None,
+                log_icon: None,
+                git_icon: None,
+                terminal_icon: None,
                 lang_pt_icon: None,
                 lang_en_icon: None,
                 lang_es_icon: None,
@@ -1598,16 +2029,22 @@ fn main() -> eframe::Result<()> {
                 rig_enabled: false,
                 animator_enabled: false,
                 fios_enabled: false,
+                log_enabled: false,
+                git_enabled: false,
+                terminal_enabled: false,
                 language: EngineLanguage::Pt,
                 project_collapsed: false,
                 windows_blur_initialized: false,
                 last_pointer_pos: None,
                 show_hub: true,
                 hub_projects: Vec::new(),
+                hub_engines: Vec::new(),
                 hub_selected: None,
+                hub_engine_status: None,
                 current_project: None,
             };
             app.refresh_hub_projects();
+            app.refresh_hub_engines();
             Ok(Box::new(app))
         }),
     )

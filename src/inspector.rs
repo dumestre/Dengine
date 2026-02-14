@@ -4,7 +4,11 @@ use eframe::egui::{
 use epaint::ColorImage;
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 use crate::EngineLanguage;
+
+const INSPECTOR_MIN_WIDTH: f32 = 260.0;
+const INSPECTOR_MAX_WIDTH: f32 = 520.0;
 
 #[derive(Clone, Copy)]
 struct TransformDraft {
@@ -37,6 +41,10 @@ pub struct InspectorWindow {
     resizing_width: bool,
     fonts_initialized: bool,
     object_transforms: HashMap<String, TransformDraft>,
+    object_transform_enabled: HashMap<String, bool>,
+    last_selected_object: String,
+    pending_apply_request: Option<(String, TransformDraft)>,
+    apply_loading_until: Option<Instant>,
 }
 
 #[derive(Clone, Copy)]
@@ -84,12 +92,23 @@ impl InspectorWindow {
             is_locked: true,
             dock_side: Some(InspectorDockSide::Left),
             window_pos: None,
-            window_width: 190.0,
+            window_width: INSPECTOR_MIN_WIDTH,
             dragging_from_header: false,
             resizing_width: false,
             fonts_initialized: false,
             object_transforms: HashMap::new(),
+            object_transform_enabled: HashMap::new(),
+            last_selected_object: String::new(),
+            pending_apply_request: None,
+            apply_loading_until: None,
         }
+    }
+
+    pub fn take_transform_apply_request(
+        &mut self,
+    ) -> Option<(String, [f32; 3], [f32; 3], [f32; 3])> {
+        let (name, draft) = self.pending_apply_request.take()?;
+        Some((name, draft.position, draft.rotation, draft.scale))
     }
 
     pub fn show(
@@ -100,6 +119,7 @@ impl InspectorWindow {
         bottom_reserved: f32,
         language: EngineLanguage,
         selected_object: &str,
+        selected_transform: Option<([f32; 3], [f32; 3], [f32; 3])>,
     ) {
         if !self.open {
             return;
@@ -148,8 +168,11 @@ impl InspectorWindow {
         } else {
             (usable_height * 0.85).max(520.0)
         };
-        let max_width = (dock_rect.width() - left_reserved - right_reserved - 40.0).max(180.0);
-        self.window_width = self.window_width.clamp(180.0, max_width.min(520.0));
+        let max_width = (dock_rect.width() - left_reserved - right_reserved - 40.0)
+            .max(INSPECTOR_MIN_WIDTH);
+        self.window_width = self
+            .window_width
+            .clamp(INSPECTOR_MIN_WIDTH, max_width.min(INSPECTOR_MAX_WIDTH));
         let window_size = egui::vec2(self.window_width, height);
         let left_snap_x = dock_rect.left() + left_reserved;
         let right_snap_right = dock_rect.right() - right_reserved;
@@ -177,6 +200,29 @@ impl InspectorWindow {
         let mut resize_started = false;
         let mut resize_stopped = false;
         let mut panel_rect = Rect::from_min_size(pos, window_size);
+        let selected_changed = self.last_selected_object != selected_object;
+        if selected_changed {
+            self.last_selected_object = selected_object.to_string();
+            if !selected_object.is_empty() {
+                if let Some((position, rotation, scale)) = selected_transform {
+                    self.object_transforms.insert(
+                        selected_object.to_string(),
+                        TransformDraft {
+                            position,
+                            rotation,
+                            scale,
+                        },
+                    );
+                } else {
+                    self.object_transforms
+                        .entry(selected_object.to_string())
+                        .or_default();
+                }
+                self.object_transform_enabled
+                    .entry(selected_object.to_string())
+                    .or_insert(true);
+            }
+        }
 
         egui::Area::new(Id::new("inspetor_window_id"))
             .order(Order::Foreground)
@@ -338,54 +384,14 @@ impl InspectorWindow {
                     Stroke::new(1.0, Color32::from_gray(60)),
                 );
 
+                let button_h = 32.0;
                 let button_rect = Rect::from_min_max(
-                    egui::pos2(inner.min.x, sep_y + 8.0),
-                    egui::pos2(inner.max.x, sep_y + 40.0),
+                    egui::pos2(inner.min.x, rect.bottom() - 12.0 - button_h),
+                    egui::pos2(inner.max.x, rect.bottom() - 12.0),
                 );
-                ui.scope_builder(
-                    egui::UiBuilder::new().max_rect(button_rect).layout(
-                        egui::Layout::centered_and_justified(egui::Direction::LeftToRight),
-                    ),
-                    |ui| {
-                        let mut button = egui::Button::new(
-                            egui::RichText::new(match language {
-                                EngineLanguage::Pt => "Componente",
-                                EngineLanguage::En => "Component",
-                                EngineLanguage::Es => "Componente",
-                            })
-                                .text_style(egui::TextStyle::Button)
-                                .font(FontId::new(14.0, FontFamily::Proportional))
-                                .strong()
-                                .color(Color32::from_rgb(55, 55, 55)),
-                        )
-                        .fill(Color32::from_rgb(0x0F, 0xE8, 0x79))
-                        .corner_radius(3)
-                        .min_size(egui::vec2(82.0, 16.0));
-
-                        if let Some(add_tex) = &self.add_icon_texture {
-                            button = egui::Button::image_and_text(
-                                egui::Image::new(add_tex).fit_to_exact_size(egui::vec2(12.0, 12.0)),
-                                egui::RichText::new(match language {
-                                    EngineLanguage::Pt => "Componente",
-                                    EngineLanguage::En => "Component",
-                                    EngineLanguage::Es => "Componente",
-                                })
-                                    .font(FontId::new(14.0, FontFamily::Proportional))
-                                    .strong()
-                                    .color(Color32::from_rgb(55, 55, 55)),
-                            )
-                            .fill(Color32::from_rgb(0x0F, 0xE8, 0x79))
-                            .corner_radius(3)
-                            .min_size(egui::vec2(82.0, 16.0));
-                        }
-
-                        let _ = ui.add(button);
-                    },
-                );
-
                 let content_rect = Rect::from_min_max(
-                    egui::pos2(inner.min.x, button_rect.max.y + 8.0),
-                    egui::pos2(inner.max.x, rect.bottom() - 10.0),
+                    egui::pos2(inner.min.x, sep_y + 8.0),
+                    egui::pos2(inner.max.x, button_rect.min.y - 8.0),
                 );
                 ui.scope_builder(
                     egui::UiBuilder::new()
@@ -400,6 +406,10 @@ impl InspectorWindow {
                             .object_transforms
                             .entry(selected_object.to_string())
                             .or_default();
+                        let enabled = self
+                            .object_transform_enabled
+                            .entry(selected_object.to_string())
+                            .or_insert(true);
 
                         let title = match language {
                             EngineLanguage::Pt => "Transformação",
@@ -411,6 +421,11 @@ impl InspectorWindow {
                             EngineLanguage::En => "Apply Transformations",
                             EngineLanguage::Es => "Aplicar Transformaciones",
                         };
+                        let loading_text = match language {
+                            EngineLanguage::Pt => "Aplicando...",
+                            EngineLanguage::En => "Applying...",
+                            EngineLanguage::Es => "Aplicando...",
+                        };
 
                         egui::Frame::new()
                             .fill(Color32::from_rgb(36, 36, 36))
@@ -418,12 +433,51 @@ impl InspectorWindow {
                             .corner_radius(6)
                             .inner_margin(egui::Margin::same(8))
                             .show(ui, |ui| {
-                                ui.label(
-                                    egui::RichText::new(title)
-                                        .size(13.0)
-                                        .strong()
-                                        .color(Color32::from_gray(220)),
+                                let header_h = 22.0;
+                                let header_rect = Rect::from_min_size(
+                                    ui.min_rect().min,
+                                    egui::vec2(ui.available_width(), header_h),
                                 );
+                                ui.scope_builder(egui::UiBuilder::new().max_rect(header_rect), |ui| {
+                                    let toggle_text = if *enabled { "ON" } else { "OFF" };
+                                    let toggle_fill = if *enabled {
+                                        Color32::from_rgb(58, 118, 84)
+                                    } else {
+                                        Color32::from_rgb(78, 52, 52)
+                                    };
+                                    let toggle_stroke = if *enabled {
+                                        Stroke::new(1.0, Color32::from_rgb(110, 178, 132))
+                                    } else {
+                                        Stroke::new(1.0, Color32::from_rgb(144, 84, 84))
+                                    };
+                                    ui.with_layout(
+                                        egui::Layout::right_to_left(egui::Align::Center),
+                                        |ui| {
+                                            let clicked = ui
+                                                .add_sized(
+                                                    [12.0, 7.0],
+                                                    egui::Button::new(
+                                                        egui::RichText::new(toggle_text).size(7.0),
+                                                    )
+                                                        .min_size(egui::vec2(12.0, 7.0))
+                                                        .fill(toggle_fill)
+                                                        .stroke(toggle_stroke)
+                                                        .corner_radius(6),
+                                                )
+                                                .clicked();
+                                            if clicked {
+                                                *enabled = !*enabled;
+                                            }
+                                        },
+                                    );
+                                    ui.painter().text(
+                                        header_rect.center(),
+                                        Align2::CENTER_CENTER,
+                                        title,
+                                        FontId::new(13.0, FontFamily::Proportional),
+                                        Color32::from_gray(220),
+                                    );
+                                });
                                 ui.add_space(6.0);
                                 ui.label(
                                     egui::RichText::new(selected_object)
@@ -432,47 +486,117 @@ impl InspectorWindow {
                                 );
                                 ui.add_space(6.0);
 
-                                ui.horizontal(|ui| {
-                                    ui.add_sized([52.0, 18.0], egui::Label::new("Posição"));
-                                    for i in 0..3 {
-                                        ui.add_sized(
-                                            [44.0, 20.0],
-                                            egui::DragValue::new(&mut draft.position[i]).speed(0.1),
-                                        );
-                                    }
-                                });
-                                ui.horizontal(|ui| {
-                                    ui.add_sized([52.0, 18.0], egui::Label::new("Rotação"));
-                                    for i in 0..3 {
-                                        ui.add_sized(
-                                            [44.0, 20.0],
-                                            egui::DragValue::new(&mut draft.rotation[i]).speed(0.1),
-                                        );
-                                    }
-                                });
-                                ui.horizontal(|ui| {
-                                    ui.add_sized([52.0, 18.0], egui::Label::new("Escala"));
-                                    for i in 0..3 {
-                                        ui.add_sized(
-                                            [44.0, 20.0],
-                                            egui::DragValue::new(&mut draft.scale[i]).speed(0.05),
-                                        );
-                                    }
+                                let label_w = 52.0_f32;
+                                let row_spacing = ui.spacing().item_spacing.x;
+                                let fields_total =
+                                    (ui.available_width() - label_w - row_spacing * 3.0).max(72.0);
+                                let field_w = (fields_total / 3.0).max(20.0);
+
+                                ui.add_enabled_ui(*enabled, |ui| {
+                                    ui.horizontal(|ui| {
+                                        ui.add_sized([52.0, 18.0], egui::Label::new("Posição"));
+                                        for i in 0..3 {
+                                            ui.add_sized(
+                                                [field_w, 20.0],
+                                                egui::DragValue::new(&mut draft.position[i]).speed(0.1),
+                                            );
+                                        }
+                                    });
+                                    ui.horizontal(|ui| {
+                                        ui.add_sized([52.0, 18.0], egui::Label::new("Rotação"));
+                                        for i in 0..3 {
+                                            ui.add_sized(
+                                                [field_w, 20.0],
+                                                egui::DragValue::new(&mut draft.rotation[i]).speed(0.1),
+                                            );
+                                        }
+                                    });
+                                    ui.horizontal(|ui| {
+                                        ui.add_sized([52.0, 18.0], egui::Label::new("Escala"));
+                                        for i in 0..3 {
+                                            ui.add_sized(
+                                                [field_w, 20.0],
+                                                egui::DragValue::new(&mut draft.scale[i]).speed(0.05),
+                                            );
+                                        }
+                                    });
                                 });
 
                                 ui.add_space(10.0);
-                                let _ = ui.add_sized(
-                                    [ui.available_width(), 28.0],
-                                    egui::Button::new(
-                                        egui::RichText::new(apply_text)
-                                            .color(Color32::from_rgb(245, 240, 255))
-                                            .strong(),
-                                    )
-                                    .fill(Color32::from_rgb(148, 116, 186))
-                                    .stroke(Stroke::new(1.0, Color32::from_rgb(173, 140, 208)))
-                                    .corner_radius(6),
-                                );
+                                let is_loading = self
+                                    .apply_loading_until
+                                    .is_some_and(|until| Instant::now() < until);
+                                let button_label = if is_loading {
+                                    loading_text
+                                } else {
+                                    apply_text
+                                };
+                                let button_resp = ui
+                                    .add_enabled_ui(*enabled, |ui| {
+                                        ui.add_sized(
+                                            [ui.available_width(), 30.0],
+                                            egui::Button::new(
+                                                egui::RichText::new(button_label)
+                                                    .size(13.0)
+                                                    .color(Color32::from_rgb(55, 55, 55))
+                                                    .strong(),
+                                            )
+                                            .fill(Color32::from_rgb(148, 116, 186))
+                                            .stroke(Stroke::new(1.0, Color32::from_rgb(173, 140, 208)))
+                                            .corner_radius(6),
+                                        )
+                                    })
+                                    .inner;
+                                if button_resp.clicked() {
+                                    self.pending_apply_request =
+                                        Some((selected_object.to_string(), *draft));
+                                    self.apply_loading_until =
+                                        Some(Instant::now() + Duration::from_millis(900));
+                                }
+                                if is_loading {
+                                    ui.ctx().request_repaint_after(Duration::from_millis(16));
+                                }
                             });
+                    },
+                );
+                ui.scope_builder(
+                    egui::UiBuilder::new().max_rect(button_rect).layout(
+                        egui::Layout::centered_and_justified(egui::Direction::LeftToRight),
+                    ),
+                    |ui| {
+                        let mut button = egui::Button::new(
+                            egui::RichText::new(match language {
+                                EngineLanguage::Pt => "Componente",
+                                EngineLanguage::En => "Component",
+                                EngineLanguage::Es => "Componente",
+                            })
+                            .text_style(egui::TextStyle::Button)
+                            .font(FontId::new(14.0, FontFamily::Proportional))
+                            .strong()
+                            .color(Color32::from_rgb(55, 55, 55)),
+                        )
+                        .fill(Color32::from_rgb(0x0F, 0xE8, 0x79))
+                        .corner_radius(3)
+                        .min_size(egui::vec2(82.0, 16.0));
+
+                        if let Some(add_tex) = &self.add_icon_texture {
+                            button = egui::Button::image_and_text(
+                                egui::Image::new(add_tex).fit_to_exact_size(egui::vec2(12.0, 12.0)),
+                                egui::RichText::new(match language {
+                                    EngineLanguage::Pt => "Componente",
+                                    EngineLanguage::En => "Component",
+                                    EngineLanguage::Es => "Componente",
+                                })
+                                .font(FontId::new(14.0, FontFamily::Proportional))
+                                .strong()
+                                .color(Color32::from_rgb(55, 55, 55)),
+                            )
+                            .fill(Color32::from_rgb(0x0F, 0xE8, 0x79))
+                            .corner_radius(3)
+                            .min_size(egui::vec2(82.0, 16.0));
+                        }
+
+                        let _ = ui.add(button);
                     },
                 );
 
@@ -523,7 +647,8 @@ impl InspectorWindow {
                 match self.dock_side {
                     Some(InspectorDockSide::Right) => {
                         let old_w = self.window_width;
-                        let new_w = (old_w - delta.x).clamp(180.0, 520.0);
+                        let new_w =
+                            (old_w - delta.x).clamp(INSPECTOR_MIN_WIDTH, INSPECTOR_MAX_WIDTH);
                         let applied = old_w - new_w;
                         self.window_width = new_w;
                         if let Some(p) = self.window_pos {
@@ -531,7 +656,8 @@ impl InspectorWindow {
                         }
                     }
                     _ => {
-                        self.window_width = (self.window_width + delta.x).clamp(180.0, 520.0);
+                        self.window_width = (self.window_width + delta.x)
+                            .clamp(INSPECTOR_MIN_WIDTH, INSPECTOR_MAX_WIDTH);
                     }
                 }
             }

@@ -8,7 +8,7 @@ use std::sync::mpsc::{self, Receiver, Sender};
 use eframe::egui::{self, Align2, Color32, FontId, PointerButton, Pos2, Rect, Sense, Stroke, TextureHandle, TextureOptions, Vec2};
 use egui_gizmo::{Gizmo, GizmoMode, GizmoOrientation};
 use epaint::ColorImage;
-use glam::{Mat4, Vec3};
+use glam::{EulerRot, Mat4, Quat, Vec3};
 use crate::viewport_gpu::ViewportGpuRenderer;
 
 const MAX_RUNTIME_TRIANGLES: usize = 90_000;
@@ -198,6 +198,55 @@ impl ViewportPanel {
             self.selected_scene_object = None;
             self.object_selected = false;
         }
+    }
+
+    pub fn object_transform_components(
+        &self,
+        object_name: &str,
+    ) -> Option<([f32; 3], [f32; 3], [f32; 3])> {
+        let entry = self.scene_entries.iter().find(|o| o.name == object_name)?;
+        let (scale, rotation, translation) = entry.transform.to_scale_rotation_translation();
+        let (rx, ry, rz) = rotation.to_euler(EulerRot::XYZ);
+        Some((
+            [translation.x, translation.y, translation.z],
+            [rx.to_degrees(), ry.to_degrees(), rz.to_degrees()],
+            [
+                if scale.x.is_finite() { scale.x } else { 1.0 },
+                if scale.y.is_finite() { scale.y } else { 1.0 },
+                if scale.z.is_finite() { scale.z } else { 1.0 },
+            ],
+        ))
+    }
+
+    pub fn apply_object_transform_components(
+        &mut self,
+        object_name: &str,
+        position: [f32; 3],
+        rotation_deg: [f32; 3],
+        scale: [f32; 3],
+    ) -> bool {
+        let Some(idx) = self.scene_entries.iter().position(|o| o.name == object_name) else {
+            return false;
+        };
+        let pos = Vec3::new(position[0], position[1], position[2]);
+        let scl = Vec3::new(scale[0], scale[1], scale[2]);
+        let rot = Quat::from_euler(
+            EulerRot::XYZ,
+            rotation_deg[0].to_radians(),
+            rotation_deg[1].to_radians(),
+            rotation_deg[2].to_radians(),
+        );
+        let new_transform = Mat4::from_scale_rotation_translation(scl, rot, pos);
+        let old_transform = self.scene_entries[idx].transform;
+        if old_transform == new_transform {
+            return false;
+        }
+        self.push_undo_snapshot();
+        self.scene_entries[idx].transform = new_transform;
+        self.model_matrix = new_transform;
+        self.object_selected = true;
+        self.selected_scene_object = Some(object_name.to_string());
+        true
     }
 
     pub fn can_undo(&self) -> bool {
