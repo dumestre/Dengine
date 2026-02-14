@@ -5,6 +5,7 @@ mod project;
 mod viewport;
 mod viewport_gpu;
 mod terminai;
+mod fios;
 
 use eframe::egui::{TextureHandle, TextureOptions};
 use eframe::egui::text::LayoutJob;
@@ -87,6 +88,7 @@ struct EditorApp {
     hub_engine_status: Option<String>,
     current_project: Option<PathBuf>,
     terminai: terminai::TerminAiState,
+    fios: fios::FiosState,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -953,6 +955,7 @@ impl App for EditorApp {
         // Dark theme
         ctx.set_visuals(egui::Visuals::dark());
         self.ensure_toolbar_icons_loaded(ctx);
+        self.fios.update_input(ctx);
         self.poll_terminal_job();
         if self.show_hub {
             self.draw_hub(ctx);
@@ -1504,6 +1507,19 @@ impl App for EditorApp {
                 .viewport
                 .apply_object_transform_components(&object_name, pos, rot, scale);
         }
+        let axis = self.fios.movement_axis();
+        if axis[0].abs() > 1e-4 || axis[1].abs() > 1e-4 {
+            let dt = ctx.input(|i| i.stable_dt).max(1.0 / 240.0);
+            let len = (axis[0] * axis[0] + axis[1] * axis[1]).sqrt().max(1.0);
+            let dir_x = axis[0] / len;
+            let dir_z = -axis[1] / len;
+            for (name, ctrl) in self.inspector.fios_controller_targets() {
+                let step = ctrl.move_speed * dt;
+                let _ = self
+                    .viewport
+                    .move_object_by(&name, [dir_x * step, 0.0, dir_z * step]);
+            }
+        }
         let i_left = self.inspector.docked_left_width();
         let i_right = self.inspector.docked_right_width();
         self.hierarchy
@@ -1953,6 +1969,7 @@ impl App for EditorApp {
         }
 
         self.draw_terminal_window(ctx);
+        self.fios.draw_window(ctx, &mut self.fios_enabled, self.language);
     }
 }
 
@@ -2092,6 +2109,7 @@ fn main() -> eframe::Result<()> {
                 hub_engine_status: None,
                 current_project: None,
                 terminai: terminai::TerminAiState::new(),
+                fios: fios::FiosState::new(),
             };
             app.refresh_hub_projects();
             app.refresh_hub_engines();

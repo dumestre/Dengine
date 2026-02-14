@@ -78,6 +78,19 @@ O Dengine e um editor com foco em cena 3D, hierarquia, inspetor, projeto, hub e 
 ### 10) Formato de projeto
 - Extensao oficial: `.deng`.
 
+### 11) Fios (Nodes)
+- Conexao de fios com area de clique ampliada nos conectores (entrada/saida), facilitando o plug.
+- Selecao multipla:
+  - Shift + clique para adicionar/remover da selecao.
+  - Arraste em area vazia para selecao em caixa (marquee).
+- Renomear bloco:
+  - botao `Renomear` + `Aplicar Nome`
+  - atalho `F2` para iniciar renomeacao.
+- Cortar fios:
+  - segure `Alt` e arraste com botao direito sobre os fios para cortar conexoes cruzadas.
+- Exclusao:
+  - `Delete`/`Backspace` remove o(s) bloco(s) selecionado(s) e suas conexoes.
+
 ---
 
 ## EN
@@ -158,6 +171,19 @@ Dengine is a 3D editor focused on scene editing, hierarchy, inspector, project a
 ### 10) Project format
 - Official project extension: `.deng`.
 
+### 11) Wires (Nodes)
+- Wire connection now uses larger input/output connector hit areas for easier plugging.
+- Multi-selection:
+  - Shift + click to add/remove nodes from selection.
+  - Drag on empty canvas to marquee-select.
+- Node rename:
+  - `Rename` button + `Apply Name`
+  - `F2` shortcut to start renaming.
+- Wire cut:
+  - hold `Alt` and drag with right mouse button across wires to cut crossed links.
+- Deletion:
+  - `Delete`/`Backspace` removes selected node(s) and connected links.
+
 ---
 
 ## ES
@@ -237,3 +263,16 @@ Dengine es un editor 3D enfocado en escena, jerarquia, inspector, proyecto, hub 
 
 ### 10) Formato de proyecto
 - Extension oficial: `.deng`.
+
+### 11) Fios/Wires (Nodos)
+- Conexion de cables con area de clic ampliada en conectores de entrada/salida para facilitar el enlace.
+- Seleccion multiple:
+  - Shift + clic para agregar/quitar nodos de la seleccion.
+  - Arrastrar en area vacia para seleccion por caja (marquee).
+- Renombrar nodo:
+  - boton `Renomear/Rename` + `Aplicar Nombre`
+  - atajo `F2` para iniciar renombrado.
+- Corte de cables:
+  - mantener `Alt` y arrastrar con boton derecho sobre cables para cortar conexiones cruzadas.
+- Eliminacion:
+  - `Delete`/`Backspace` elimina nodo(s) seleccionado(s) y sus conexiones.

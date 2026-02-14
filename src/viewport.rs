@@ -401,6 +401,22 @@ impl ViewportPanel {
         true
     }
 
+    pub fn move_object_by(&mut self, object_name: &str, delta: [f32; 3]) -> bool {
+        let Some(idx) = self.scene_entries.iter().position(|o| o.name == object_name) else {
+            return false;
+        };
+        let d = Vec3::new(delta[0], delta[1], delta[2]);
+        if d.length_squared() <= 1e-12 {
+            return false;
+        }
+        let (scale, rotation, translation) =
+            self.scene_entries[idx].transform.to_scale_rotation_translation();
+        let next_t = translation + d;
+        self.scene_entries[idx].transform =
+            Mat4::from_scale_rotation_translation(scale, rotation, next_t);
+        true
+    }
+
     pub fn can_undo(&self) -> bool {
         !self.undo_stack.is_empty()
     }
@@ -926,8 +942,6 @@ impl ViewportPanel {
                     } else {
                         Mat4::perspective_rh_gl(45.0_f32.to_radians(), aspect, 0.1, 50.0)
                     };
-                    let mvp = proj * view * self.model_matrix;
-
                     if let Some((next_yaw, next_pitch)) = draw_view_orientation_gizmo(ui, view_gizmo_rect, view) {
                         self.camera_yaw = next_yaw;
                         self.camera_pitch = next_pitch;
@@ -2204,47 +2218,5 @@ fn draw_mesh_silhouette(
         let b = hull[(i + 1) % hull.len()];
         ui.painter().line_segment([a, b], glow);
         ui.painter().line_segment([a, b], line);
-    }
-}
-
-fn draw_wire_cube(ui: &mut egui::Ui, viewport: Rect, mvp: Mat4, selected: bool) {
-    let s = 0.55;
-    let points = [
-        Vec3::new(-s, -s, -s),
-        Vec3::new(s, -s, -s),
-        Vec3::new(s, s, -s),
-        Vec3::new(-s, s, -s),
-        Vec3::new(-s, -s, s),
-        Vec3::new(s, -s, s),
-        Vec3::new(s, s, s),
-        Vec3::new(-s, s, s),
-    ];
-    let edges = [
-        (0, 1),
-        (1, 2),
-        (2, 3),
-        (3, 0),
-        (4, 5),
-        (5, 6),
-        (6, 7),
-        (7, 4),
-        (0, 4),
-        (1, 5),
-        (2, 6),
-        (3, 7),
-    ];
-    let projected: Vec<Option<Pos2>> = points
-        .iter()
-        .map(|p| project_point(viewport, mvp, *p))
-        .collect();
-    let stroke = if selected {
-        Stroke::new(1.8, Color32::from_rgb(15, 232, 121))
-    } else {
-        Stroke::new(1.4, Color32::from_rgb(148, 148, 162))
-    };
-    for (a, b) in edges {
-        if let (Some(pa), Some(pb)) = (projected[a], projected[b]) {
-            ui.painter().line_segment([pa, pb], stroke);
-        }
     }
 }

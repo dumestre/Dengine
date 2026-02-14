@@ -17,12 +17,27 @@ struct TransformDraft {
     scale: [f32; 3],
 }
 
+#[derive(Clone, Copy)]
+pub struct FiosControllerDraft {
+    pub enabled: bool,
+    pub move_speed: f32,
+}
+
 impl Default for TransformDraft {
     fn default() -> Self {
         Self {
             position: [0.0, 0.0, 0.0],
             rotation: [0.0, 0.0, 0.0],
             scale: [1.0, 1.0, 1.0],
+        }
+    }
+}
+
+impl Default for FiosControllerDraft {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            move_speed: 3.5,
         }
     }
 }
@@ -45,6 +60,7 @@ pub struct InspectorWindow {
     last_selected_object: String,
     pending_live_request: Option<(String, TransformDraft)>,
     pending_apply_request: Option<(String, TransformDraft)>,
+    object_fios_controller: HashMap<String, FiosControllerDraft>,
     apply_loading_until: Option<Instant>,
     last_cursor_wrap: Option<Instant>,
 }
@@ -103,9 +119,17 @@ impl InspectorWindow {
             last_selected_object: String::new(),
             pending_live_request: None,
             pending_apply_request: None,
+            object_fios_controller: HashMap::new(),
             apply_loading_until: None,
             last_cursor_wrap: None,
         }
+    }
+
+    pub fn fios_controller_targets(&self) -> Vec<(String, FiosControllerDraft)> {
+        self.object_fios_controller
+            .iter()
+            .filter_map(|(name, cfg)| if cfg.enabled { Some((name.clone(), *cfg)) } else { None })
+            .collect()
     }
 
     pub fn take_transform_apply_request(
@@ -682,9 +706,128 @@ impl InspectorWindow {
                             .min_size(egui::vec2(82.0, 16.0));
                         }
 
-                        let _ = ui.add(button);
+                        if ui.add(button).clicked() && !selected_object.is_empty() {
+                            self.object_fios_controller
+                                .entry(selected_object.to_string())
+                                .or_default();
+                        }
                     },
                 );
+
+                if !selected_object.is_empty() {
+                    if let Some(ctrl) = self.object_fios_controller.get_mut(selected_object) {
+                        let mut remove_component = false;
+                        let card_height = 132.0_f32;
+                        let card_rect = Rect::from_min_max(
+                            egui::pos2(inner.min.x, (button_rect.min.y - card_height - 10.0).max(sep_y + 220.0)),
+                            egui::pos2(inner.max.x, button_rect.min.y - 10.0),
+                        );
+                        if card_rect.height() > 70.0 {
+                            ui.scope_builder(
+                                egui::UiBuilder::new()
+                                    .max_rect(card_rect)
+                                    .layout(egui::Layout::top_down(egui::Align::Min)),
+                                |ui| {
+                                    egui::Frame::new()
+                                        .fill(Color32::from_rgb(36, 36, 36))
+                                        .stroke(Stroke::new(1.0, Color32::from_gray(62)))
+                                        .corner_radius(6)
+                                        .inner_margin(egui::Margin::same(8))
+                                        .show(ui, |ui| {
+                                            ui.horizontal(|ui| {
+                                                ui.label(
+                                                    egui::RichText::new("Fios Controller")
+                                                        .size(13.0)
+                                                        .strong()
+                                                        .color(Color32::from_gray(220)),
+                                                );
+                                                ui.with_layout(
+                                                    egui::Layout::right_to_left(egui::Align::Center),
+                                                    |ui| {
+                                                        let rm = ui
+                                                            .add_sized([44.0, 18.0], egui::Button::new("Remover"))
+                                                            .clicked();
+                                                        if rm {
+                                                            remove_component = true;
+                                                        }
+                                                    },
+                                                );
+                                            });
+                                            ui.add_space(6.0);
+                                            ui.horizontal(|ui| {
+                                                ui.label("Ativo");
+                                                let txt = if ctrl.enabled { "ON" } else { "OFF" };
+                                                let fill = if ctrl.enabled {
+                                                    Color32::from_rgb(58, 118, 84)
+                                                } else {
+                                                    Color32::from_rgb(78, 52, 52)
+                                                };
+                                                if ui
+                                                    .add_sized(
+                                                        [40.0, 18.0],
+                                                        egui::Button::new(txt)
+                                                            .fill(fill)
+                                                            .stroke(Stroke::new(1.0, Color32::from_gray(90))),
+                                                    )
+                                                    .clicked()
+                                                {
+                                                    ctrl.enabled = !ctrl.enabled;
+                                                }
+                                            });
+                                            ui.add_space(4.0);
+                                            ui.horizontal(|ui| {
+                                                ui.label("Move Speed");
+                                                let _ = ui.add_sized(
+                                                    [90.0, 20.0],
+                                                    egui::DragValue::new(&mut ctrl.move_speed)
+                                                        .range(0.1..=100.0)
+                                                        .speed(0.1),
+                                                );
+                                            });
+                                            ui.add_space(6.0);
+                                            ui.horizontal(|ui| {
+                                                ui.label(
+                                                    egui::RichText::new(match language {
+                                                        EngineLanguage::Pt => "Entradas",
+                                                        EngineLanguage::En => "Inputs",
+                                                        EngineLanguage::Es => "Entradas",
+                                                    })
+                                                    .size(11.0)
+                                                    .strong()
+                                                    .color(Color32::from_gray(210)),
+                                                );
+                                                ui.label(
+                                                    egui::RichText::new("MoveAxis, Jump, Interact")
+                                                        .size(10.0)
+                                                        .color(Color32::from_gray(165)),
+                                                );
+                                            });
+                                            ui.horizontal(|ui| {
+                                                ui.label(
+                                                    egui::RichText::new(match language {
+                                                        EngineLanguage::Pt => "Saidas",
+                                                        EngineLanguage::En => "Outputs",
+                                                        EngineLanguage::Es => "Salidas",
+                                                    })
+                                                    .size(11.0)
+                                                    .strong()
+                                                    .color(Color32::from_gray(210)),
+                                                );
+                                                ui.label(
+                                                    egui::RichText::new("Velocity, IsMoving")
+                                                        .size(10.0)
+                                                        .color(Color32::from_gray(165)),
+                                                );
+                                            });
+                                        });
+                                },
+                            );
+                        }
+                        if remove_component {
+                            self.object_fios_controller.remove(selected_object);
+                        }
+                    }
+                }
 
                 let handle_w = 10.0;
                 let handle_rect = match self.dock_side {
