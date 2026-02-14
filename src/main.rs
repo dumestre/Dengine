@@ -136,8 +136,6 @@ struct EditorApp {
     terminal_output: String,
     terminal_input: String,
     terminal_session: Option<EmbeddedTerminalSession>,
-    terminal_history: Vec<String>,
-    terminal_history_cursor: Option<usize>,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -852,7 +850,9 @@ impl EditorApp {
                                         ui.add_space(6.0);
                                     }
                                     if let Some(path) = open_project_now {
-                                        self.current_project = Some(path);
+                                        let normalized = Self::normalize_project_path(&path);
+                                        self.current_project = Some(normalized.clone());
+                                        self.register_hub_project(&normalized);
                                         self.show_hub = false;
                                     }
                                 });
@@ -1163,7 +1163,8 @@ impl EditorApp {
 
     fn terminal_working_dir(&self) -> PathBuf {
         if let Some(project_file) = &self.current_project {
-            return project_file
+            let normalized = Self::normalize_project_path(project_file);
+            return normalized
                 .parent()
                 .map(PathBuf::from)
                 .unwrap_or_else(|| PathBuf::from("."));
@@ -1172,7 +1173,10 @@ impl EditorApp {
     }
 
     fn shell_escape_path_for_cd(path: &Path, windows: bool) -> String {
-        let raw = path.to_string_lossy().to_string();
+        let mut raw = path.to_string_lossy().to_string();
+        if windows && raw.starts_with(r"\\?\") {
+            raw = raw.trim_start_matches(r"\\?\").to_string();
+        }
         if windows {
             format!("\"{}\"", raw.replace('"', "\"\""))
         } else {
@@ -1197,7 +1201,6 @@ impl EditorApp {
             {
                 let comspec = std::env::var("COMSPEC").unwrap_or_else(|_| "cmd.exe".to_string());
                 let mut c = CommandBuilder::new(comspec);
-                c.arg("/Q");
                 c.arg("/K");
                 c
             }
@@ -1256,6 +1259,9 @@ impl EditorApp {
             }
         };
         let mut cd_line = cd_cmd;
+        #[cfg(target_os = "windows")]
+        cd_line.push_str("\r\n");
+        #[cfg(not(target_os = "windows"))]
         cd_line.push('\n');
         let _ = writer.write_all(cd_line.as_bytes());
         let _ = writer.flush();
@@ -1277,19 +1283,25 @@ impl EditorApp {
             }
         };
         let mut line = cli_cmd;
+        #[cfg(target_os = "windows")]
+        line.push_str("\r\n");
+        #[cfg(not(target_os = "windows"))]
         line.push('\n');
         let _ = writer.write_all(line.as_bytes());
         let _ = writer.flush();
 
         self.terminal_output.clear();
         self.terminal_input.clear();
-        self.terminal_history_cursor = None;
         self.terminal_output_rx = Some(rx);
         self.terminal_session = Some(EmbeddedTerminalSession { child, writer });
+        let mut wd = self.terminal_working_dir().to_string_lossy().to_string();
+        if wd.starts_with(r"\\?\") {
+            wd = wd.trim_start_matches(r"\\?\").to_string();
+        }
         self.terminal_status = Some(format!(
             "{} iniciado no TerminAI em {}",
             model.label(),
-            self.terminal_working_dir().display()
+            wd
         ));
         Ok(())
     }
@@ -1417,75 +1429,82 @@ impl EditorApp {
                     egui::ScrollArea::vertical()
                         .id_salt("terminai_output_scroll")
                         .stick_to_bottom(true)
-                        .max_height((ui.available_height() - 66.0).max(90.0))
+                        .max_height((ui.available_height() - 68.0).max(90.0))
                         .show(ui, |ui| {
                             ui.add(
                                 egui::TextEdit::multiline(&mut self.terminal_output)
                                     .font(egui::TextStyle::Monospace)
                                     .desired_width(f32::INFINITY)
-                                    .interactive(false),
+                                    .interactive(true),
                             );
                         });
 
-                    ui.horizontal(|ui| {
-                        let input_resp = ui.add_sized(
-                            [ui.available_width() - 80.0, 28.0],
-                            egui::TextEdit::singleline(&mut self.terminal_input)
-                                .hint_text("Digite comando e Enter"),
-                        );
-                        if input_resp.has_focus() {
-                            let up_pressed = ui.input(|i| i.key_pressed(egui::Key::ArrowUp));
-                            let down_pressed = ui.input(|i| i.key_pressed(egui::Key::ArrowDown));
-                            if up_pressed && !self.terminal_history.is_empty() {
-                                let next = match self.terminal_history_cursor {
-                                    Some(idx) if idx > 0 => idx - 1,
-                                    Some(_) => 0,
-                                    None => self.terminal_history.len().saturating_sub(1),
-                                };
-                                self.terminal_history_cursor = Some(next);
-                                self.terminal_input = self.terminal_history[next].clone();
-                            } else if down_pressed {
-                                if let Some(idx) = self.terminal_history_cursor {
-                                    if idx + 1 < self.terminal_history.len() {
-                                        let next = idx + 1;
-                                        self.terminal_history_cursor = Some(next);
-                                        self.terminal_input = self.terminal_history[next].clone();
-                                    } else {
-                                        self.terminal_history_cursor = None;
-                                        self.terminal_input.clear();
+                    let input_resp = ui.add_sized(
+                        [ui.available_width() - 72.0, 28.0],
+                        egui::TextEdit::singleline(&mut self.terminal_input)
+                            .hint_text("Digite no terminal e Enter"),
+                    );
+                    let send_clicked = ui
+                        .add_enabled(self.terminal_session.is_some(), egui::Button::new("Enviar"))
+                        .clicked();
+                    let enter_pressed =
+                        input_resp.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
+                    if (send_clicked || enter_pressed) && self.terminal_session.is_some() {
+                        if let Some(session) = self.terminal_session.as_mut() {
+                            let mut line = self.terminal_input.clone();
+                            #[cfg(target_os = "windows")]
+                            line.push_str("\r\n");
+                            #[cfg(not(target_os = "windows"))]
+                            line.push('\n');
+                            let _ = session.writer.write_all(line.as_bytes());
+                            let _ = session.writer.flush();
+                        }
+                        self.terminal_input.clear();
+                    }
+
+                    // Entrada direta por teclado no terminal embutido.
+                    if let Some(session) = self.terminal_session.as_mut() {
+                        if !input_resp.has_focus() {
+                            let events = ctx.input(|i| i.events.clone());
+                            for ev in events {
+                                match ev {
+                                    egui::Event::Text(t) => {
+                                        let _ = session.writer.write_all(t.as_bytes());
                                     }
+                                    egui::Event::Paste(t) => {
+                                        let _ = session.writer.write_all(t.as_bytes());
+                                    }
+                                    egui::Event::Key {
+                                        key,
+                                        pressed: true,
+                                        modifiers,
+                                        ..
+                                    } => {
+                                        let seq: Option<&'static [u8]> = match key {
+                                            egui::Key::Enter => Some(b"\r"),
+                                            egui::Key::Tab => Some(b"\t"),
+                                            egui::Key::Backspace => Some(&[0x08]),
+                                            egui::Key::Delete => Some(b"\x1b[3~"),
+                                            egui::Key::Home => Some(b"\x1b[H"),
+                                            egui::Key::End => Some(b"\x1b[F"),
+                                            egui::Key::ArrowUp => Some(b"\x1b[A"),
+                                            egui::Key::ArrowDown => Some(b"\x1b[B"),
+                                            egui::Key::ArrowRight => Some(b"\x1b[C"),
+                                            egui::Key::ArrowLeft => Some(b"\x1b[D"),
+                                            _ => None,
+                                        };
+                                        if let Some(s) = seq {
+                                            let _ = session.writer.write_all(s);
+                                        } else if modifiers.ctrl && key == egui::Key::C {
+                                            let _ = session.writer.write_all(&[0x03]);
+                                        }
+                                    }
+                                    _ => {}
                                 }
                             }
                         }
-                        let enter_pressed = input_resp.lost_focus()
-                            && ui.input(|i| i.key_pressed(egui::Key::Enter));
-                        let send_clicked = ui
-                            .add_enabled(self.terminal_session.is_some(), egui::Button::new("Enviar"))
-                            .clicked();
-                        if enter_pressed || send_clicked {
-                            let cmd = self.terminal_input.trim().to_string();
-                            if !cmd.is_empty() {
-                                let is_dup = self
-                                    .terminal_history
-                                    .last()
-                                    .is_some_and(|last| last == &cmd);
-                                if !is_dup {
-                                    self.terminal_history.push(cmd.clone());
-                                    if self.terminal_history.len() > 300 {
-                                        self.terminal_history.remove(0);
-                                    }
-                                }
-                            }
-                            self.terminal_history_cursor = None;
-                            if let Some(session) = self.terminal_session.as_mut() {
-                                let mut line = self.terminal_input.clone();
-                                line.push('\n');
-                                let _ = session.writer.write_all(line.as_bytes());
-                                let _ = session.writer.flush();
-                            }
-                            self.terminal_input.clear();
-                        }
-                    });
+                        let _ = session.writer.flush();
+                    }
                 });
             },
         );
@@ -2648,8 +2667,6 @@ fn main() -> eframe::Result<()> {
                 terminal_output: String::new(),
                 terminal_input: String::new(),
                 terminal_session: None,
-                terminal_history: Vec::new(),
-                terminal_history_cursor: None,
             };
             app.refresh_hub_projects();
             app.refresh_hub_engines();
