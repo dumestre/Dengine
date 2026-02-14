@@ -1121,8 +1121,30 @@ impl EditorApp {
         let exe = model.exe_name();
         #[cfg(target_os = "windows")]
         {
+            let cmd_shim = format!("{exe}.cmd");
+            let has_cmd_shim = Self::is_cli_installed(&cmd_shim);
+            if has_cmd_shim {
+                Command::new("cmd")
+                    .args(["/C", "start", "", "cmd", "/K", &cmd_shim])
+                    .spawn()
+                    .map_err(|e| format!("erro ao abrir terminal: {e}"))?;
+                return Ok(());
+            }
+
+            // Fallback: PowerShell com bypass de policy para evitar bloqueio de .ps1.
+            let ps_cmd = format!("& {exe}");
             Command::new("cmd")
-                .args(["/C", "start", "", "powershell", "-NoExit", "-Command", exe])
+                .args([
+                    "/C",
+                    "start",
+                    "",
+                    "powershell",
+                    "-NoExit",
+                    "-ExecutionPolicy",
+                    "Bypass",
+                    "-Command",
+                    &ps_cmd,
+                ])
                 .spawn()
                 .map_err(|e| format!("erro ao abrir terminal: {e}"))?;
             Ok(())
