@@ -207,6 +207,7 @@ pub struct FiosState {
     links: Vec<FiosLink>,
     next_node_id: u32,
     drag_from_output: Option<(u32, u8)>,
+    wire_drag_path: Vec<egui::Pos2>,
     selected_node: Option<u32>,
     selected_nodes: HashSet<u32>,
     rename_node: Option<u32>,
@@ -257,6 +258,7 @@ impl FiosState {
             links: Vec::new(),
             next_node_id: 1,
             drag_from_output: None,
+            wire_drag_path: Vec::new(),
             selected_node: None,
             selected_nodes: HashSet::new(),
             rename_node: None,
@@ -859,85 +861,217 @@ impl FiosState {
 
     fn draw_graph(&mut self, ui: &mut egui::Ui, lang: EngineLanguage) {
         let mut graph_dirty = false;
-        let (input_axis_txt, const_txt, add_txt, mul_txt, clamp_txt, deadzone_txt, invert_txt, smooth_txt, output_move_txt, selected_txt, none_txt, rename_txt, apply_name_txt, hint_txt) = match lang {
-            EngineLanguage::Pt => ("Entrada Eixo", "Constante", "Somar", "Multiplicar", "Limitar", "Zona Morta", "Inverter", "Suavizar", "Saida Mover", "Selecionado(s)", "Nenhum", "Renomear", "Aplicar Nome", "Shift: multi-selecao | Arraste no vazio: caixa | Alt + botao direito: cortar fio"),
-            EngineLanguage::En => ("Input Axis", "Constant", "Add", "Multiply", "Clamp", "Deadzone", "Invert", "Smooth", "Output Move", "Selected", "None", "Rename", "Apply Name", "Shift: multi-select | Drag empty: marquee | Alt + right mouse: cut wire"),
-            EngineLanguage::Es => ("Entrada Eje", "Constante", "Sumar", "Multiplicar", "Limitar", "Zona Muerta", "Invertir", "Suavizar", "Salida Mover", "Seleccionado(s)", "Ninguno", "Renombrar", "Aplicar Nombre", "Shift: multi-seleccion | Arrastrar vacio: caja | Alt + boton derecho: cortar cable"),
+        let (
+            input_axis_txt,
+            const_txt,
+            add_txt,
+            mul_txt,
+            clamp_txt,
+            deadzone_txt,
+            invert_txt,
+            smooth_txt,
+            output_move_txt,
+            selected_txt,
+            none_txt,
+            rename_txt,
+            apply_name_txt,
+            hint_txt,
+            add_block_txt,
+            actions_txt,
+            shortcuts_txt,
+            del_txt,
+        ) = match lang {
+            EngineLanguage::Pt => (
+                "Entrada Eixo",
+                "Constante",
+                "Somar",
+                "Multiplicar",
+                "Limitar",
+                "Zona Morta",
+                "Inverter",
+                "Suavizar",
+                "Saida Mover",
+                "Selecionado(s)",
+                "Nenhum",
+                "Renomear",
+                "Aplicar Nome",
+                "Shift: multi-selecao | Arraste no vazio: caixa | Arraste do output e solte em qualquer lugar para auto-conectar | Alt + botao direito: cortar fio",
+                "Add Bloco",
+                "Acoes",
+                "Atalhos",
+                "Excluir Selecionado",
+            ),
+            EngineLanguage::En => (
+                "Input Axis",
+                "Constant",
+                "Add",
+                "Multiply",
+                "Clamp",
+                "Deadzone",
+                "Invert",
+                "Smooth",
+                "Output Move",
+                "Selected",
+                "None",
+                "Rename",
+                "Apply Name",
+                "Shift: multi-select | Drag empty: marquee | Drag from output and release anywhere to auto-connect | Alt + right mouse: cut wire",
+                "Add Block",
+                "Actions",
+                "Shortcuts",
+                "Delete Selected",
+            ),
+            EngineLanguage::Es => (
+                "Entrada Eje",
+                "Constante",
+                "Sumar",
+                "Multiplicar",
+                "Limitar",
+                "Zona Muerta",
+                "Invertir",
+                "Suavizar",
+                "Salida Mover",
+                "Seleccionado(s)",
+                "Ninguno",
+                "Renombrar",
+                "Aplicar Nombre",
+                "Shift: multi-seleccion | Arrastrar vacio: caja | Arrastrar desde salida y soltar en cualquier lugar para auto-conectar | Alt + boton derecho: cortar cable",
+                "Agregar Bloque",
+                "Acciones",
+                "Atajos",
+                "Eliminar Seleccionado",
+            ),
         };
-        ui.horizontal(|ui| {
-            if ui.button(input_axis_txt).clicked() { self.add_node(FiosNodeKind::InputAxis); }
-            if ui.button(const_txt).clicked() { self.add_node(FiosNodeKind::Constant); }
-            if ui.button(add_txt).clicked() { self.add_node(FiosNodeKind::Add); }
-            if ui.button(mul_txt).clicked() { self.add_node(FiosNodeKind::Multiply); }
-            if ui.button(clamp_txt).clicked() { self.add_node(FiosNodeKind::Clamp); }
-            if ui.button(deadzone_txt).clicked() { self.add_node(FiosNodeKind::Deadzone); }
-            if ui.button(invert_txt).clicked() { self.add_node(FiosNodeKind::Invert); }
-            if ui.button(smooth_txt).clicked() { self.add_node(FiosNodeKind::Smooth); }
-            if ui.button(output_move_txt).clicked() { self.add_node(FiosNodeKind::OutputMove); }
-        });
-        ui.horizontal(|ui| {
-            let selected_count = self.selected_nodes.len();
-            let selected_text = if selected_count == 0 {
-                none_txt.to_string()
-            } else {
-                selected_count.to_string()
-            };
-            ui.label(format!(
-                "{}: {}",
-                selected_txt,
-                selected_text
-            ));
-            let del_txt = match lang {
-                EngineLanguage::Pt => "Excluir Selecionado (Del/Backspace)",
-                EngineLanguage::En => "Delete Selected (Del/Backspace)",
-                EngineLanguage::Es => "Eliminar Seleccionado (Del/Backspace)",
-            };
-            if ui.button(del_txt).clicked() && self.remove_selected_nodes() {
-                graph_dirty = true;
-            }
-            if ui.button(rename_txt).clicked() {
-                if let Some(id) = self.selected_nodes.iter().next().copied() {
-                    self.rename_node = Some(id);
-                    if let Some(i) = self.node_index_by_id(id) {
-                        self.rename_buffer = self.nodes[i].display_name.clone();
-                    }
+
+        ui.group(|ui| {
+            ui.horizontal_wrapped(|ui| {
+                ui.label(egui::RichText::new(add_block_txt).strong().color(egui::Color32::from_gray(220)));
+                ui.separator();
+                ui.menu_button(
+                    egui::RichText::new(add_block_txt).strong(),
+                    |ui| {
+                        if ui.button(input_axis_txt).clicked() {
+                            self.add_node(FiosNodeKind::InputAxis);
+                            ui.close();
+                        }
+                        if ui.button(const_txt).clicked() {
+                            self.add_node(FiosNodeKind::Constant);
+                            ui.close();
+                        }
+                        if ui.button(add_txt).clicked() {
+                            self.add_node(FiosNodeKind::Add);
+                            ui.close();
+                        }
+                        if ui.button(mul_txt).clicked() {
+                            self.add_node(FiosNodeKind::Multiply);
+                            ui.close();
+                        }
+                        if ui.button(clamp_txt).clicked() {
+                            self.add_node(FiosNodeKind::Clamp);
+                            ui.close();
+                        }
+                        if ui.button(deadzone_txt).clicked() {
+                            self.add_node(FiosNodeKind::Deadzone);
+                            ui.close();
+                        }
+                        if ui.button(invert_txt).clicked() {
+                            self.add_node(FiosNodeKind::Invert);
+                            ui.close();
+                        }
+                        if ui.button(smooth_txt).clicked() {
+                            self.add_node(FiosNodeKind::Smooth);
+                            ui.close();
+                        }
+                        if ui.button(output_move_txt).clicked() {
+                            self.add_node(FiosNodeKind::OutputMove);
+                            ui.close();
+                        }
+                    },
+                );
+            });
+            ui.add_space(4.0);
+            ui.horizontal_wrapped(|ui| {
+                let selected_count = self.selected_nodes.len();
+                let selected_text = if selected_count == 0 {
+                    none_txt.to_string()
+                } else {
+                    selected_count.to_string()
+                };
+                ui.label(
+                    egui::RichText::new(format!("{actions_txt}  |  {selected_txt}: {selected_text}"))
+                        .strong()
+                        .color(egui::Color32::from_gray(220)),
+                );
+                if ui
+                    .add_sized(
+                        egui::vec2(140.0, 26.0),
+                        egui::Button::new(del_txt).fill(egui::Color32::from_rgb(96, 50, 50)),
+                    )
+                    .clicked()
+                    && self.remove_selected_nodes()
+                {
+                    graph_dirty = true;
                 }
-            }
-            if self.rename_node.is_some() {
-                ui.add_sized([170.0, 24.0], egui::TextEdit::singleline(&mut self.rename_buffer));
-                if ui.button(apply_name_txt).clicked() {
-                    if let Some(id) = self.rename_node {
+                if ui.add_sized(egui::vec2(120.0, 26.0), egui::Button::new(rename_txt)).clicked() {
+                    if let Some(id) = self.selected_nodes.iter().next().copied() {
+                        self.rename_node = Some(id);
                         if let Some(i) = self.node_index_by_id(id) {
-                            let nm = self.rename_buffer.trim();
-                            if !nm.is_empty() {
-                                self.nodes[i].display_name = nm.to_string();
-                                graph_dirty = true;
-                            }
+                            self.rename_buffer = self.nodes[i].display_name.clone();
                         }
                     }
-                    self.rename_node = None;
-                    self.rename_buffer.clear();
                 }
-            }
+                if self.rename_node.is_some() {
+                    ui.add_sized([190.0, 26.0], egui::TextEdit::singleline(&mut self.rename_buffer));
+                    if ui.add_sized(egui::vec2(130.0, 26.0), egui::Button::new(apply_name_txt)).clicked() {
+                        if let Some(id) = self.rename_node {
+                            if let Some(i) = self.node_index_by_id(id) {
+                                let nm = self.rename_buffer.trim();
+                                if !nm.is_empty() {
+                                    self.nodes[i].display_name = nm.to_string();
+                                    graph_dirty = true;
+                                }
+                            }
+                        }
+                        self.rename_node = None;
+                        self.rename_buffer.clear();
+                    }
+                }
+            });
+            ui.add_space(2.0);
+            ui.label(
+                egui::RichText::new(format!("{shortcuts_txt}: {hint_txt}"))
+                    .size(11.0)
+                    .color(egui::Color32::from_gray(160)),
+            );
         });
-        ui.label(egui::RichText::new(hint_txt).size(11.0).color(egui::Color32::from_gray(150)));
         ui.add_space(6.0);
 
         let canvas_size = ui.available_size();
         let (canvas_rect, canvas_resp) = ui.allocate_exact_size(canvas_size, egui::Sense::click_and_drag());
         let painter = ui.painter_at(canvas_rect);
-        painter.rect_filled(canvas_rect, 6.0, egui::Color32::from_rgb(24, 24, 26));
-        painter.rect_stroke(canvas_rect, 6.0, egui::Stroke::new(1.0, egui::Color32::from_gray(55)), egui::StrokeKind::Outside);
+        painter.rect_filled(canvas_rect, 6.0, egui::Color32::from_rgb(21, 22, 24));
+        painter.rect_stroke(
+            canvas_rect,
+            6.0,
+            egui::Stroke::new(1.0, egui::Color32::from_rgb(64, 66, 72)),
+            egui::StrokeKind::Outside,
+        );
 
         let grid = 24.0;
         let mut x = canvas_rect.left();
         while x < canvas_rect.right() {
-            painter.line_segment([egui::pos2(x, canvas_rect.top()), egui::pos2(x, canvas_rect.bottom())], egui::Stroke::new(0.5, egui::Color32::from_rgb(34, 34, 38)));
+            painter.line_segment(
+                [egui::pos2(x, canvas_rect.top()), egui::pos2(x, canvas_rect.bottom())],
+                egui::Stroke::new(0.5, egui::Color32::from_rgb(30, 31, 36)),
+            );
             x += grid;
         }
         let mut y = canvas_rect.top();
         while y < canvas_rect.bottom() {
-            painter.line_segment([egui::pos2(canvas_rect.left(), y), egui::pos2(canvas_rect.right(), y)], egui::Stroke::new(0.5, egui::Color32::from_rgb(34, 34, 38)));
+            painter.line_segment(
+                [egui::pos2(canvas_rect.left(), y), egui::pos2(canvas_rect.right(), y)],
+                egui::Stroke::new(0.5, egui::Color32::from_rgb(30, 31, 36)),
+            );
             y += grid;
         }
 
@@ -1187,6 +1321,7 @@ impl FiosState {
                 if resp.clicked() {
                     if let Some((from_n, from_p)) = next_drag_from_output.take() {
                         pending_new_link = Some((from_n, from_p, node.id, i as u8));
+                        self.wire_drag_path.clear();
                     }
                 }
                 if resp.secondary_clicked() {
@@ -1201,6 +1336,8 @@ impl FiosState {
                 let resp = ui.interact(r, ui.id().with(("fios_out_port", node.id, i)), egui::Sense::click());
                 if resp.clicked() {
                     next_drag_from_output = Some((node.id, i as u8));
+                    self.wire_drag_path.clear();
+                    self.wire_drag_path.push(p);
                 }
             }
         }
@@ -1222,6 +1359,7 @@ impl FiosState {
         }
         if let Some((from_n, from_p, to_n, to_p)) = pending_new_link {
             self.create_link(from_n, from_p, to_n, to_p);
+            self.wire_drag_path.clear();
             graph_dirty = false;
         }
 
@@ -1230,10 +1368,54 @@ impl FiosState {
                 if let Some(from_rect) = rect_by_id.get(&from_node) {
                     let from = Self::output_port_pos(*from_rect, self.nodes[fi].kind, from_port as usize);
                     let mouse = ui.ctx().input(|i| i.pointer.hover_pos()).unwrap_or(from + egui::vec2(80.0, 0.0));
-                    painter.line_segment([from, mouse], egui::Stroke::new(2.0, egui::Color32::from_rgb(15, 232, 121)));
+                    if ui.ctx().input(|i| i.pointer.primary_down()) {
+                        if self.wire_drag_path.is_empty() {
+                            self.wire_drag_path.push(from);
+                        }
+                        let should_push = self
+                            .wire_drag_path
+                            .last()
+                            .map(|lp| (*lp - mouse).length_sq() > 16.0)
+                            .unwrap_or(true);
+                        if should_push {
+                            self.wire_drag_path.push(mouse);
+                        }
+                    }
+                    if self.wire_drag_path.len() > 1 {
+                        painter.add(egui::Shape::line(
+                            self.wire_drag_path.clone(),
+                            egui::Stroke::new(2.0, egui::Color32::from_rgb(15, 232, 121)),
+                        ));
+                    } else {
+                        painter.line_segment([from, mouse], egui::Stroke::new(2.0, egui::Color32::from_rgb(15, 232, 121)));
+                    }
                 }
             }
             if !ui.ctx().input(|i| i.pointer.primary_down()) {
+                let release_pos = ui.ctx().input(|i| i.pointer.hover_pos()).or_else(|| self.wire_drag_path.last().copied());
+                if let Some(release_pos) = release_pos {
+                    let mut best: Option<(u32, u8, f32)> = None;
+                    for node in &self.nodes {
+                        if node.kind.input_count() == 0 {
+                            continue;
+                        }
+                        let Some(rect) = rect_by_id.get(&node.id) else { continue; };
+                        for input_idx in 0..node.kind.input_count() {
+                            let p = Self::input_port_pos(*rect, node.kind, input_idx);
+                            let d2 = (p - release_pos).length_sq();
+                            match best {
+                                Some((_, _, bd2)) if d2 >= bd2 => {}
+                                _ => {
+                                    best = Some((node.id, input_idx as u8, d2));
+                                }
+                            }
+                        }
+                    }
+                    if let Some((to_node, to_port, _)) = best {
+                        self.create_link(from_node, from_port, to_node, to_port);
+                    }
+                }
+                self.wire_drag_path.clear();
                 self.drag_from_output = None;
             }
         }
