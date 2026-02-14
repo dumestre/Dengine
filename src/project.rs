@@ -187,6 +187,21 @@ impl ProjectWindow {
             (EngineLanguage::Pt, "save") => "Salvar",
             (EngineLanguage::En, "save") => "Save",
             (EngineLanguage::Es, "save") => "Guardar",
+            (EngineLanguage::Pt, "create") => "Criar",
+            (EngineLanguage::En, "create") => "Create",
+            (EngineLanguage::Es, "create") => "Crear",
+            (EngineLanguage::Pt, "create_script") => "Script C#",
+            (EngineLanguage::En, "create_script") => "C# Script",
+            (EngineLanguage::Es, "create_script") => "Script C#",
+            (EngineLanguage::Pt, "create_material") => "Material",
+            (EngineLanguage::En, "create_material") => "Material",
+            (EngineLanguage::Es, "create_material") => "Material",
+            (EngineLanguage::Pt, "create_folder") => "Pasta",
+            (EngineLanguage::En, "create_folder") => "Folder",
+            (EngineLanguage::Es, "create_folder") => "Carpeta",
+            (EngineLanguage::Pt, "created") => "Criado",
+            (EngineLanguage::En, "created") => "Created",
+            (EngineLanguage::Es, "created") => "Creado",
             _ => key,
         }
     }
@@ -345,6 +360,88 @@ impl ProjectWindow {
         }
         self.deleted_assets.remove(&imported_name);
         self.status_text = format!("{}: {}", self.tr(language, "import"), imported_name);
+    }
+
+    fn unique_named_file_path(dir: &Path, base_stem: &str, ext: &str) -> PathBuf {
+        let first = dir.join(format!("{base_stem}.{ext}"));
+        if !first.exists() {
+            return first;
+        }
+        for idx in 1..10_000 {
+            let candidate = dir.join(format!("{base_stem}_{idx}.{ext}"));
+            if !candidate.exists() {
+                return candidate;
+            }
+        }
+        dir.join(format!("{base_stem}.{ext}"))
+    }
+
+    fn create_text_asset(
+        &mut self,
+        language: EngineLanguage,
+        target_folder: &'static str,
+        base_stem: &str,
+        ext: &str,
+        content: &str,
+    ) {
+        let dir = Path::new("Assets").join(target_folder);
+        if let Err(err) = fs::create_dir_all(&dir) {
+            self.status_text = format!("{}: erro ao criar pasta ({err})", self.tr(language, "create"));
+            return;
+        }
+        let target = Self::unique_named_file_path(&dir, base_stem, ext);
+        if let Err(err) = fs::write(&target, content.as_bytes()) {
+            self.status_text = format!("{}: erro ao criar arquivo ({err})", self.tr(language, "create"));
+            return;
+        }
+        let Some(name) = target.file_name().and_then(|n| n.to_str()).map(|s| s.to_string()) else {
+            self.status_text = format!("{}: erro ao resolver nome", self.tr(language, "create"));
+            return;
+        };
+        let imported = self.imported_assets.entry(target_folder).or_default();
+        if !imported.iter().any(|n| n == &name) {
+            imported.push(name.clone());
+        }
+        self.deleted_assets.remove(&name);
+        self.selected_folder = target_folder;
+        self.selected_asset = Some(name.clone());
+        self.status_text = format!("{}: {}", self.tr(language, "created"), name);
+    }
+
+    fn unique_named_folder_path(dir: &Path, base_name: &str) -> PathBuf {
+        let first = dir.join(base_name);
+        if !first.exists() {
+            return first;
+        }
+        for idx in 1..10_000 {
+            let candidate = dir.join(format!("{base_name}_{idx}"));
+            if !candidate.exists() {
+                return candidate;
+            }
+        }
+        dir.join(base_name)
+    }
+
+    fn create_folder_in_selected(&mut self, language: EngineLanguage) {
+        let Some(parent) = self.selected_folder_path() else {
+            self.status_text = format!("{}: pasta alvo inválida", self.tr(language, "create"));
+            return;
+        };
+        if let Err(err) = fs::create_dir_all(&parent) {
+            self.status_text = format!("{}: erro ao criar pasta alvo ({err})", self.tr(language, "create"));
+            return;
+        }
+        let target = Self::unique_named_folder_path(&parent, "NovaPasta");
+        if let Err(err) = fs::create_dir(&target) {
+            self.status_text = format!("{}: erro ao criar pasta ({err})", self.tr(language, "create"));
+            return;
+        }
+        let name = target
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("NovaPasta")
+            .to_string();
+        self.status_text = format!("{}: {}", self.tr(language, "created"), name);
     }
 
     pub fn import_file_path(&mut self, src_path: &Path, language: EngineLanguage) {
@@ -779,6 +876,9 @@ impl ProjectWindow {
 
         let mut request_collapse = false;
         let mut request_import = false;
+        let mut request_create_script = false;
+        let mut request_create_material = false;
+        let mut request_create_folder = false;
         let mut resize_started = false;
         let mut resize_stopped = false;
 
@@ -1114,6 +1214,32 @@ impl ProjectWindow {
                         .max_rect(grid_rect)
                         .layout(egui::Layout::top_down(egui::Align::Min)),
                     |ui| {
+                        let grid_ctx_resp = ui.interact(
+                            ui.max_rect(),
+                            ui.id().with("project_grid_context_menu"),
+                            Sense::click(),
+                        );
+                        grid_ctx_resp.context_menu(|ui| {
+                            ui.menu_button(self.tr(language, "create"), |ui| {
+                                if ui.button(self.tr(language, "create_script")).clicked() {
+                                    request_create_script = true;
+                                    ui.close();
+                                }
+                                if ui.button(self.tr(language, "create_material")).clicked() {
+                                    request_create_material = true;
+                                    ui.close();
+                                }
+                                if ui.button(self.tr(language, "create_folder")).clicked() {
+                                    request_create_folder = true;
+                                    ui.close();
+                                }
+                            });
+                            ui.separator();
+                            if ui.button(self.tr(language, "import")).clicked() {
+                                request_import = true;
+                                ui.close();
+                            }
+                        });
                         egui::ScrollArea::vertical()
                             .id_salt("project_grid")
                             .auto_shrink([false, false])
@@ -1399,6 +1525,27 @@ impl ProjectWindow {
         }
         if request_import {
             self.import_asset_dialog(language);
+        }
+        if request_create_script {
+            self.create_text_asset(
+                language,
+                "Scripts",
+                "NovoScript",
+                "cs",
+                "using UnityEngine;\n\npublic class NovoScript : MonoBehaviour\n{\n    void Start()\n    {\n    }\n\n    void Update()\n    {\n    }\n}\n",
+            );
+        }
+        if request_create_material {
+            self.create_text_asset(
+                language,
+                "Materials",
+                "NovoMaterial",
+                "mat",
+                "# Dengine Material\nshader=Standard\nalbedo=1,1,1,1\nmetallic=0.0\nsmoothness=0.5\n",
+            );
+        }
+        if request_create_folder {
+            self.create_folder_in_selected(language);
         }
 
         request_collapse

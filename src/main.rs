@@ -1555,16 +1555,38 @@ impl App for EditorApp {
                 .apply_object_transform_components(&object_name, pos, rot, scale);
         }
         let axis = self.fios.movement_axis();
-        if self.is_playing && (axis[0].abs() > 1e-4 || axis[1].abs() > 1e-4) {
+        let look = self.fios.look_axis();
+        let action = self.fios.action_signal();
+        if self.is_playing
+            && (axis[0].abs() > 1e-4
+                || axis[1].abs() > 1e-4
+                || look[0].abs() > 1e-4
+                || look[1].abs() > 1e-4
+                || action.abs() > 1e-4)
+        {
             let dt = ctx.input(|i| i.stable_dt).max(1.0 / 240.0);
             let len = (axis[0] * axis[0] + axis[1] * axis[1]).sqrt().max(1.0);
             let dir_x = axis[0] / len;
             let dir_z = -axis[1] / len;
             for (name, ctrl) in self.inspector.fios_controller_targets() {
                 let step = ctrl.move_speed * dt;
-                let _ = self
-                    .viewport
-                    .move_object_by(&name, [dir_x * step, 0.0, dir_z * step]);
+                if axis[0].abs() > 1e-4 || axis[1].abs() > 1e-4 {
+                    let _ = self
+                        .viewport
+                        .move_object_by(&name, [dir_x * step, 0.0, dir_z * step]);
+                }
+                if look[0].abs() > 1e-4 || look[1].abs() > 1e-4 {
+                    let r_step = ctrl.rotate_speed * dt;
+                    let _ = self
+                        .viewport
+                        .rotate_object_by(&name, [-look[1] * r_step, look[0] * r_step, 0.0]);
+                }
+                if action.abs() > 1e-4 {
+                    let a_step = ctrl.action_speed * dt;
+                    let _ = self
+                        .viewport
+                        .move_object_by(&name, [0.0, action * a_step, 0.0]);
+                }
             }
         }
         let i_left = self.inspector.docked_left_width();

@@ -21,6 +21,8 @@ struct TransformDraft {
 pub struct FiosControllerDraft {
     pub enabled: bool,
     pub move_speed: f32,
+    pub rotate_speed: f32,
+    pub action_speed: f32,
 }
 
 impl Default for TransformDraft {
@@ -38,6 +40,8 @@ impl Default for FiosControllerDraft {
         Self {
             enabled: true,
             move_speed: 3.5,
+            rotate_speed: 90.0,
+            action_speed: 2.0,
         }
     }
 }
@@ -717,7 +721,7 @@ impl InspectorWindow {
                 if !selected_object.is_empty() {
                     if let Some(ctrl) = self.object_fios_controller.get_mut(selected_object) {
                         let mut remove_component = false;
-                        let card_height = 132.0_f32;
+                        let card_height = 178.0_f32;
                         let card_rect = Rect::from_min_max(
                             egui::pos2(inner.min.x, (button_rect.min.y - card_height - 10.0).max(sep_y + 220.0)),
                             egui::pos2(inner.max.x, button_rect.min.y - 10.0),
@@ -784,6 +788,24 @@ impl InspectorWindow {
                                                         .speed(0.1),
                                                 );
                                             });
+                                            ui.horizontal(|ui| {
+                                                ui.label("Rotate Speed");
+                                                let _ = ui.add_sized(
+                                                    [90.0, 20.0],
+                                                    egui::DragValue::new(&mut ctrl.rotate_speed)
+                                                        .range(1.0..=720.0)
+                                                        .speed(1.0),
+                                                );
+                                            });
+                                            ui.horizontal(|ui| {
+                                                ui.label("Action Speed");
+                                                let _ = ui.add_sized(
+                                                    [90.0, 20.0],
+                                                    egui::DragValue::new(&mut ctrl.action_speed)
+                                                        .range(0.1..=20.0)
+                                                        .speed(0.1),
+                                                );
+                                            });
                                             ui.add_space(6.0);
                                             ui.horizontal(|ui| {
                                                 ui.label(
@@ -797,7 +819,7 @@ impl InspectorWindow {
                                                     .color(Color32::from_gray(210)),
                                                 );
                                                 ui.label(
-                                                    egui::RichText::new("MoveAxis, Jump, Interact")
+                                                    egui::RichText::new("MoveAxis, LookAxis, Action")
                                                         .size(10.0)
                                                         .color(Color32::from_gray(165)),
                                                 );
@@ -814,7 +836,7 @@ impl InspectorWindow {
                                                     .color(Color32::from_gray(210)),
                                                 );
                                                 ui.label(
-                                                    egui::RichText::new("Velocity, IsMoving")
+                                                    egui::RichText::new("Move, Rotate, Action")
                                                         .size(10.0)
                                                         .color(Color32::from_gray(165)),
                                                 );

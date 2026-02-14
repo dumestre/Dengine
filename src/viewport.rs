@@ -417,6 +417,27 @@ impl ViewportPanel {
         true
     }
 
+    pub fn rotate_object_by(&mut self, object_name: &str, delta_deg: [f32; 3]) -> bool {
+        let Some(idx) = self.scene_entries.iter().position(|o| o.name == object_name) else {
+            return false;
+        };
+        let d = Vec3::new(delta_deg[0], delta_deg[1], delta_deg[2]);
+        if d.length_squared() <= 1e-12 {
+            return false;
+        }
+        let (scale, rotation, translation) =
+            self.scene_entries[idx].transform.to_scale_rotation_translation();
+        let dq = Quat::from_euler(
+            EulerRot::XYZ,
+            delta_deg[0].to_radians(),
+            delta_deg[1].to_radians(),
+            delta_deg[2].to_radians(),
+        );
+        self.scene_entries[idx].transform =
+            Mat4::from_scale_rotation_translation(scale, rotation * dq, translation);
+        true
+    }
+
     pub fn can_undo(&self) -> bool {
         !self.undo_stack.is_empty()
     }

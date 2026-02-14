@@ -84,42 +84,72 @@ impl FiosAction {
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum FiosNodeKind {
     InputAxis,
+    InputAction,
     Constant,
     Add,
+    Subtract,
     Multiply,
+    Divide,
+    Max,
+    Min,
+    Gate,
+    Abs,
+    Sign,
     Clamp,
     Deadzone,
     Invert,
     Smooth,
     OutputMove,
+    OutputLook,
+    OutputAction,
 }
 
 impl FiosNodeKind {
     fn id(self) -> &'static str {
         match self {
             Self::InputAxis => "input_axis",
+            Self::InputAction => "input_action",
             Self::Constant => "constant",
             Self::Add => "add",
+            Self::Subtract => "subtract",
             Self::Multiply => "multiply",
+            Self::Divide => "divide",
+            Self::Max => "max",
+            Self::Min => "min",
+            Self::Gate => "gate",
+            Self::Abs => "abs",
+            Self::Sign => "sign",
             Self::Clamp => "clamp",
             Self::Deadzone => "deadzone",
             Self::Invert => "invert",
             Self::Smooth => "smooth",
             Self::OutputMove => "output_move",
+            Self::OutputLook => "output_look",
+            Self::OutputAction => "output_action",
         }
     }
 
     fn from_id(id: &str) -> Option<Self> {
         Some(match id {
             "input_axis" => Self::InputAxis,
+            "input_action" => Self::InputAction,
             "constant" => Self::Constant,
             "add" => Self::Add,
+            "subtract" => Self::Subtract,
             "multiply" => Self::Multiply,
+            "divide" => Self::Divide,
+            "max" => Self::Max,
+            "min" => Self::Min,
+            "gate" => Self::Gate,
+            "abs" => Self::Abs,
+            "sign" => Self::Sign,
             "clamp" => Self::Clamp,
             "deadzone" => Self::Deadzone,
             "invert" => Self::Invert,
             "smooth" => Self::Smooth,
             "output_move" => Self::OutputMove,
+            "output_look" => Self::OutputLook,
+            "output_action" => Self::OutputAction,
             _ => return None,
         })
     }
@@ -127,38 +157,74 @@ impl FiosNodeKind {
     fn input_count(self) -> usize {
         match self {
             Self::InputAxis => 0,
+            Self::InputAction => 0,
             Self::Constant => 0,
             Self::Add => 2,
+            Self::Subtract => 2,
             Self::Multiply => 2,
+            Self::Divide => 2,
+            Self::Max => 2,
+            Self::Min => 2,
+            Self::Gate => 2,
+            Self::Abs => 1,
+            Self::Sign => 1,
             Self::Clamp => 1,
             Self::Deadzone => 1,
             Self::Invert => 1,
             Self::Smooth => 1,
             Self::OutputMove => 2,
+            Self::OutputLook => 2,
+            Self::OutputAction => 1,
         }
     }
 
     fn output_count(self) -> usize {
         match self {
             Self::InputAxis => 2,
+            Self::InputAction => 1,
             Self::Constant => 1,
             Self::Add => 1,
+            Self::Subtract => 1,
             Self::Multiply => 1,
+            Self::Divide => 1,
+            Self::Max => 1,
+            Self::Min => 1,
+            Self::Gate => 1,
+            Self::Abs => 1,
+            Self::Sign => 1,
             Self::Clamp => 1,
             Self::Deadzone => 1,
             Self::Invert => 1,
             Self::Smooth => 1,
             Self::OutputMove => 0,
+            Self::OutputLook => 0,
+            Self::OutputAction => 0,
         }
     }
 
     fn input_name(self, idx: usize) -> &'static str {
         match (self, idx) {
-            (Self::Add, 0) | (Self::Multiply, 0) => "A",
-            (Self::Add, 1) | (Self::Multiply, 1) => "B",
+            (Self::Add, 0)
+            | (Self::Subtract, 0)
+            | (Self::Multiply, 0)
+            | (Self::Divide, 0)
+            | (Self::Max, 0)
+            | (Self::Min, 0) => "A",
+            (Self::Add, 1)
+            | (Self::Subtract, 1)
+            | (Self::Multiply, 1)
+            | (Self::Divide, 1)
+            | (Self::Max, 1)
+            | (Self::Min, 1) => "B",
+            (Self::Gate, 0) => "V",
+            (Self::Gate, 1) => "Gate",
             (Self::Clamp, 0) | (Self::Deadzone, 0) | (Self::Invert, 0) | (Self::Smooth, 0) => "In",
+            (Self::Abs, 0) | (Self::Sign, 0) => "In",
             (Self::OutputMove, 0) => "X",
             (Self::OutputMove, 1) => "Y",
+            (Self::OutputLook, 0) => "Yaw",
+            (Self::OutputLook, 1) => "Pitch",
+            (Self::OutputAction, 0) => "A",
             _ => "",
         }
     }
@@ -167,9 +233,17 @@ impl FiosNodeKind {
         match (self, idx) {
             (Self::InputAxis, 0) => "X",
             (Self::InputAxis, 1) => "Y",
-            (Self::Constant, 0)
+            (Self::InputAction, 0)
+            | (Self::Constant, 0)
             | (Self::Add, 0)
+            | (Self::Subtract, 0)
             | (Self::Multiply, 0)
+            | (Self::Divide, 0)
+            | (Self::Max, 0)
+            | (Self::Min, 0)
+            | (Self::Gate, 0)
+            | (Self::Abs, 0)
+            | (Self::Sign, 0)
             | (Self::Clamp, 0)
             | (Self::Deadzone, 0)
             | (Self::Invert, 0)
@@ -207,6 +281,7 @@ struct FiosGroup {
 }
 
 pub struct FiosState {
+    controls_enabled: bool,
     bindings: [egui::Key; ACTION_COUNT],
     pressed: [bool; ACTION_COUNT],
     just_pressed: [bool; ACTION_COUNT],
@@ -227,8 +302,6 @@ pub struct FiosState {
     marquee_start: Option<egui::Pos2>,
     marquee_end: Option<egui::Pos2>,
     cut_points: Vec<egui::Pos2>,
-    graph_context_menu_open: bool,
-    graph_context_menu_pos: egui::Pos2,
     smooth_state: HashMap<(u32, u8), f32>,
     lua_enabled: bool,
     lua_script: String,
@@ -237,20 +310,32 @@ pub struct FiosState {
     lua_fn_key: Option<RegistryKey>,
     lua_dirty: bool,
     last_axis: [f32; 2],
+    last_look: [f32; 2],
+    last_action: f32,
 }
 
 impl FiosState {
     fn default_node_name(kind: FiosNodeKind) -> &'static str {
         match kind {
             FiosNodeKind::InputAxis => "Input Axis",
+            FiosNodeKind::InputAction => "Input Action",
             FiosNodeKind::Constant => "Constant",
             FiosNodeKind::Add => "Add",
+            FiosNodeKind::Subtract => "Subtract",
             FiosNodeKind::Multiply => "Multiply",
+            FiosNodeKind::Divide => "Divide",
+            FiosNodeKind::Max => "Max",
+            FiosNodeKind::Min => "Min",
+            FiosNodeKind::Gate => "Gate",
+            FiosNodeKind::Abs => "Abs",
+            FiosNodeKind::Sign => "Sign",
             FiosNodeKind::Clamp => "Clamp",
             FiosNodeKind::Deadzone => "Deadzone",
             FiosNodeKind::Invert => "Invert",
             FiosNodeKind::Smooth => "Smooth",
             FiosNodeKind::OutputMove => "Output Move",
+            FiosNodeKind::OutputLook => "Output Look",
+            FiosNodeKind::OutputAction => "Output Action",
         }
     }
 
@@ -269,6 +354,7 @@ impl FiosState {
     pub fn new() -> Self {
         let lua_runtime = Lua::new();
         let mut out = Self {
+            controls_enabled: true,
             bindings: Self::default_bindings(),
             pressed: [false; ACTION_COUNT],
             just_pressed: [false; ACTION_COUNT],
@@ -289,8 +375,6 @@ impl FiosState {
             marquee_start: None,
             marquee_end: None,
             cut_points: Vec::new(),
-            graph_context_menu_open: false,
-            graph_context_menu_pos: egui::Pos2::ZERO,
             smooth_state: HashMap::new(),
             lua_enabled: false,
             lua_script: "return { x = x, y = y }".to_string(),
@@ -299,6 +383,8 @@ impl FiosState {
             lua_fn_key: None,
             lua_dirty: true,
             last_axis: [0.0, 0.0],
+            last_look: [0.0, 0.0],
+            last_action: 0.0,
         };
         out.load_from_disk();
         out.load_lua_script_from_disk();
@@ -509,6 +595,9 @@ impl FiosState {
         out.push_str("lua_enabled=");
         out.push_str(if self.lua_enabled { "1" } else { "0" });
         out.push('\n');
+        out.push_str("controls_enabled=");
+        out.push_str(if self.controls_enabled { "1" } else { "0" });
+        out.push('\n');
         fs::write(Self::config_path(), out).map_err(|e| e.to_string())
     }
 
@@ -526,6 +615,10 @@ impl FiosState {
             };
             if action_id.trim() == "lua_enabled" {
                 self.lua_enabled = matches!(key_name.trim(), "1" | "true" | "on" | "yes");
+                continue;
+            }
+            if action_id.trim() == "controls_enabled" {
+                self.controls_enabled = matches!(key_name.trim(), "1" | "true" | "on" | "yes");
                 continue;
             }
             let Some(key) = Self::key_from_string(key_name) else {
@@ -714,6 +807,14 @@ impl FiosState {
     }
 
     pub fn update_input(&mut self, ctx: &egui::Context) {
+        if !self.controls_enabled {
+            self.pressed = [false; ACTION_COUNT];
+            self.just_pressed = [false; ACTION_COUNT];
+            self.last_axis = [0.0, 0.0];
+            self.last_look = [0.0, 0.0];
+            self.last_action = 0.0;
+            return;
+        }
         for i in 0..ACTION_COUNT {
             let down = ctx.input(|inp| inp.key_down(self.bindings[i]));
             self.just_pressed[i] = down && !self.pressed[i];
@@ -742,6 +843,8 @@ impl FiosState {
 
         let base = self.raw_movement_axis();
         let graph_axis = self.evaluate_graph_axis(base);
+        self.last_look = self.evaluate_graph_look();
+        self.last_action = self.evaluate_graph_action();
         if self.lua_enabled {
             let dt = ctx.input(|i| i.stable_dt).max(1.0 / 240.0);
             self.last_axis = self.eval_lua_axis(graph_axis, dt);
@@ -758,6 +861,14 @@ impl FiosState {
 
     pub fn movement_axis(&self) -> [f32; 2] {
         self.last_axis
+    }
+
+    pub fn look_axis(&self) -> [f32; 2] {
+        self.last_look
+    }
+
+    pub fn action_signal(&self) -> f32 {
+        self.last_action
     }
 
     fn ensure_lua_compiled(&mut self) -> Result<(), String> {
@@ -841,8 +952,12 @@ impl FiosState {
     }
 
     fn evaluate_graph_axis(&mut self, base_axis: [f32; 2]) -> [f32; 2] {
-        let output = self.nodes.iter().find(|n| n.kind == FiosNodeKind::OutputMove).map(|n| n.id);
-        let Some(out_id) = output else {
+        let Some(out_id) = self
+            .nodes
+            .iter()
+            .find(|n| n.kind == FiosNodeKind::OutputMove)
+            .map(|n| n.id)
+        else {
             return base_axis;
         };
         let mut cache = HashMap::<(u32, u8), f32>::new();
@@ -850,9 +965,106 @@ impl FiosState {
         let nodes = &self.nodes;
         let links = &self.links;
         let smooth = &mut self.smooth_state;
-        let x = Self::eval_input_of_node(nodes, links, smooth, out_id, 0, base_axis[0], base_axis, &mut cache, &mut stack);
-        let y = Self::eval_input_of_node(nodes, links, smooth, out_id, 1, base_axis[1], base_axis, &mut cache, &mut stack);
+        let x = Self::eval_input_of_node(
+            nodes,
+            links,
+            smooth,
+            &self.pressed,
+            &self.just_pressed,
+            out_id,
+            0,
+            base_axis[0],
+            base_axis,
+            &mut cache,
+            &mut stack,
+        );
+        let y = Self::eval_input_of_node(
+            nodes,
+            links,
+            smooth,
+            &self.pressed,
+            &self.just_pressed,
+            out_id,
+            1,
+            base_axis[1],
+            base_axis,
+            &mut cache,
+            &mut stack,
+        );
         [x.clamp(-1000.0, 1000.0), y.clamp(-1000.0, 1000.0)]
+    }
+
+    fn evaluate_graph_look(&mut self) -> [f32; 2] {
+        let Some(out_id) = self
+            .nodes
+            .iter()
+            .find(|n| n.kind == FiosNodeKind::OutputLook)
+            .map(|n| n.id)
+        else {
+            return [0.0, 0.0];
+        };
+        let mut cache = HashMap::<(u32, u8), f32>::new();
+        let mut stack = HashSet::<(u32, u8)>::new();
+        let nodes = &self.nodes;
+        let links = &self.links;
+        let smooth = &mut self.smooth_state;
+        let yaw = Self::eval_input_of_node(
+            nodes,
+            links,
+            smooth,
+            &self.pressed,
+            &self.just_pressed,
+            out_id,
+            0,
+            0.0,
+            [0.0, 0.0],
+            &mut cache,
+            &mut stack,
+        );
+        let pitch = Self::eval_input_of_node(
+            nodes,
+            links,
+            smooth,
+            &self.pressed,
+            &self.just_pressed,
+            out_id,
+            1,
+            0.0,
+            [0.0, 0.0],
+            &mut cache,
+            &mut stack,
+        );
+        [yaw.clamp(-1000.0, 1000.0), pitch.clamp(-1000.0, 1000.0)]
+    }
+
+    fn evaluate_graph_action(&mut self) -> f32 {
+        let Some(out_id) = self
+            .nodes
+            .iter()
+            .find(|n| n.kind == FiosNodeKind::OutputAction)
+            .map(|n| n.id)
+        else {
+            return 0.0;
+        };
+        let mut cache = HashMap::<(u32, u8), f32>::new();
+        let mut stack = HashSet::<(u32, u8)>::new();
+        let nodes = &self.nodes;
+        let links = &self.links;
+        let smooth = &mut self.smooth_state;
+        Self::eval_input_of_node(
+            nodes,
+            links,
+            smooth,
+            &self.pressed,
+            &self.just_pressed,
+            out_id,
+            0,
+            0.0,
+            [0.0, 0.0],
+            &mut cache,
+            &mut stack,
+        )
+        .clamp(-1000.0, 1000.0)
     }
 
     fn node_index_by_id_in(nodes: &[FiosNode], id: u32) -> Option<usize> {
@@ -863,6 +1075,8 @@ impl FiosState {
         nodes: &[FiosNode],
         links: &[FiosLink],
         smooth_state: &mut HashMap<(u32, u8), f32>,
+        pressed: &[bool; ACTION_COUNT],
+        just_pressed: &[bool; ACTION_COUNT],
         node_id: u32,
         input_port: u8,
         default: f32,
@@ -876,6 +1090,8 @@ impl FiosState {
                     nodes,
                     links,
                     smooth_state,
+                    pressed,
+                    just_pressed,
                     link.from_node,
                     link.from_port,
                     base_axis,
@@ -891,6 +1107,8 @@ impl FiosState {
         nodes: &[FiosNode],
         links: &[FiosLink],
         smooth_state: &mut HashMap<(u32, u8), f32>,
+        pressed: &[bool; ACTION_COUNT],
+        just_pressed: &[bool; ACTION_COUNT],
         node_id: u32,
         output_port: u8,
         base_axis: [f32; 2],
@@ -910,38 +1128,75 @@ impl FiosState {
             let node = &nodes[idx];
             match node.kind {
                 FiosNodeKind::InputAxis => if output_port == 0 { base_axis[0] } else { base_axis[1] },
+                FiosNodeKind::InputAction => {
+                    let action_idx = node.param_a.round().clamp(0.0, (ACTION_COUNT.saturating_sub(1)) as f32) as usize;
+                    let mode_just = node.param_b.round() >= 1.0;
+                    let active = if mode_just { just_pressed[action_idx] } else { pressed[action_idx] };
+                    if active { 1.0 } else { 0.0 }
+                }
                 FiosNodeKind::Constant => node.value,
                 FiosNodeKind::Add => {
-                    let a = Self::eval_input_of_node(nodes, links, smooth_state, node_id, 0, 0.0, base_axis, cache, stack);
-                    let b = Self::eval_input_of_node(nodes, links, smooth_state, node_id, 1, 0.0, base_axis, cache, stack);
+                    let a = Self::eval_input_of_node(nodes, links, smooth_state, pressed, just_pressed, node_id, 0, 0.0, base_axis, cache, stack);
+                    let b = Self::eval_input_of_node(nodes, links, smooth_state, pressed, just_pressed, node_id, 1, 0.0, base_axis, cache, stack);
                     a + b
                 }
+                FiosNodeKind::Subtract => {
+                    let a = Self::eval_input_of_node(nodes, links, smooth_state, pressed, just_pressed, node_id, 0, 0.0, base_axis, cache, stack);
+                    let b = Self::eval_input_of_node(nodes, links, smooth_state, pressed, just_pressed, node_id, 1, 0.0, base_axis, cache, stack);
+                    a - b
+                }
                 FiosNodeKind::Multiply => {
-                    let a = Self::eval_input_of_node(nodes, links, smooth_state, node_id, 0, 0.0, base_axis, cache, stack);
-                    let b = Self::eval_input_of_node(nodes, links, smooth_state, node_id, 1, 0.0, base_axis, cache, stack);
+                    let a = Self::eval_input_of_node(nodes, links, smooth_state, pressed, just_pressed, node_id, 0, 0.0, base_axis, cache, stack);
+                    let b = Self::eval_input_of_node(nodes, links, smooth_state, pressed, just_pressed, node_id, 1, 0.0, base_axis, cache, stack);
                     a * b
                 }
+                FiosNodeKind::Divide => {
+                    let a = Self::eval_input_of_node(nodes, links, smooth_state, pressed, just_pressed, node_id, 0, 0.0, base_axis, cache, stack);
+                    let b = Self::eval_input_of_node(nodes, links, smooth_state, pressed, just_pressed, node_id, 1, 1.0, base_axis, cache, stack);
+                    if b.abs() < 1e-5 { 0.0 } else { a / b }
+                }
+                FiosNodeKind::Max => {
+                    let a = Self::eval_input_of_node(nodes, links, smooth_state, pressed, just_pressed, node_id, 0, 0.0, base_axis, cache, stack);
+                    let b = Self::eval_input_of_node(nodes, links, smooth_state, pressed, just_pressed, node_id, 1, 0.0, base_axis, cache, stack);
+                    a.max(b)
+                }
+                FiosNodeKind::Min => {
+                    let a = Self::eval_input_of_node(nodes, links, smooth_state, pressed, just_pressed, node_id, 0, 0.0, base_axis, cache, stack);
+                    let b = Self::eval_input_of_node(nodes, links, smooth_state, pressed, just_pressed, node_id, 1, 0.0, base_axis, cache, stack);
+                    a.min(b)
+                }
+                FiosNodeKind::Gate => {
+                    let v = Self::eval_input_of_node(nodes, links, smooth_state, pressed, just_pressed, node_id, 0, 0.0, base_axis, cache, stack);
+                    let g = Self::eval_input_of_node(nodes, links, smooth_state, pressed, just_pressed, node_id, 1, 0.0, base_axis, cache, stack);
+                    if g > 0.0 { v } else { 0.0 }
+                }
+                FiosNodeKind::Abs => {
+                    Self::eval_input_of_node(nodes, links, smooth_state, pressed, just_pressed, node_id, 0, 0.0, base_axis, cache, stack).abs()
+                }
+                FiosNodeKind::Sign => {
+                    Self::eval_input_of_node(nodes, links, smooth_state, pressed, just_pressed, node_id, 0, 0.0, base_axis, cache, stack).signum()
+                }
                 FiosNodeKind::Clamp => {
-                    let v = Self::eval_input_of_node(nodes, links, smooth_state, node_id, 0, 0.0, base_axis, cache, stack);
+                    let v = Self::eval_input_of_node(nodes, links, smooth_state, pressed, just_pressed, node_id, 0, 0.0, base_axis, cache, stack);
                     v.clamp(node.param_a.min(node.param_b), node.param_a.max(node.param_b))
                 }
                 FiosNodeKind::Deadzone => {
-                    let v = Self::eval_input_of_node(nodes, links, smooth_state, node_id, 0, 0.0, base_axis, cache, stack);
+                    let v = Self::eval_input_of_node(nodes, links, smooth_state, pressed, just_pressed, node_id, 0, 0.0, base_axis, cache, stack);
                     let t = node.param_a.abs().clamp(0.0, 1.0);
                     if v.abs() < t { 0.0 } else { v }
                 }
                 FiosNodeKind::Invert => {
-                    -Self::eval_input_of_node(nodes, links, smooth_state, node_id, 0, 0.0, base_axis, cache, stack)
+                    -Self::eval_input_of_node(nodes, links, smooth_state, pressed, just_pressed, node_id, 0, 0.0, base_axis, cache, stack)
                 }
                 FiosNodeKind::Smooth => {
-                    let target = Self::eval_input_of_node(nodes, links, smooth_state, node_id, 0, 0.0, base_axis, cache, stack);
+                    let target = Self::eval_input_of_node(nodes, links, smooth_state, pressed, just_pressed, node_id, 0, 0.0, base_axis, cache, stack);
                     let alpha = node.param_a.clamp(0.0, 1.0);
                     let prev = *smooth_state.get(&key).unwrap_or(&target);
                     let v = prev + (target - prev) * alpha;
                     smooth_state.insert(key, v);
                     v
                 }
-                FiosNodeKind::OutputMove => 0.0,
+                FiosNodeKind::OutputMove | FiosNodeKind::OutputLook | FiosNodeKind::OutputAction => 0.0,
             }
         } else {
             0.0
@@ -961,10 +1216,23 @@ impl FiosState {
     fn node_size(kind: FiosNodeKind) -> egui::Vec2 {
         match kind {
             FiosNodeKind::InputAxis => egui::vec2(170.0, 74.0),
+            FiosNodeKind::InputAction => egui::vec2(190.0, 96.0),
             FiosNodeKind::Constant => egui::vec2(170.0, 88.0),
-            FiosNodeKind::Add | FiosNodeKind::Multiply => egui::vec2(170.0, 84.0),
-            FiosNodeKind::Clamp | FiosNodeKind::Deadzone | FiosNodeKind::Invert | FiosNodeKind::Smooth => egui::vec2(180.0, 94.0),
-            FiosNodeKind::OutputMove => egui::vec2(190.0, 88.0),
+            FiosNodeKind::Add
+            | FiosNodeKind::Subtract
+            | FiosNodeKind::Multiply
+            | FiosNodeKind::Divide
+            | FiosNodeKind::Max
+            | FiosNodeKind::Min
+            | FiosNodeKind::Gate => egui::vec2(170.0, 84.0),
+            FiosNodeKind::Abs
+            | FiosNodeKind::Sign
+            | FiosNodeKind::Clamp
+            | FiosNodeKind::Deadzone
+            | FiosNodeKind::Invert
+            | FiosNodeKind::Smooth => egui::vec2(180.0, 94.0),
+            FiosNodeKind::OutputMove | FiosNodeKind::OutputLook => egui::vec2(190.0, 88.0),
+            FiosNodeKind::OutputAction => egui::vec2(170.0, 74.0),
         }
     }
 
@@ -984,6 +1252,7 @@ impl FiosState {
         let id = self.alloc_node_id();
         let slot = (id % 6) as f32;
         let (value, param_a, param_b) = match kind {
+            FiosNodeKind::InputAction => (0.0, 0.0, 0.0),
             FiosNodeKind::Constant => (1.0, 0.0, 0.0),
             FiosNodeKind::Clamp => (0.0, -1.0, 1.0),
             FiosNodeKind::Deadzone => (0.0, 0.15, 0.0),
@@ -1094,14 +1363,24 @@ impl FiosState {
         let mut graph_dirty = false;
         let (
             input_axis_txt,
+            input_action_txt,
             const_txt,
             add_txt,
+            sub_txt,
             mul_txt,
+            div_txt,
+            max_txt,
+            min_txt,
+            gate_txt,
+            abs_txt,
+            sign_txt,
             clamp_txt,
             deadzone_txt,
             invert_txt,
             smooth_txt,
             output_move_txt,
+            output_look_txt,
+            output_action_txt,
             selected_txt,
             none_txt,
             rename_txt,
@@ -1114,14 +1393,24 @@ impl FiosState {
         ) = match lang {
             EngineLanguage::Pt => (
                 "Entrada Eixo",
+                "Entrada Acao",
                 "Constante",
                 "Somar",
+                "Subtrair",
                 "Multiplicar",
+                "Dividir",
+                "Maximo",
+                "Minimo",
+                "Portao",
+                "Absoluto",
+                "Sinal",
                 "Limitar",
                 "Zona Morta",
                 "Inverter",
                 "Suavizar",
                 "Saida Mover",
+                "Saida Olhar",
+                "Saida Acao",
                 "Selecionado(s)",
                 "Nenhum",
                 "Renomear",
@@ -1134,14 +1423,24 @@ impl FiosState {
             ),
             EngineLanguage::En => (
                 "Input Axis",
+                "Input Action",
                 "Constant",
                 "Add",
+                "Subtract",
                 "Multiply",
+                "Divide",
+                "Max",
+                "Min",
+                "Gate",
+                "Abs",
+                "Sign",
                 "Clamp",
                 "Deadzone",
                 "Invert",
                 "Smooth",
                 "Output Move",
+                "Output Look",
+                "Output Action",
                 "Selected",
                 "None",
                 "Rename",
@@ -1154,14 +1453,24 @@ impl FiosState {
             ),
             EngineLanguage::Es => (
                 "Entrada Eje",
+                "Entrada Accion",
                 "Constante",
                 "Sumar",
+                "Restar",
                 "Multiplicar",
+                "Dividir",
+                "Maximo",
+                "Minimo",
+                "Compuerta",
+                "Absoluto",
+                "Signo",
                 "Limitar",
                 "Zona Muerta",
                 "Invertir",
                 "Suavizar",
                 "Salida Mover",
+                "Salida Mirar",
+                "Salida Accion",
                 "Seleccionado(s)",
                 "Ninguno",
                 "Renombrar",
@@ -1185,6 +1494,10 @@ impl FiosState {
                             self.add_node(FiosNodeKind::InputAxis);
                             ui.close();
                         }
+                        if ui.button(input_action_txt).clicked() {
+                            self.add_node(FiosNodeKind::InputAction);
+                            ui.close();
+                        }
                         if ui.button(const_txt).clicked() {
                             self.add_node(FiosNodeKind::Constant);
                             ui.close();
@@ -1193,8 +1506,36 @@ impl FiosState {
                             self.add_node(FiosNodeKind::Add);
                             ui.close();
                         }
+                        if ui.button(sub_txt).clicked() {
+                            self.add_node(FiosNodeKind::Subtract);
+                            ui.close();
+                        }
                         if ui.button(mul_txt).clicked() {
                             self.add_node(FiosNodeKind::Multiply);
+                            ui.close();
+                        }
+                        if ui.button(div_txt).clicked() {
+                            self.add_node(FiosNodeKind::Divide);
+                            ui.close();
+                        }
+                        if ui.button(max_txt).clicked() {
+                            self.add_node(FiosNodeKind::Max);
+                            ui.close();
+                        }
+                        if ui.button(min_txt).clicked() {
+                            self.add_node(FiosNodeKind::Min);
+                            ui.close();
+                        }
+                        if ui.button(gate_txt).clicked() {
+                            self.add_node(FiosNodeKind::Gate);
+                            ui.close();
+                        }
+                        if ui.button(abs_txt).clicked() {
+                            self.add_node(FiosNodeKind::Abs);
+                            ui.close();
+                        }
+                        if ui.button(sign_txt).clicked() {
+                            self.add_node(FiosNodeKind::Sign);
                             ui.close();
                         }
                         if ui.button(clamp_txt).clicked() {
@@ -1215,6 +1556,14 @@ impl FiosState {
                         }
                         if ui.button(output_move_txt).clicked() {
                             self.add_node(FiosNodeKind::OutputMove);
+                            ui.close();
+                        }
+                        if ui.button(output_look_txt).clicked() {
+                            self.add_node(FiosNodeKind::OutputLook);
+                            ui.close();
+                        }
+                        if ui.button(output_action_txt).clicked() {
+                            self.add_node(FiosNodeKind::OutputAction);
                             ui.close();
                         }
                     },
@@ -1381,137 +1730,146 @@ impl FiosState {
         }
         let mut do_group = false;
         let mut quick_color: Option<egui::Color32> = None;
-        let add_block_menu_txt = match lang {
-            EngineLanguage::Pt => "Add Bloco",
-            EngineLanguage::En => "Add Block",
-            EngineLanguage::Es => "Agregar Bloque",
-        };
-        let input_txt = match lang {
-            EngineLanguage::Pt => "Entradas",
-            EngineLanguage::En => "Inputs",
-            EngineLanguage::Es => "Entradas",
-        };
-        let math_txt = match lang {
-            EngineLanguage::Pt => "Matematica",
-            EngineLanguage::En => "Math",
-            EngineLanguage::Es => "Matematica",
-        };
-        let out_txt = match lang {
-            EngineLanguage::Pt => "Saida",
-            EngineLanguage::En => "Output",
-            EngineLanguage::Es => "Salida",
-        };
-        let group_txt = match lang {
-            EngineLanguage::Pt => "Agrupar Selecionados",
-            EngineLanguage::En => "Group Selected",
-            EngineLanguage::Es => "Agrupar Seleccionados",
-        };
-        let color_txt = match lang {
-            EngineLanguage::Pt => "Cor Rapida do Grupo",
-            EngineLanguage::En => "Quick Group Color",
-            EngineLanguage::Es => "Color Rapido del Grupo",
-        };
-        let mut menu_rect: Option<egui::Rect> = None;
-        if self.graph_context_menu_open {
-            let popup = egui::Area::new(ui.id().with("fios_graph_context_menu"))
-                .order(egui::Order::Foreground)
-                .fixed_pos(self.graph_context_menu_pos)
-                .show(ui.ctx(), |ui| {
-                    egui::Frame::popup(ui.style()).show(ui, |ui| {
-                        let mut close_menu = false;
-                        ui.menu_button(add_block_menu_txt, |ui| {
-                            ui.menu_button(input_txt, |ui| {
-                                if ui.button(input_axis_txt).clicked() {
-                                    self.add_node(FiosNodeKind::InputAxis);
-                                    close_menu = true;
-                                }
-                                if ui.button(const_txt).clicked() {
-                                    self.add_node(FiosNodeKind::Constant);
-                                    close_menu = true;
-                                }
-                            });
-                            ui.menu_button(math_txt, |ui| {
-                                if ui.button(add_txt).clicked() {
-                                    self.add_node(FiosNodeKind::Add);
-                                    close_menu = true;
-                                }
-                                if ui.button(mul_txt).clicked() {
-                                    self.add_node(FiosNodeKind::Multiply);
-                                    close_menu = true;
-                                }
-                                if ui.button(clamp_txt).clicked() {
-                                    self.add_node(FiosNodeKind::Clamp);
-                                    close_menu = true;
-                                }
-                                if ui.button(deadzone_txt).clicked() {
-                                    self.add_node(FiosNodeKind::Deadzone);
-                                    close_menu = true;
-                                }
-                                if ui.button(invert_txt).clicked() {
-                                    self.add_node(FiosNodeKind::Invert);
-                                    close_menu = true;
-                                }
-                                if ui.button(smooth_txt).clicked() {
-                                    self.add_node(FiosNodeKind::Smooth);
-                                    close_menu = true;
-                                }
-                            });
-                            ui.menu_button(out_txt, |ui| {
-                                if ui.button(output_move_txt).clicked() {
-                                    self.add_node(FiosNodeKind::OutputMove);
-                                    close_menu = true;
-                                }
-                            });
-                        });
-                        if ui.button(group_txt).clicked() {
-                            do_group = true;
-                            close_menu = true;
-                        }
-                        ui.menu_button(color_txt, |ui| {
-                            let mut color_button = |label: &str, c: egui::Color32, ui: &mut egui::Ui| {
-                                if ui
-                                    .add(
-                                        egui::Button::new(label)
-                                            .fill(c)
-                                            .stroke(egui::Stroke::new(1.0, egui::Color32::from_gray(30))),
-                                    )
-                                    .clicked()
-                                {
-                                    quick_color = Some(c);
-                                    close_menu = true;
-                                }
-                            };
-                            color_button("Azul", egui::Color32::from_rgb(72, 108, 132), ui);
-                            color_button("Verde", egui::Color32::from_rgb(72, 132, 102), ui);
-                            color_button("Laranja", egui::Color32::from_rgb(158, 102, 62), ui);
-                            color_button("Roxo", egui::Color32::from_rgb(122, 88, 152), ui);
-                            color_button("Cinza", egui::Color32::from_rgb(95, 95, 102), ui);
-                        });
-                        if close_menu {
-                            self.graph_context_menu_open = false;
-                        }
-                    });
+        canvas_resp.context_menu(|ui| {
+            let add_block_menu_txt = match lang {
+                EngineLanguage::Pt => "Add Bloco",
+                EngineLanguage::En => "Add Block",
+                EngineLanguage::Es => "Agregar Bloque",
+            };
+            let input_txt = match lang {
+                EngineLanguage::Pt => "Entradas",
+                EngineLanguage::En => "Inputs",
+                EngineLanguage::Es => "Entradas",
+            };
+            let math_txt = match lang {
+                EngineLanguage::Pt => "Matematica",
+                EngineLanguage::En => "Math",
+                EngineLanguage::Es => "Matematica",
+            };
+            let out_txt = match lang {
+                EngineLanguage::Pt => "Saida",
+                EngineLanguage::En => "Output",
+                EngineLanguage::Es => "Salida",
+            };
+            let group_txt = match lang {
+                EngineLanguage::Pt => "Agrupar Selecionados",
+                EngineLanguage::En => "Group Selected",
+                EngineLanguage::Es => "Agrupar Seleccionados",
+            };
+            let color_txt = match lang {
+                EngineLanguage::Pt => "Cor Rapida do Grupo",
+                EngineLanguage::En => "Quick Group Color",
+                EngineLanguage::Es => "Color Rapido del Grupo",
+            };
+            ui.menu_button(add_block_menu_txt, |ui| {
+                ui.menu_button(input_txt, |ui| {
+                    if ui.button(input_axis_txt).clicked() {
+                        self.add_node(FiosNodeKind::InputAxis);
+                        ui.close();
+                    }
+                    if ui.button(input_action_txt).clicked() {
+                        self.add_node(FiosNodeKind::InputAction);
+                        ui.close();
+                    }
+                    if ui.button(const_txt).clicked() {
+                        self.add_node(FiosNodeKind::Constant);
+                        ui.close();
+                    }
                 });
-            menu_rect = Some(popup.response.rect);
-        }
-        if self.graph_context_menu_open {
-            let close_by_click_outside = ui.ctx().input(|i| {
-                if !i.pointer.primary_pressed() {
-                    return false;
-                }
-                let Some(p) = i.pointer.interact_pos() else {
-                    return true;
-                };
-                match menu_rect {
-                    Some(r) => !r.contains(p),
-                    None => true,
-                }
+                ui.menu_button(math_txt, |ui| {
+                    if ui.button(add_txt).clicked() {
+                        self.add_node(FiosNodeKind::Add);
+                        ui.close();
+                    }
+                    if ui.button(sub_txt).clicked() {
+                        self.add_node(FiosNodeKind::Subtract);
+                        ui.close();
+                    }
+                    if ui.button(mul_txt).clicked() {
+                        self.add_node(FiosNodeKind::Multiply);
+                        ui.close();
+                    }
+                    if ui.button(div_txt).clicked() {
+                        self.add_node(FiosNodeKind::Divide);
+                        ui.close();
+                    }
+                    if ui.button(max_txt).clicked() {
+                        self.add_node(FiosNodeKind::Max);
+                        ui.close();
+                    }
+                    if ui.button(min_txt).clicked() {
+                        self.add_node(FiosNodeKind::Min);
+                        ui.close();
+                    }
+                    if ui.button(gate_txt).clicked() {
+                        self.add_node(FiosNodeKind::Gate);
+                        ui.close();
+                    }
+                    if ui.button(abs_txt).clicked() {
+                        self.add_node(FiosNodeKind::Abs);
+                        ui.close();
+                    }
+                    if ui.button(sign_txt).clicked() {
+                        self.add_node(FiosNodeKind::Sign);
+                        ui.close();
+                    }
+                    if ui.button(clamp_txt).clicked() {
+                        self.add_node(FiosNodeKind::Clamp);
+                        ui.close();
+                    }
+                    if ui.button(deadzone_txt).clicked() {
+                        self.add_node(FiosNodeKind::Deadzone);
+                        ui.close();
+                    }
+                    if ui.button(invert_txt).clicked() {
+                        self.add_node(FiosNodeKind::Invert);
+                        ui.close();
+                    }
+                    if ui.button(smooth_txt).clicked() {
+                        self.add_node(FiosNodeKind::Smooth);
+                        ui.close();
+                    }
+                });
+                ui.menu_button(out_txt, |ui| {
+                    if ui.button(output_move_txt).clicked() {
+                        self.add_node(FiosNodeKind::OutputMove);
+                        ui.close();
+                    }
+                    if ui.button(output_look_txt).clicked() {
+                        self.add_node(FiosNodeKind::OutputLook);
+                        ui.close();
+                    }
+                    if ui.button(output_action_txt).clicked() {
+                        self.add_node(FiosNodeKind::OutputAction);
+                        ui.close();
+                    }
+                });
             });
-            let close_by_escape = ui.ctx().input(|i| i.key_pressed(egui::Key::Escape));
-            if close_by_click_outside || close_by_escape {
-                self.graph_context_menu_open = false;
+            if ui.button(group_txt).clicked() {
+                do_group = true;
+                ui.close();
             }
-        }
+            ui.menu_button(color_txt, |ui| {
+                let mut color_button = |label: &str, c: egui::Color32, ui: &mut egui::Ui| {
+                    if ui
+                        .add(
+                            egui::Button::new(label)
+                                .fill(c)
+                                .stroke(egui::Stroke::new(1.0, egui::Color32::from_gray(30))),
+                        )
+                        .clicked()
+                    {
+                        quick_color = Some(c);
+                        ui.close();
+                    }
+                };
+                color_button("Azul", egui::Color32::from_rgb(72, 108, 132), ui);
+                color_button("Verde", egui::Color32::from_rgb(72, 132, 102), ui);
+                color_button("Laranja", egui::Color32::from_rgb(158, 102, 62), ui);
+                color_button("Roxo", egui::Color32::from_rgb(122, 88, 152), ui);
+                color_button("Cinza", egui::Color32::from_rgb(95, 95, 102), ui);
+            });
+        });
         if do_group && self.group_selected_nodes() {
             graph_dirty = true;
         }
@@ -1650,12 +2008,6 @@ impl FiosState {
             }
             self.cut_points.clear();
         } else if secondary_released && self.cut_points.len() <= 1 && !started_alt_wire_drag {
-            if let Some(p) = pointer_pos {
-                if canvas_rect.contains(p) {
-                    self.graph_context_menu_open = true;
-                    self.graph_context_menu_pos = p;
-                }
-            }
             self.cut_points.clear();
         }
         if !self.cut_points.is_empty() {
@@ -1743,6 +2095,42 @@ impl FiosState {
                     });
                 });
             }
+            if node.kind == FiosNodeKind::InputAction {
+                let r1 = egui::Rect::from_min_size(rect.left_top() + egui::vec2(8.0, 32.0), egui::vec2(rect.width() - 16.0, 24.0));
+                let r2 = egui::Rect::from_min_size(rect.left_top() + egui::vec2(8.0, 58.0), egui::vec2(rect.width() - 16.0, 24.0));
+                ui.scope_builder(egui::UiBuilder::new().max_rect(r1), |ui| {
+                    let mut selected_idx = node
+                        .param_a
+                        .round()
+                        .clamp(0.0, (ACTION_COUNT.saturating_sub(1)) as f32) as usize;
+                    egui::ComboBox::from_id_salt(ui.id().with(("fios_action_idx", node.id)))
+                        .selected_text(FiosAction::ALL[selected_idx].label(lang))
+                        .show_ui(ui, |ui| {
+                            for (idx, action) in FiosAction::ALL.iter().enumerate() {
+                                if ui
+                                    .selectable_label(selected_idx == idx, action.label(lang))
+                                    .clicked()
+                                {
+                                    selected_idx = idx;
+                                    node.param_a = idx as f32;
+                                    graph_dirty = true;
+                                }
+                            }
+                        });
+                });
+                ui.scope_builder(egui::UiBuilder::new().max_rect(r2), |ui| {
+                    let mut mode_just = node.param_b.round() >= 1.0;
+                    let mode_txt = if mode_just {
+                        "JustPressed"
+                    } else {
+                        "Pressed"
+                    };
+                    if ui.checkbox(&mut mode_just, mode_txt).changed() {
+                        node.param_b = if mode_just { 1.0 } else { 0.0 };
+                        graph_dirty = true;
+                    }
+                });
+            }
             if node.kind == FiosNodeKind::Clamp {
                 let r1 = egui::Rect::from_min_size(rect.left_top() + egui::vec2(8.0, 32.0), egui::vec2(rect.width() - 16.0, 22.0));
                 let r2 = egui::Rect::from_min_size(rect.left_top() + egui::vec2(8.0, 56.0), egui::vec2(rect.width() - 16.0, 22.0));
@@ -1788,6 +2176,12 @@ impl FiosState {
 
             if node.kind == FiosNodeKind::OutputMove {
                 painter.text(rect.left_top() + egui::vec2(8.0, 36.0), egui::Align2::LEFT_TOP, format!("X: {:.2}  Y: {:.2}", self.last_axis[0], self.last_axis[1]), egui::FontId::monospace(11.0), egui::Color32::from_gray(190));
+            }
+            if node.kind == FiosNodeKind::OutputLook {
+                painter.text(rect.left_top() + egui::vec2(8.0, 36.0), egui::Align2::LEFT_TOP, format!("Yaw: {:.2}  Pitch: {:.2}", self.last_look[0], self.last_look[1]), egui::FontId::monospace(11.0), egui::Color32::from_gray(190));
+            }
+            if node.kind == FiosNodeKind::OutputAction {
+                painter.text(rect.left_top() + egui::vec2(8.0, 32.0), egui::Align2::LEFT_TOP, format!("A: {:.2}", self.last_action), egui::FontId::monospace(11.0), egui::Color32::from_gray(190));
             }
 
             for i in 0..node.kind.input_count() {
@@ -2005,181 +2399,295 @@ impl FiosState {
     }
 
     fn draw_controls_tab(&mut self, ui: &mut egui::Ui, lang: EngineLanguage) {
-        if let Some(status) = &self.status {
-            ui.label(status);
-        }
-        let lua_label = match lang {
-            EngineLanguage::Pt => "Lua",
-            EngineLanguage::En => "Lua",
-            EngineLanguage::Es => "Lua",
+        let card_fill = egui::Color32::from_rgb(29, 32, 34);
+        let card_stroke = egui::Stroke::new(1.0, egui::Color32::from_rgb(60, 66, 70));
+        let accent = egui::Color32::from_rgb(15, 232, 121);
+        let warn = egui::Color32::from_rgb(220, 130, 80);
+        let section_title = |ui: &mut egui::Ui, text: &str| {
+            ui.label(egui::RichText::new(text).strong().color(egui::Color32::from_gray(225)));
+            ui.add_space(4.0);
         };
-        let lua_status_txt = self
-            .lua_status
-            .clone()
-            .unwrap_or_else(|| match lang {
-                EngineLanguage::Pt => "Lua inativo".to_string(),
-                EngineLanguage::En => "Lua inactive".to_string(),
-                EngineLanguage::Es => "Lua inactivo".to_string(),
-            });
-        ui.label(format!("{lua_label}: {lua_status_txt}"));
-        let [mx, my] = self.last_axis;
-        ui.label(format!("Move Axis: X={mx:.2} Y={my:.2}"));
-        ui.separator();
 
-        egui::Grid::new("fios_bind_grid")
-            .num_columns(3)
-            .spacing([10.0, 8.0])
-            .striped(true)
+        let controls_title = match lang {
+            EngineLanguage::Pt => "Controles",
+            EngineLanguage::En => "Controls",
+            EngineLanguage::Es => "Controles",
+        };
+        let runtime_title = match lang {
+            EngineLanguage::Pt => "Runtime",
+            EngineLanguage::En => "Runtime",
+            EngineLanguage::Es => "Runtime",
+        };
+        let action_header = match lang {
+            EngineLanguage::Pt => "Acao",
+            EngineLanguage::En => "Action",
+            EngineLanguage::Es => "Accion",
+        };
+        let key_header = match lang {
+            EngineLanguage::Pt => "Tecla",
+            EngineLanguage::En => "Key",
+            EngineLanguage::Es => "Tecla",
+        };
+        let state_header = match lang {
+            EngineLanguage::Pt => "Estado",
+            EngineLanguage::En => "State",
+            EngineLanguage::Es => "Estado",
+        };
+        let controls_enabled_txt = match lang {
+            EngineLanguage::Pt => "Ativar Controles",
+            EngineLanguage::En => "Enable Controls",
+            EngineLanguage::Es => "Activar Controles",
+        };
+        let lua_toggle_txt = match lang {
+            EngineLanguage::Pt => "Ativar Lua",
+            EngineLanguage::En => "Enable Lua",
+            EngineLanguage::Es => "Activar Lua",
+        };
+        let save_txt = match lang {
+            EngineLanguage::Pt => "Salvar",
+            EngineLanguage::En => "Save",
+            EngineLanguage::Es => "Guardar",
+        };
+        let restore_txt = match lang {
+            EngineLanguage::Pt => "Restaurar Padrao",
+            EngineLanguage::En => "Restore Defaults",
+            EngineLanguage::Es => "Restaurar Pred.",
+        };
+        let lua_tools_title = match lang {
+            EngineLanguage::Pt => "Ferramentas Lua",
+            EngineLanguage::En => "Lua Tools",
+            EngineLanguage::Es => "Herramientas Lua",
+        };
+
+        egui::Frame::new()
+            .fill(card_fill)
+            .stroke(card_stroke)
+            .corner_radius(8)
+            .inner_margin(egui::Margin::same(10))
             .show(ui, |ui| {
-                ui.strong(match lang {
-                    EngineLanguage::Pt => "Acao",
-                    EngineLanguage::En => "Action",
-                    EngineLanguage::Es => "Accion",
-                });
-                ui.strong("Tecla");
-                ui.strong("Estado");
-                ui.end_row();
+                section_title(ui, runtime_title);
+                ui.horizontal_wrapped(|ui| {
+                    if ui
+                        .checkbox(&mut self.controls_enabled, controls_enabled_txt)
+                        .changed()
+                    {
+                        let _ = self.save_to_disk();
+                    }
+                    if ui.checkbox(&mut self.lua_enabled, lua_toggle_txt).changed() {
+                        let _ = self.save_to_disk();
+                    }
 
-                for (i, action) in FiosAction::ALL.iter().enumerate() {
-                    ui.label(action.label(lang));
-                    let capture = self.capture_index == Some(i);
-                    let key_text = if capture {
+                    let controls_state = if self.controls_enabled {
                         match lang {
-                            EngineLanguage::Pt => "Pressione...",
-                            EngineLanguage::En => "Press key...",
-                            EngineLanguage::Es => "Presione...",
+                            EngineLanguage::Pt => "Controles ON",
+                            EngineLanguage::En => "Controls ON",
+                            EngineLanguage::Es => "Controles ON",
                         }
                     } else {
-                        Self::key_to_string(self.bindings[i])
+                        match lang {
+                            EngineLanguage::Pt => "Controles OFF",
+                            EngineLanguage::En => "Controls OFF",
+                            EngineLanguage::Es => "Controles OFF",
+                        }
                     };
-                    if ui.add_sized([130.0, 24.0], egui::Button::new(key_text)).clicked() {
-                        self.capture_index = Some(i);
-                        self.status = Some(match lang {
-                            EngineLanguage::Pt => "Aguardando tecla...",
-                            EngineLanguage::En => "Waiting for key...",
-                            EngineLanguage::Es => "Esperando tecla...",
-                        }.to_string());
+                    ui.label(
+                        egui::RichText::new(controls_state).color(if self.controls_enabled {
+                            accent
+                        } else {
+                            warn
+                        }),
+                    );
+                });
+                let lua_status_txt = self.lua_status.clone().unwrap_or_else(|| match lang {
+                    EngineLanguage::Pt => "Lua inativo".to_string(),
+                    EngineLanguage::En => "Lua inactive".to_string(),
+                    EngineLanguage::Es => "Lua inactivo".to_string(),
+                });
+                let [mx, my] = self.last_axis;
+                let [lx, ly] = self.last_look;
+                let a = self.last_action;
+                ui.add_space(2.0);
+                ui.horizontal_wrapped(|ui| {
+                    ui.label(format!("Lua: {lua_status_txt}"));
+                    ui.separator();
+                    ui.label(format!("Move Axis: X={mx:.2} Y={my:.2}"));
+                    ui.separator();
+                    ui.label(format!("Look: Yaw={lx:.2} Pitch={ly:.2}"));
+                    ui.separator();
+                    ui.label(format!("Action={a:.2}"));
+                    if let Some(status) = &self.status {
+                        ui.separator();
+                        ui.label(egui::RichText::new(status).color(egui::Color32::from_gray(190)));
                     }
-                    let state = if self.pressed[i] { "ON" } else { "OFF" };
-                    ui.colored_label(if self.pressed[i] { egui::Color32::from_rgb(15, 232, 121) } else { egui::Color32::from_gray(150) }, state);
-                    ui.end_row();
-                }
+                });
             });
 
-        ui.add_space(10.0);
-        ui.horizontal(|ui| {
-            if ui.button(match lang {
-                EngineLanguage::Pt => "Restaurar Padrao",
-                EngineLanguage::En => "Restore Defaults",
-                EngineLanguage::Es => "Restaurar Pred.",
-            }).clicked() {
-                self.bindings = Self::default_bindings();
-                self.status = match self.save_to_disk() {
-                    Ok(()) => Some(match lang {
-                        EngineLanguage::Pt => "Padrao restaurado",
-                        EngineLanguage::En => "Defaults restored",
-                        EngineLanguage::Es => "Pred. restaurado",
-                    }.to_string()),
-                    Err(err) => Some(format!("Falha ao salvar: {err}")),
-                };
-            }
-            if ui.button(match lang {
-                EngineLanguage::Pt => "Salvar",
-                EngineLanguage::En => "Save",
-                EngineLanguage::Es => "Guardar",
-            }).clicked() {
-                self.status = match self.save_to_disk() {
-                    Ok(()) => Some(match lang {
-                        EngineLanguage::Pt => "Controles salvos",
-                        EngineLanguage::En => "Controls saved",
-                        EngineLanguage::Es => "Controles guardados",
-                    }.to_string()),
-                    Err(err) => Some(format!("Falha ao salvar: {err}")),
-                };
-            }
-        });
+        ui.add_space(8.0);
+        egui::Frame::new()
+            .fill(card_fill)
+            .stroke(card_stroke)
+            .corner_radius(8)
+            .inner_margin(egui::Margin::same(10))
+            .show(ui, |ui| {
+                section_title(ui, controls_title);
+                egui::Grid::new("fios_bind_grid")
+                    .num_columns(3)
+                    .spacing([10.0, 8.0])
+                    .striped(true)
+                    .show(ui, |ui| {
+                        ui.strong(action_header);
+                        ui.strong(key_header);
+                        ui.strong(state_header);
+                        ui.end_row();
 
-        ui.add_space(10.0);
-        ui.separator();
-        ui.add_space(6.0);
-        ui.horizontal(|ui| {
-            let lua_toggle_txt = match lang {
-                EngineLanguage::Pt => "Ativar Lua",
-                EngineLanguage::En => "Enable Lua",
-                EngineLanguage::Es => "Activar Lua",
-            };
-            if ui.checkbox(&mut self.lua_enabled, lua_toggle_txt).changed() {
-                let _ = self.save_to_disk();
-            }
-            if ui.button(match lang {
-                EngineLanguage::Pt => "Salvar Script Lua",
-                EngineLanguage::En => "Save Lua Script",
-                EngineLanguage::Es => "Guardar Script Lua",
-            }).clicked() {
-                self.lua_dirty = true;
-                self.lua_fn_key = None;
-                self.lua_status = match self.save_lua_script_to_disk() {
-                    Ok(()) => Some(match lang {
-                        EngineLanguage::Pt => "Script Lua salvo",
-                        EngineLanguage::En => "Lua script saved",
-                        EngineLanguage::Es => "Script Lua guardado",
-                    }.to_string()),
-                    Err(err) => Some(format!("Lua save failed: {err}")),
-                };
-            }
-            if ui.button(match lang {
-                EngineLanguage::Pt => "Criar Arquivo .lua",
-                EngineLanguage::En => "Create .lua File",
-                EngineLanguage::Es => "Crear Archivo .lua",
-            }).clicked() {
-                if let Some(path) = FileDialog::new()
-                    .add_filter("Lua", &["lua"])
-                    .set_file_name("fios_controller.lua")
-                    .save_file()
-                {
-                    self.lua_status = match fs::write(&path, &self.lua_script) {
-                        Ok(()) => Some(format!("Lua file created: {}", path.display())),
-                        Err(err) => Some(format!("Lua file create failed: {err}")),
-                    };
-                }
-            }
-            if ui.button(match lang {
-                EngineLanguage::Pt => "Abrir Arquivo .lua",
-                EngineLanguage::En => "Open .lua File",
-                EngineLanguage::Es => "Abrir Archivo .lua",
-            }).clicked() {
-                if let Some(path) = FileDialog::new()
-                    .add_filter("Lua", &["lua"])
-                    .pick_file()
-                {
-                    self.lua_status = match fs::read_to_string(&path) {
-                        Ok(raw) => {
-                            self.lua_script = raw;
-                            self.lua_dirty = true;
-                            self.lua_fn_key = None;
-                            Some(format!("Lua file loaded: {}", path.display()))
+                        for (i, action) in FiosAction::ALL.iter().enumerate() {
+                            ui.label(action.label(lang));
+                            let capture = self.capture_index == Some(i);
+                            let key_text = if capture {
+                                match lang {
+                                    EngineLanguage::Pt => "Pressione...",
+                                    EngineLanguage::En => "Press key...",
+                                    EngineLanguage::Es => "Presione...",
+                                }
+                            } else {
+                                Self::key_to_string(self.bindings[i])
+                            };
+                            if ui
+                                .add_sized([140.0, 24.0], egui::Button::new(key_text))
+                                .clicked()
+                            {
+                                self.capture_index = Some(i);
+                                self.status = Some(
+                                    match lang {
+                                        EngineLanguage::Pt => "Aguardando tecla...",
+                                        EngineLanguage::En => "Waiting for key...",
+                                        EngineLanguage::Es => "Esperando tecla...",
+                                    }
+                                    .to_string(),
+                                );
+                            }
+                            let state = if self.pressed[i] { "ON" } else { "OFF" };
+                            ui.colored_label(
+                                if self.pressed[i] {
+                                    accent
+                                } else {
+                                    egui::Color32::from_gray(150)
+                                },
+                                state,
+                            );
+                            ui.end_row();
                         }
-                        Err(err) => Some(format!("Lua file open failed: {err}")),
-                    };
+                    });
+
+                ui.add_space(8.0);
+                ui.horizontal(|ui| {
+                    if ui.button(restore_txt).clicked() {
+                        self.bindings = Self::default_bindings();
+                        self.status = match self.save_to_disk() {
+                            Ok(()) => Some(
+                                match lang {
+                                    EngineLanguage::Pt => "Padrao restaurado",
+                                    EngineLanguage::En => "Defaults restored",
+                                    EngineLanguage::Es => "Pred. restaurado",
+                                }
+                                .to_string(),
+                            ),
+                            Err(err) => Some(format!("Falha ao salvar: {err}")),
+                        };
+                    }
+                    if ui.button(save_txt).clicked() {
+                        self.status = match self.save_to_disk() {
+                            Ok(()) => Some(
+                                match lang {
+                                    EngineLanguage::Pt => "Controles salvos",
+                                    EngineLanguage::En => "Controls saved",
+                                    EngineLanguage::Es => "Controles guardados",
+                                }
+                                .to_string(),
+                            ),
+                            Err(err) => Some(format!("Falha ao salvar: {err}")),
+                        };
+                    }
+                });
+            });
+
+        ui.add_space(8.0);
+        egui::Frame::new()
+            .fill(card_fill)
+            .stroke(card_stroke)
+            .corner_radius(8)
+            .inner_margin(egui::Margin::same(10))
+            .show(ui, |ui| {
+                section_title(ui, lua_tools_title);
+                ui.horizontal_wrapped(|ui| {
+                    if ui.button(match lang {
+                        EngineLanguage::Pt => "Salvar Script Lua",
+                        EngineLanguage::En => "Save Lua Script",
+                        EngineLanguage::Es => "Guardar Script Lua",
+                    }).clicked() {
+                        self.lua_dirty = true;
+                        self.lua_fn_key = None;
+                        self.lua_status = match self.save_lua_script_to_disk() {
+                            Ok(()) => Some(match lang {
+                                EngineLanguage::Pt => "Script Lua salvo",
+                                EngineLanguage::En => "Lua script saved",
+                                EngineLanguage::Es => "Script Lua guardado",
+                            }.to_string()),
+                            Err(err) => Some(format!("Lua save failed: {err}")),
+                        };
+                    }
+                    if ui.button(match lang {
+                        EngineLanguage::Pt => "Criar Arquivo .lua",
+                        EngineLanguage::En => "Create .lua File",
+                        EngineLanguage::Es => "Crear Archivo .lua",
+                    }).clicked() {
+                        if let Some(path) = FileDialog::new()
+                            .add_filter("Lua", &["lua"])
+                            .set_file_name("fios_controller.lua")
+                            .save_file()
+                        {
+                            self.lua_status = match fs::write(&path, &self.lua_script) {
+                                Ok(()) => Some(format!("Lua file created: {}", path.display())),
+                                Err(err) => Some(format!("Lua file create failed: {err}")),
+                            };
+                        }
+                    }
+                    if ui.button(match lang {
+                        EngineLanguage::Pt => "Abrir Arquivo .lua",
+                        EngineLanguage::En => "Open .lua File",
+                        EngineLanguage::Es => "Abrir Archivo .lua",
+                    }).clicked() {
+                        if let Some(path) = FileDialog::new().add_filter("Lua", &["lua"]).pick_file() {
+                            self.lua_status = match fs::read_to_string(&path) {
+                                Ok(raw) => {
+                                    self.lua_script = raw;
+                                    self.lua_dirty = true;
+                                    self.lua_fn_key = None;
+                                    Some(format!("Lua file loaded: {}", path.display()))
+                                }
+                                Err(err) => Some(format!("Lua file open failed: {err}")),
+                            };
+                        }
+                    }
+                });
+                ui.add_space(4.0);
+                ui.label(match lang {
+                    EngineLanguage::Pt => "Script recebe (x, y, dt) e deve retornar {x=..., y=...} ou x, y",
+                    EngineLanguage::En => "Script receives (x, y, dt) and should return {x=..., y=...} or x, y",
+                    EngineLanguage::Es => "El script recibe (x, y, dt) y debe devolver {x=..., y=...} o x, y",
+                });
+                if ui
+                    .add_sized(
+                        [ui.available_width(), 150.0],
+                        egui::TextEdit::multiline(&mut self.lua_script)
+                            .font(egui::TextStyle::Monospace),
+                    )
+                    .changed()
+                {
+                    self.lua_dirty = true;
+                    self.lua_fn_key = None;
                 }
-            }
-        });
-        ui.label(match lang {
-            EngineLanguage::Pt => "Script recebe (x, y, dt) e deve retornar {x=..., y=...} ou x, y",
-            EngineLanguage::En => "Script receives (x, y, dt) and should return {x=..., y=...} or x, y",
-            EngineLanguage::Es => "El script recibe (x, y, dt) y debe devolver {x=..., y=...} o x, y",
-        });
-        if ui
-            .add_sized(
-                [ui.available_width(), 140.0],
-                egui::TextEdit::multiline(&mut self.lua_script)
-                    .font(egui::TextStyle::Monospace),
-            )
-            .changed()
-        {
-            self.lua_dirty = true;
-            self.lua_fn_key = None;
-        }
+            });
     }
 
     pub fn draw_window(&mut self, ctx: &egui::Context, open: &mut bool, lang: EngineLanguage) {
