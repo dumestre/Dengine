@@ -2140,11 +2140,30 @@ impl FiosState {
                 .iter()
                 .find_map(|(id, r)| if r.contains(p) { Some(*id) } else { None })
         });
-        if canvas_resp.clicked() && hovered_node.is_none() && !ctrl {
+        let hovered_group_early = pointer_pos.and_then(|p| {
+            for g in &self.groups {
+                let mut min = egui::pos2(f32::INFINITY, f32::INFINITY);
+                let mut max = egui::pos2(f32::NEG_INFINITY, f32::NEG_INFINITY);
+                let mut any = false;
+                for id in &g.nodes {
+                    let Some(r) = rect_by_id.get(id) else { continue; };
+                    any = true;
+                    min.x = min.x.min(r.left() - 12.0);
+                    min.y = min.y.min(r.top() - 22.0);
+                    max.x = max.x.max(r.right() + 12.0);
+                    max.y = max.y.max(r.bottom() + 12.0);
+                }
+                if any && egui::Rect::from_min_max(min, max).contains(p) {
+                    return Some(g.id);
+                }
+            }
+            None
+        });
+        if canvas_resp.clicked() && hovered_node.is_none() && hovered_group_early.is_none() && !ctrl {
             self.selected_nodes.clear();
             self.selected_node = None;
         }
-        if primary_pressed && hovered_node.is_none() {
+        if primary_pressed && hovered_node.is_none() && hovered_group_early.is_none() {
             self.marquee_start = pointer_pos;
             self.marquee_end = pointer_pos;
         }
