@@ -3,6 +3,8 @@ use eframe::egui::{
 };
 use epaint::ColorImage;
 use std::collections::HashMap;
+use std::fs;
+use std::path::Path;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use crate::EngineLanguage;
@@ -30,6 +32,14 @@ pub struct RigidbodyDraft {
     pub enabled: bool,
     pub gravity: f32,
     pub jump_impulse: f32,
+}
+
+#[derive(Clone)]
+pub struct AnimatorDraft {
+    pub enabled: bool,
+    pub module_asset: String,
+    pub controller_asset: String,
+    pub clip_ref: String,
 }
 
 impl Default for TransformDraft {
@@ -63,6 +73,17 @@ impl Default for RigidbodyDraft {
     }
 }
 
+impl Default for AnimatorDraft {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            module_asset: String::new(),
+            controller_asset: String::new(),
+            clip_ref: String::new(),
+        }
+    }
+}
+
 pub struct InspectorWindow {
     pub open: bool,
     menu_icon_texture: Option<TextureHandle>,
@@ -83,6 +104,7 @@ pub struct InspectorWindow {
     pending_apply_request: Option<(String, TransformDraft)>,
     object_fios_controller: HashMap<String, FiosControllerDraft>,
     object_rigidbody: HashMap<String, RigidbodyDraft>,
+    object_animator: HashMap<String, AnimatorDraft>,
     apply_loading_until: Option<Instant>,
     last_cursor_wrap: Option<Instant>,
 }
@@ -143,6 +165,7 @@ impl InspectorWindow {
             pending_apply_request: None,
             object_fios_controller: HashMap::new(),
             object_rigidbody: HashMap::new(),
+            object_animator: HashMap::new(),
             apply_loading_until: None,
             last_cursor_wrap: None,
         }
@@ -159,6 +182,13 @@ impl InspectorWindow {
         self.object_rigidbody
             .iter()
             .filter_map(|(name, cfg)| if cfg.enabled { Some((name.clone(), *cfg)) } else { None })
+            .collect()
+    }
+
+    pub fn animator_targets(&self) -> Vec<(String, AnimatorDraft)> {
+        self.object_animator
+            .iter()
+            .filter_map(|(name, cfg)| if cfg.enabled { Some((name.clone(), cfg.clone())) } else { None })
             .collect()
     }
 
@@ -185,6 +215,9 @@ impl InspectorWindow {
         language: EngineLanguage,
         selected_object: &str,
         selected_transform: Option<([f32; 3], [f32; 3], [f32; 3])>,
+        animation_controllers: &[String],
+        animation_modules: &[String],
+        fbx_animation_clips: &[String],
     ) {
         if !self.open {
             return;
@@ -207,6 +240,40 @@ impl InspectorWindow {
                 Some(Color32::from_rgb(55, 55, 55)),
             );
         }
+
+        let module_default_clip = |module_name: &str| -> Option<String> {
+            if module_name.trim().is_empty() {
+                return None;
+            }
+            let path = Path::new("Assets")
+                .join("Animations")
+                .join("Modules")
+                .join(module_name);
+            let raw = fs::read_to_string(path).ok()?;
+            let mut walk: Option<String> = None;
+            let mut idle: Option<String> = None;
+            let mut any_clip: Option<String> = None;
+            for line in raw.lines() {
+                let l = line.trim();
+                if let Some(v) = l.strip_prefix("state.walk=") {
+                    let s = v.trim();
+                    if !s.is_empty() {
+                        walk = Some(s.to_string());
+                    }
+                } else if let Some(v) = l.strip_prefix("state.idle=") {
+                    let s = v.trim();
+                    if !s.is_empty() {
+                        idle = Some(s.to_string());
+                    }
+                } else if let Some(v) = l.strip_prefix("clip=") {
+                    let s = v.trim();
+                    if !s.is_empty() && any_clip.is_none() {
+                        any_clip = Some(s.to_string());
+                    }
+                }
+            }
+            walk.or(idle).or(any_clip)
+        };
 
         if !self.fonts_initialized {
             let mut fonts = egui::FontDefinitions::default();
@@ -751,6 +818,12 @@ impl InspectorWindow {
                                         .or_default();
                                     ui.close();
                                 }
+                                if ui.button("Animator").clicked() {
+                                    self.object_animator
+                                        .entry(selected_object.to_string())
+                                        .or_default();
+                                    ui.close();
+                                }
                             });
                             if add_resp.clicked() {
                                 self.object_fios_controller
@@ -975,6 +1048,159 @@ impl InspectorWindow {
                         }
                         if remove_component {
                             self.object_rigidbody.remove(selected_object);
+                        }
+                    }
+                    if let Some(animator) = self.object_animator.get_mut(selected_object) {
+                        let mut remove_component = false;
+                        let card_height = 164.0_f32;
+                        let card_rect = Rect::from_min_max(
+                            egui::pos2(inner.min.x, (button_rect.min.y - card_height - 348.0).max(sep_y + 38.0)),
+                            egui::pos2(inner.max.x, button_rect.min.y - 348.0),
+                        );
+                        if card_rect.height() > 70.0 {
+                            ui.scope_builder(
+                                egui::UiBuilder::new()
+                                    .max_rect(card_rect)
+                                    .layout(egui::Layout::top_down(egui::Align::Min)),
+                                |ui| {
+                                    egui::Frame::new()
+                                        .fill(Color32::from_rgb(38, 34, 44))
+                                        .stroke(Stroke::new(1.0, Color32::from_gray(62)))
+                                        .corner_radius(6)
+                                        .inner_margin(egui::Margin::same(8))
+                                        .show(ui, |ui| {
+                                            ui.horizontal(|ui| {
+                                                ui.label(
+                                                    egui::RichText::new("Animator")
+                                                        .size(13.0)
+                                                        .strong()
+                                                        .color(Color32::from_gray(220)),
+                                                );
+                                                ui.with_layout(
+                                                    egui::Layout::right_to_left(egui::Align::Center),
+                                                    |ui| {
+                                                        let rm = ui
+                                                            .add_sized([60.0, 18.0], egui::Button::new("Remover"))
+                                                            .clicked();
+                                                        if rm {
+                                                            remove_component = true;
+                                                        }
+                                                    },
+                                                );
+                                            });
+                                            ui.add_space(6.0);
+                                            ui.horizontal(|ui| {
+                                                ui.label("Ativo");
+                                                let txt = if animator.enabled { "ON" } else { "OFF" };
+                                                let fill = if animator.enabled {
+                                                    Color32::from_rgb(58, 118, 84)
+                                                } else {
+                                                    Color32::from_rgb(78, 52, 52)
+                                                };
+                                                if ui
+                                                    .add_sized(
+                                                        [40.0, 18.0],
+                                                        egui::Button::new(txt)
+                                                            .fill(fill)
+                                                            .stroke(Stroke::new(1.0, Color32::from_gray(90))),
+                                                    )
+                                                    .clicked()
+                                                {
+                                                    animator.enabled = !animator.enabled;
+                                                }
+                                            });
+                                            ui.add_space(6.0);
+                                            ui.horizontal(|ui| {
+                                                ui.label("Módulo");
+                                                egui::ComboBox::from_id_salt(("anim_module_combo", selected_object))
+                                                    .width(180.0)
+                                                    .selected_text(if animator.module_asset.is_empty() {
+                                                        "Nenhum".to_string()
+                                                    } else {
+                                                        animator.module_asset.clone()
+                                                    })
+                                                    .show_ui(ui, |ui| {
+                                                        ui.selectable_value(
+                                                            &mut animator.module_asset,
+                                                            String::new(),
+                                                            "Nenhum",
+                                                        );
+                                                        for module in animation_modules {
+                                                            ui.selectable_value(
+                                                                &mut animator.module_asset,
+                                                                module.clone(),
+                                                                module,
+                                                            );
+                                                        }
+                                                    });
+                                            });
+                                            ui.horizontal(|ui| {
+                                                if ui.button("Aplicar módulo").clicked() {
+                                                    if let Some(clip) =
+                                                        module_default_clip(&animator.module_asset)
+                                                    {
+                                                        if fbx_animation_clips.iter().any(|c| c.eq_ignore_ascii_case(&clip)) {
+                                                            animator.clip_ref = clip;
+                                                        } else {
+                                                            animator.clip_ref = clip;
+                                                        }
+                                                    }
+                                                }
+                                            });
+                                            ui.horizontal(|ui| {
+                                                ui.label("Controller");
+                                                egui::ComboBox::from_id_salt(("anim_ctrl_combo", selected_object))
+                                                    .width(180.0)
+                                                    .selected_text(if animator.controller_asset.is_empty() {
+                                                        "Nenhum".to_string()
+                                                    } else {
+                                                        animator.controller_asset.clone()
+                                                    })
+                                                    .show_ui(ui, |ui| {
+                                                        ui.selectable_value(
+                                                            &mut animator.controller_asset,
+                                                            String::new(),
+                                                            "Nenhum",
+                                                        );
+                                                        for controller in animation_controllers {
+                                                            ui.selectable_value(
+                                                                &mut animator.controller_asset,
+                                                                controller.clone(),
+                                                                controller,
+                                                            );
+                                                        }
+                                                    });
+                                            });
+                                            ui.horizontal(|ui| {
+                                                ui.label("Animação");
+                                                egui::ComboBox::from_id_salt(("anim_clip_combo", selected_object))
+                                                    .width(180.0)
+                                                    .selected_text(if animator.clip_ref.is_empty() {
+                                                        "Nenhuma".to_string()
+                                                    } else {
+                                                        animator.clip_ref.clone()
+                                                    })
+                                                    .show_ui(ui, |ui| {
+                                                        ui.selectable_value(
+                                                            &mut animator.clip_ref,
+                                                            String::new(),
+                                                            "Nenhuma",
+                                                        );
+                                                        for clip in fbx_animation_clips {
+                                                            ui.selectable_value(
+                                                                &mut animator.clip_ref,
+                                                                clip.clone(),
+                                                                clip,
+                                                            );
+                                                        }
+                                                    });
+                                            });
+                                        });
+                                },
+                            );
+                        }
+                        if remove_component {
+                            self.object_animator.remove(selected_object);
                         }
                     }
                 }

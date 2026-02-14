@@ -18,11 +18,14 @@ pub struct ProjectWindow {
     resizing_height: bool,
     selected_folder: &'static str,
     selected_asset: Option<String>,
+    selected_sub_asset: Option<String>,
     search_query: String,
     icon_scale: f32,
     deleted_assets: HashSet<String>,
     status_text: String,
     arrow_icon_texture: Option<TextureHandle>,
+    rig_icon_texture: Option<TextureHandle>,
+    animador_icon_texture: Option<TextureHandle>,
     assets_open: bool,
     packages_open: bool,
     hover_roll_asset: Option<String>,
@@ -39,10 +42,25 @@ pub struct ProjectWindow {
     mesh_preview_pending: HashSet<String>,
     image_preview_workers: Arc<AtomicUsize>,
     mesh_preview_workers: Arc<AtomicUsize>,
+    fbx_meta_cache: BTreeMap<String, FbxMetaCacheEntry>,
+    fbx_expanded_assets: HashSet<String>,
 }
 
 struct MeshPreview {
     lines: Vec<([f32; 2], [f32; 2])>,
+}
+
+#[derive(Clone, Default)]
+struct FbxAssetMeta {
+    has_mesh: bool,
+    has_skeleton: bool,
+    animations: Vec<String>,
+}
+
+#[derive(Clone)]
+struct FbxMetaCacheEntry {
+    stamp: (u64, u64),
+    meta: FbxAssetMeta,
 }
 
 struct ImagePreviewDecoded {
@@ -84,11 +102,14 @@ impl ProjectWindow {
             resizing_height: false,
             selected_folder: "Assets",
             selected_asset: None,
+            selected_sub_asset: None,
             search_query: String::new(),
             icon_scale: 72.0,
             deleted_assets: HashSet::new(),
             status_text: String::new(),
             arrow_icon_texture: None,
+            rig_icon_texture: None,
+            animador_icon_texture: None,
             assets_open: true,
             packages_open: true,
             hover_roll_asset: None,
@@ -105,6 +126,8 @@ impl ProjectWindow {
             mesh_preview_pending: HashSet::new(),
             image_preview_workers,
             mesh_preview_workers,
+            fbx_meta_cache: BTreeMap::new(),
+            fbx_expanded_assets: HashSet::new(),
         }
     }
 
@@ -229,8 +252,12 @@ impl ProjectWindow {
     }
 
     fn assets_for_folder(&self) -> Vec<String> {
+        self.assets_for_folder_id(self.selected_folder)
+    }
+
+    fn assets_for_folder_id(&self, folder: &'static str) -> Vec<String> {
         let mut out: Vec<String> = Vec::new();
-        if let Some(folder_path) = self.selected_folder_path() {
+        if let Some(folder_path) = Self::folder_path_from_id(folder) {
             if let Ok(entries) = fs::read_dir(folder_path) {
                 for entry in entries.flatten() {
                     let Some(name) = entry.file_name().to_str().map(|s| s.to_string()) else {
@@ -244,7 +271,7 @@ impl ProjectWindow {
             }
         }
 
-        if let Some(extra) = self.imported_assets.get(self.selected_folder) {
+        if let Some(extra) = self.imported_assets.get(folder) {
             for name in extra {
                 if !out.iter().any(|n| n == name) {
                     out.push(name.clone());
@@ -359,7 +386,31 @@ impl ProjectWindow {
             self.selected_asset = None;
         }
         self.deleted_assets.remove(&imported_name);
-        self.status_text = format!("{}: {}", self.tr(language, "import"), imported_name);
+        if ext == "fbx" {
+            match self.upsert_default_animation_module_for_fbx(&imported_name, &dest_path) {
+                Ok(Some(module)) => {
+                    self.status_text = format!(
+                        "{}: {} | módulo padrão: {}",
+                        self.tr(language, "import"),
+                        imported_name,
+                        module
+                    );
+                }
+                Ok(None) => {
+                    self.status_text = format!("{}: {}", self.tr(language, "import"), imported_name);
+                }
+                Err(err) => {
+                    self.status_text = format!(
+                        "{}: {} | aviso módulo: {}",
+                        self.tr(language, "import"),
+                        imported_name,
+                        err
+                    );
+                }
+            }
+        } else {
+            self.status_text = format!("{}: {}", self.tr(language, "import"), imported_name);
+        }
     }
 
     fn unique_named_file_path(dir: &Path, base_stem: &str, ext: &str) -> PathBuf {
@@ -572,7 +623,11 @@ impl ProjectWindow {
     }
 
     fn selected_folder_path(&self) -> Option<PathBuf> {
-        match self.selected_folder {
+        Self::folder_path_from_id(self.selected_folder)
+    }
+
+    fn folder_path_from_id(folder: &'static str) -> Option<PathBuf> {
+        match folder {
             "Assets" => Some(PathBuf::from("Assets")),
             "Animations" => Some(PathBuf::from("Assets/Animations")),
             "Materials" => Some(PathBuf::from("Assets/Materials")),
@@ -584,6 +639,301 @@ impl ProjectWindow {
             "InputSystem" => Some(PathBuf::from("Packages/InputSystem")),
             _ => None,
         }
+    }
+
+    fn source_stamp(path: &Path) -> Option<(u64, u64)> {
+        let meta = fs::metadata(path).ok()?;
+        let len = meta.len();
+        let mtime = meta
+            .modified()
+            .ok()
+            .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+        Some((len, mtime))
+    }
+
+    fn parse_fbx_animation_names(raw: &str) -> Vec<String> {
+        let mut out = Vec::<String>::new();
+        let mut push_unique = |name: &str| {
+            let clean = name.trim();
+            if clean.is_empty() {
+                return;
+            }
+            if !out.iter().any(|x| x.eq_ignore_ascii_case(clean)) {
+                out.push(clean.to_string());
+            }
+        };
+        for prefix in ["AnimationStack::", "AnimStack::"] {
+            let mut offset = 0usize;
+            while let Some(found) = raw[offset..].find(prefix) {
+                let mut i = offset + found + prefix.len();
+                while i < raw.len() && raw.as_bytes()[i].is_ascii_whitespace() {
+                    i += 1;
+                }
+                if i < raw.len() && raw.as_bytes()[i] == b'"' {
+                    i += 1;
+                }
+                let start = i;
+                while i < raw.len() {
+                    let c = raw.as_bytes()[i];
+                    if c == b'"' || c == b',' || c == b'\r' || c == b'\n' || c == 0 {
+                        break;
+                    }
+                    i += 1;
+                }
+                push_unique(&raw[start..i]);
+                offset = i.saturating_add(1);
+                if offset >= raw.len() {
+                    break;
+                }
+            }
+        }
+        let mut offset = 0usize;
+        while let Some(found) = raw[offset..].find("Take:") {
+            let mut i = offset + found + "Take:".len();
+            while i < raw.len() && raw.as_bytes()[i].is_ascii_whitespace() {
+                i += 1;
+            }
+            if i < raw.len() && raw.as_bytes()[i] == b'"' {
+                i += 1;
+                let start = i;
+                while i < raw.len() && raw.as_bytes()[i] != b'"' && raw.as_bytes()[i] != 0 {
+                    i += 1;
+                }
+                push_unique(&raw[start..i]);
+            }
+            offset = i.saturating_add(1);
+            if offset >= raw.len() {
+                break;
+            }
+        }
+        out
+    }
+
+    fn parse_fbx_skeleton_bones(raw: &str) -> Vec<String> {
+        let mut out = Vec::<String>::new();
+        for prefix in ["LimbNode::", "Skeleton::"] {
+            let mut offset = 0usize;
+            while let Some(found) = raw[offset..].find(prefix) {
+                let mut i = offset + found + prefix.len();
+                while i < raw.len() && raw.as_bytes()[i].is_ascii_whitespace() {
+                    i += 1;
+                }
+                if i < raw.len() && raw.as_bytes()[i] == b'"' {
+                    i += 1;
+                }
+                let start = i;
+                while i < raw.len() {
+                    let c = raw.as_bytes()[i];
+                    if c == b'"' || c == b',' || c == b'\r' || c == b'\n' || c == 0 {
+                        break;
+                    }
+                    i += 1;
+                }
+                let name = raw[start..i].trim();
+                if !name.is_empty() {
+                    out.push(name.to_ascii_lowercase());
+                }
+                offset = i.saturating_add(1);
+                if offset >= raw.len() {
+                    break;
+                }
+            }
+        }
+        out.sort();
+        out.dedup();
+        out
+    }
+
+    fn infer_default_animation_state(clips: &[String], keys: &[&str]) -> Option<String> {
+        clips
+            .iter()
+            .find(|clip| {
+                let c = clip.to_ascii_lowercase();
+                keys.iter().any(|k| c.contains(k))
+            })
+            .cloned()
+    }
+
+    fn upsert_default_animation_module_for_fbx(
+        &mut self,
+        imported_fbx_name: &str,
+        fbx_path: &Path,
+    ) -> Result<Option<String>, String> {
+        let bytes = fs::read(fbx_path).map_err(|e| e.to_string())?;
+        let raw = String::from_utf8_lossy(&bytes);
+        let clips = Self::parse_fbx_animation_names(&raw);
+        if clips.is_empty() {
+            return Ok(None);
+        }
+
+        let bones = Self::parse_fbx_skeleton_bones(&raw);
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        if bones.is_empty() {
+            imported_fbx_name.to_ascii_lowercase().hash(&mut hasher);
+            clips.iter().for_each(|c| c.to_ascii_lowercase().hash(&mut hasher));
+        } else {
+            bones.iter().for_each(|b| b.hash(&mut hasher));
+        }
+        let skeleton_key = format!("{:016x}", hasher.finish());
+
+        let idle = Self::infer_default_animation_state(&clips, &["idle", "stand", "breath"]);
+        let walk = Self::infer_default_animation_state(&clips, &["walk"]);
+        let run = Self::infer_default_animation_state(&clips, &["run", "sprint"]);
+        let jump = Self::infer_default_animation_state(&clips, &["jump", "leap"]);
+
+        let module_dir = Path::new("Assets").join("Animations").join("Modules");
+        fs::create_dir_all(&module_dir).map_err(|e| e.to_string())?;
+        let module_name = format!("default_{skeleton_key}.animodule");
+        let module_path = module_dir.join(&module_name);
+        let mut content = String::new();
+        content.push_str("ANIMODULE1\n");
+        content.push_str(&format!("name=Default_{skeleton_key}\n"));
+        content.push_str(&format!("skeleton_key={skeleton_key}\n"));
+        content.push_str(&format!("source_fbx={imported_fbx_name}\n"));
+        if let Some(v) = &idle {
+            content.push_str(&format!("state.idle={v}\n"));
+        }
+        if let Some(v) = &walk {
+            content.push_str(&format!("state.walk={v}\n"));
+        }
+        if let Some(v) = &run {
+            content.push_str(&format!("state.run={v}\n"));
+        }
+        if let Some(v) = &jump {
+            content.push_str(&format!("state.jump={v}\n"));
+        }
+        for clip in &clips {
+            content.push_str(&format!("clip={imported_fbx_name}::{clip}\n"));
+        }
+        fs::write(&module_path, content.as_bytes()).map_err(|e| e.to_string())?;
+
+        let imported = self.imported_assets.entry("Animations").or_default();
+        if !imported.iter().any(|n| n == &module_name) {
+            imported.push(module_name.clone());
+        }
+        Ok(Some(module_name))
+    }
+
+    fn parse_fbx_meta(path: &Path) -> FbxAssetMeta {
+        let bytes = fs::read(path).unwrap_or_default();
+        let raw = String::from_utf8_lossy(&bytes);
+        let animations = Self::parse_fbx_animation_names(&raw);
+        let has_skeleton = raw.contains("LimbNode")
+            || raw.contains("Skeleton::")
+            || raw.contains("Deformer::")
+            || raw.contains("Cluster::");
+        let has_mesh = load_fbx_ascii_preview_mesh(path).is_ok()
+            || raw.contains("Geometry::")
+            || raw.contains("Mesh");
+        FbxAssetMeta {
+            has_mesh,
+            has_skeleton,
+            animations,
+        }
+    }
+
+    fn fbx_meta_for_path(&mut self, path: &Path) -> FbxAssetMeta {
+        let key = path.to_string_lossy().to_string();
+        let stamp = Self::source_stamp(path).unwrap_or((0, 0));
+        if let Some(entry) = self.fbx_meta_cache.get(&key) {
+            if entry.stamp == stamp {
+                return entry.meta.clone();
+            }
+        }
+        let meta = Self::parse_fbx_meta(path);
+        self.fbx_meta_cache.insert(
+            key,
+            FbxMetaCacheEntry {
+                stamp,
+                meta: meta.clone(),
+            },
+        );
+        meta
+    }
+
+    fn fbx_assets_in_meshes_folder(&self) -> Vec<String> {
+        let mut out: Vec<String> = self
+            .assets_for_folder_id("Meshes")
+            .into_iter()
+            .filter(|a| a.to_ascii_lowercase().ends_with(".fbx"))
+            .collect();
+        out.sort_by_key(|s| s.to_ascii_lowercase());
+        out
+    }
+
+    pub fn list_animation_controller_assets(&self) -> Vec<String> {
+        let mut out = Vec::<String>::new();
+        let base = Path::new("Assets").join("Animations");
+        if let Ok(entries) = fs::read_dir(base) {
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if !path.is_file() {
+                    continue;
+                }
+                let ext = path
+                    .extension()
+                    .and_then(|e| e.to_str())
+                    .map(|e| e.to_ascii_lowercase())
+                    .unwrap_or_default();
+                if ext != "animctrl" && ext != "controller" {
+                    continue;
+                }
+                if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
+                    out.push(name.to_string());
+                }
+            }
+        }
+        out.sort_by_key(|s| s.to_ascii_lowercase());
+        out.dedup_by(|a, b| a.eq_ignore_ascii_case(b));
+        out
+    }
+
+    pub fn list_animation_modules(&self) -> Vec<String> {
+        let mut out = Vec::<String>::new();
+        let dir = Path::new("Assets").join("Animations").join("Modules");
+        if let Ok(entries) = fs::read_dir(dir) {
+            for entry in entries.flatten() {
+                let p = entry.path();
+                if !p.is_file() {
+                    continue;
+                }
+                let is_animodule = p
+                    .extension()
+                    .and_then(|e| e.to_str())
+                    .map(|e| e.eq_ignore_ascii_case("animodule"))
+                    .unwrap_or(false);
+                if !is_animodule {
+                    continue;
+                }
+                if let Some(name) = p.file_name().and_then(|n| n.to_str()) {
+                    out.push(name.to_string());
+                }
+            }
+        }
+        out.sort_by_key(|s| s.to_ascii_lowercase());
+        out
+    }
+
+    pub fn list_fbx_animation_clips(&mut self) -> Vec<String> {
+        let mut out = Vec::<String>::new();
+        let Some(meshes_dir) = Self::folder_path_from_id("Meshes") else {
+            return out;
+        };
+        for asset in self.fbx_assets_in_meshes_folder() {
+            let path = meshes_dir.join(&asset);
+            if !path.is_file() {
+                continue;
+            }
+            let meta = self.fbx_meta_for_path(&path);
+            for clip in meta.animations {
+                out.push(format!("{asset}::{clip}"));
+            }
+        }
+        out.sort_by_key(|s| s.to_ascii_lowercase());
+        out.dedup_by(|a, b| a.eq_ignore_ascii_case(b));
+        out
     }
 
     fn asset_path_in_selected_folder(&self, asset_name: &str) -> Option<PathBuf> {
@@ -763,11 +1113,34 @@ impl ProjectWindow {
         indent: f32,
         selected: bool,
     ) -> egui::Response {
+        Self::draw_tree_leaf_row_with_icon(ui, id, label, indent, selected, None)
+    }
+
+    fn draw_tree_leaf_row_with_icon(
+        ui: &mut egui::Ui,
+        id: &str,
+        label: &str,
+        indent: f32,
+        selected: bool,
+        icon: Option<&TextureHandle>,
+    ) -> egui::Response {
         let (rect, _) = ui.allocate_exact_size(egui::vec2(ui.available_width(), 20.0), Sense::click());
         let resp = ui.interact(rect, ui.id().with(("project_tree_leaf", id)), Sense::click());
+        let mut text_x = rect.left() + indent + 6.0;
+        if let Some(icon) = icon {
+            let icon_rect = Rect::from_center_size(
+                egui::pos2(rect.left() + indent + 6.0, rect.center().y),
+                egui::vec2(11.0, 11.0),
+            );
+            let _ = ui.put(
+                icon_rect,
+                egui::Image::new(icon).fit_to_exact_size(egui::vec2(11.0, 11.0)),
+            );
+            text_x += 14.0;
+        }
 
         ui.painter().text(
-            egui::pos2(rect.left() + indent + 6.0, rect.center().y),
+            egui::pos2(text_x, rect.center().y),
             Align2::LEFT_CENTER,
             label,
             FontId::new(12.0, FontFamily::Proportional),
@@ -855,6 +1228,12 @@ impl ProjectWindow {
 
         if self.arrow_icon_texture.is_none() {
             self.arrow_icon_texture = load_png_as_texture(ctx, "src/assets/icons/seta.png");
+        }
+        if self.rig_icon_texture.is_none() {
+            self.rig_icon_texture = load_png_as_texture(ctx, "src/assets/icons/rig.png");
+        }
+        if self.animador_icon_texture.is_none() {
+            self.animador_icon_texture = load_png_as_texture(ctx, "src/assets/icons/animador.png");
         }
         self.poll_preview_jobs(ctx);
 
@@ -1156,6 +1535,104 @@ impl ProjectWindow {
                                             self.selected_folder = folder;
                                             self.selected_asset = None;
                                         }
+                                        if folder == "Meshes" && self.selected_folder == "Meshes" {
+                                            let Some(meshes_dir) = Self::folder_path_from_id("Meshes") else {
+                                                continue;
+                                            };
+                                            for fbx_asset in self.fbx_assets_in_meshes_folder() {
+                                                let mut opened =
+                                                    self.fbx_expanded_assets.contains(&fbx_asset);
+                                                let row = self.draw_tree_parent_row(
+                                                    ui,
+                                                    &format!("mesh_fbx_{fbx_asset}"),
+                                                    &fbx_asset,
+                                                    34.0,
+                                                    &mut opened,
+                                                    self.selected_asset.as_ref() == Some(&fbx_asset),
+                                                );
+                                                if opened {
+                                                    self.fbx_expanded_assets.insert(fbx_asset.clone());
+                                                } else {
+                                                    self.fbx_expanded_assets.remove(&fbx_asset);
+                                                }
+                                                if row.clicked() {
+                                                    self.selected_folder = "Meshes";
+                                                    self.selected_asset = Some(fbx_asset.clone());
+                                                    self.status_text = fbx_asset.clone();
+                                                }
+                                                if !opened {
+                                                    continue;
+                                                }
+
+                                                let asset_path = meshes_dir.join(&fbx_asset);
+                                                let meta = self.fbx_meta_for_path(&asset_path);
+                                                let mesh_label = if meta.has_mesh {
+                                                    "Mesh"
+                                                } else {
+                                                    "Mesh (indisponível)"
+                                                };
+                                                let _ = Self::draw_tree_leaf_row(
+                                                    ui,
+                                                    &format!("mesh_node_{fbx_asset}"),
+                                                    mesh_label,
+                                                    52.0,
+                                                    false,
+                                                );
+
+                                                let skeleton_label = if meta.has_skeleton {
+                                                    "Esqueleto"
+                                                } else {
+                                                    "Esqueleto (não detectado)"
+                                                };
+                                                let _ = Self::draw_tree_leaf_row_with_icon(
+                                                    ui,
+                                                    &format!("skeleton_node_{fbx_asset}"),
+                                                    skeleton_label,
+                                                    52.0,
+                                                    false,
+                                                    self.rig_icon_texture.as_ref(),
+                                                );
+
+                                                if meta.animations.is_empty() {
+                                                    let _ = Self::draw_tree_leaf_row_with_icon(
+                                                        ui,
+                                                        &format!("anim_none_{fbx_asset}"),
+                                                        "Animações (0)",
+                                                        52.0,
+                                                        false,
+                                                        self.animador_icon_texture.as_ref(),
+                                                    );
+                                                } else {
+                                                    let _ = Self::draw_tree_leaf_row_with_icon(
+                                                        ui,
+                                                        &format!("anim_count_{fbx_asset}"),
+                                                        &format!(
+                                                            "Animações ({})",
+                                                            meta.animations.len()
+                                                        ),
+                                                        52.0,
+                                                        false,
+                                                        self.animador_icon_texture.as_ref(),
+                                                    );
+                                                    for clip in &meta.animations {
+                                                        let clip_ref = format!("{fbx_asset}::{clip}");
+                                                        let resp = Self::draw_tree_leaf_row_with_icon(
+                                                            ui,
+                                                            &format!("anim_clip_{fbx_asset}_{clip}"),
+                                                            clip,
+                                                            70.0,
+                                                            false,
+                                                            self.animador_icon_texture.as_ref(),
+                                                        );
+                                                        if resp.clicked() {
+                                                            self.selected_folder = "Meshes";
+                                                            self.selected_asset = Some(fbx_asset.clone());
+                                                            self.status_text = format!("Clipe: {clip_ref}");
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                        }
                                     }
                                 }
 
@@ -1260,7 +1737,8 @@ impl ProjectWindow {
                                     .num_columns(cols)
                                     .spacing(spacing)
                                     .show(ui, |ui| {
-                                        for (idx, asset) in filtered_assets.iter().enumerate() {
+                                        let mut col = 0usize;
+                                        for asset in filtered_assets.iter() {
                                         let asset = *asset;
                                         let tile_size = Vec2::new(tile_w, tile_w + tile_name_h + tile_pad * 2.0);
                                         let selected = self.selected_asset.as_ref() == Some(asset);
@@ -1321,6 +1799,57 @@ impl ProjectWindow {
                                                 FontId::proportional(10.0),
                                                 Color32::from_gray(245),
                                             );
+                                        }
+                                        let mut expanded_fbx = false;
+                                        if self.selected_folder == "Meshes"
+                                            && asset.to_ascii_lowercase().ends_with(".fbx")
+                                        {
+                                            let expand_rect = Rect::from_center_size(
+                                                egui::pos2(preview_rect.right() - 8.0, preview_rect.center().y),
+                                                egui::vec2(14.0, 14.0),
+                                            );
+                                            let expand_resp = ui.interact(
+                                                expand_rect,
+                                                ui.id().with(("mesh_tile_expand", asset)),
+                                                Sense::click(),
+                                            );
+                                            let expanded = self.fbx_expanded_assets.contains(asset);
+                                            expanded_fbx = expanded;
+                                            if expand_resp.hovered() {
+                                                ui.painter().circle_filled(
+                                                    expand_rect.center(),
+                                                    8.0,
+                                                    Color32::from_rgba_unmultiplied(255, 255, 255, 26),
+                                                );
+                                            }
+                                            if let Some(arrow_tex) = &self.arrow_icon_texture {
+                                                let angle =
+                                                    if expanded { std::f32::consts::FRAC_PI_2 } else { 0.0 };
+                                                let _ = ui.put(
+                                                    expand_rect,
+                                                    egui::Image::new(arrow_tex)
+                                                        .fit_to_exact_size(egui::vec2(10.0, 10.0))
+                                                        .rotate(angle, Vec2::splat(0.5)),
+                                                );
+                                            } else {
+                                                ui.painter().text(
+                                                    expand_rect.center(),
+                                                    Align2::CENTER_CENTER,
+                                                    if expanded { "▾" } else { "▸" },
+                                                    FontId::new(11.0, FontFamily::Proportional),
+                                                    Color32::from_gray(230),
+                                                );
+                                            }
+                                            if expand_resp.clicked() {
+                                                if expanded {
+                                                    self.fbx_expanded_assets.remove(asset);
+                                                    expanded_fbx = false;
+                                                } else {
+                                                    self.fbx_expanded_assets.insert(asset.clone());
+                                                    self.selected_asset = Some(asset.clone());
+                                                    expanded_fbx = true;
+                                                }
+                                            }
                                         }
                                         let name_font = FontId::proportional(11.0);
                                         let name_color = Color32::from_gray(210);
@@ -1451,31 +1980,203 @@ impl ProjectWindow {
                                             if self.selected_asset.as_ref() == Some(asset) {
                                                 self.selected_asset = None;
                                             }
+                                            if self
+                                                .selected_sub_asset
+                                                .as_ref()
+                                                .is_some_and(|s| s.starts_with(&format!("{asset}::")))
+                                            {
+                                                self.selected_sub_asset = None;
+                                            }
                                             self.status_text =
                                                 format!("{}: {}", self.tr(language, "delete"), asset);
                                         }
 
                                         if tile_resp.clicked() {
                                             self.selected_asset = Some(asset.clone());
+                                            self.selected_sub_asset = None;
                                             self.status_text = asset.to_string();
                                         }
                                         if tile_resp.drag_started() || tile_resp.dragged() {
-                                            self.dragging_asset = Some(asset.clone());
+                                            if !self
+                                                .dragging_asset
+                                                .as_ref()
+                                                .is_some_and(|v| v.contains("::"))
+                                            {
+                                                self.dragging_asset = Some(asset.clone());
+                                            }
                                         }
                                         if tile_resp.hovered()
                                             && ui.input(|i| i.pointer.primary_down() && i.pointer.delta().length_sq() > 0.0)
                                         {
-                                            self.dragging_asset = Some(asset.clone());
-                                        }
-                                            if (idx + 1) % cols == 0 {
-                                                ui.end_row();
+                                            if !self
+                                                .dragging_asset
+                                                .as_ref()
+                                                .is_some_and(|v| v.contains("::"))
+                                            {
+                                                self.dragging_asset = Some(asset.clone());
                                             }
+                                        }
+                                        col += 1;
+                                        if col % cols == 0 {
+                                            ui.end_row();
+                                        }
+
+                                        if expanded_fbx {
+                                            let Some(meshes_dir) = Self::folder_path_from_id("Meshes") else {
+                                                continue;
+                                            };
+                                            let meta = self.fbx_meta_for_path(&meshes_dir.join(asset));
+                                            let child_tile_w = (tile_w * 0.82).max(48.0);
+                                            let child_tile_name_h = 16.0;
+                                            let child_tile_pad = 5.0;
+                                            let child_visual_size = Vec2::new(
+                                                child_tile_w,
+                                                child_tile_w + child_tile_name_h + child_tile_pad * 2.0,
+                                            );
+                                            let mut children: Vec<(
+                                                String,
+                                                Option<&TextureHandle>,
+                                                Option<String>,
+                                                String,
+                                            )> = Vec::new();
+                                            children.push((
+                                                if meta.has_mesh {
+                                                    "Mesh".to_string()
+                                                } else {
+                                                    "Mesh (indisponível)".to_string()
+                                                },
+                                                None,
+                                                None,
+                                                format!("{asset}::mesh"),
+                                            ));
+                                            children.push((
+                                                if meta.has_skeleton {
+                                                    "Esqueleto".to_string()
+                                                } else {
+                                                    "Esqueleto (não detectado)".to_string()
+                                                },
+                                                self.rig_icon_texture.as_ref(),
+                                                None,
+                                                format!("{asset}::skeleton"),
+                                            ));
+                                            children.push((
+                                                format!("Animações ({})", meta.animations.len()),
+                                                self.animador_icon_texture.as_ref(),
+                                                Some(asset.clone()),
+                                                format!("{asset}::animations"),
+                                            ));
+                                            for clip in &meta.animations {
+                                                let clip_ref = format!("{asset}::{clip}");
+                                                children.push((
+                                                    format!("Anim: {clip}"),
+                                                    self.animador_icon_texture.as_ref(),
+                                                    Some(clip_ref.clone()),
+                                                    clip_ref,
+                                                ));
+                                            }
+
+                                            for (label, icon_opt, drag_payload, child_key) in children {
+                                                let (slot_rect, c_resp) =
+                                                    ui.allocate_exact_size(tile_size, Sense::click_and_drag());
+                                                let c_rect = Rect::from_center_size(
+                                                    slot_rect.center(),
+                                                    child_visual_size,
+                                                );
+                                                let selected_sub = self
+                                                    .selected_sub_asset
+                                                    .as_ref()
+                                                    .is_some_and(|k| k == &child_key);
+                                                if selected_sub {
+                                                    ui.painter().rect_filled(
+                                                        c_rect.expand(1.0),
+                                                        5.0,
+                                                        Color32::from_rgba_unmultiplied(15, 232, 121, 24),
+                                                    );
+                                                }
+                                                ui.painter().rect_stroke(
+                                                    c_rect,
+                                                    4.0,
+                                                    if selected_sub {
+                                                        Stroke::new(1.2, Color32::from_rgb(15, 232, 121))
+                                                    } else {
+                                                        Stroke::new(1.0, Color32::from_rgb(70, 70, 78))
+                                                    },
+                                                    egui::StrokeKind::Outside,
+                                                );
+                                                let c_preview = Rect::from_min_max(
+                                                    c_rect.min + egui::vec2(child_tile_pad, child_tile_pad),
+                                                    egui::pos2(
+                                                        c_rect.max.x - child_tile_pad,
+                                                        c_rect.max.y - child_tile_name_h - child_tile_pad,
+                                                    ),
+                                                );
+                                                ui.painter().rect_stroke(
+                                                    c_preview,
+                                                    3.0,
+                                                    Stroke::new(1.0, Color32::from_rgb(88, 96, 108)),
+                                                    egui::StrokeKind::Outside,
+                                                );
+                                                if let Some(icon) = icon_opt.or(self.arrow_icon_texture.as_ref()) {
+                                                    let icon_rect = Rect::from_center_size(
+                                                        c_preview.center(),
+                                                        egui::vec2(c_preview.width().min(20.0), c_preview.height().min(20.0)),
+                                                    );
+                                                    let _ = ui.put(
+                                                        icon_rect,
+                                                        egui::Image::new(icon).fit_to_exact_size(icon_rect.size()),
+                                                    );
+                                                }
+                                                let c_name_rect = Rect::from_min_max(
+                                                    egui::pos2(
+                                                        c_rect.left() + child_tile_pad,
+                                                        c_rect.bottom() - child_tile_name_h - 2.0,
+                                                    ),
+                                                    egui::pos2(c_rect.right() - child_tile_pad, c_rect.bottom() - 2.0),
+                                                );
+                                                let short = Self::truncate_with_ellipsis(
+                                                    ui.painter(),
+                                                    &label,
+                                                    &FontId::proportional(11.0),
+                                                    c_name_rect.width(),
+                                                );
+                                                ui.painter().text(
+                                                    c_name_rect.center(),
+                                                    Align2::CENTER_CENTER,
+                                                    short,
+                                                    FontId::proportional(11.0),
+                                                    Color32::from_gray(210),
+                                                );
+                                                if c_resp.clicked() {
+                                                    self.selected_asset = Some(asset.clone());
+                                                    self.selected_sub_asset = Some(child_key.clone());
+                                                    self.status_text = format!("{asset} > {label}");
+                                                }
+                                                if let Some(payload) = &drag_payload {
+                                                    if c_resp.drag_started() || c_resp.dragged() {
+                                                        self.dragging_asset = Some(payload.clone());
+                                                    }
+                                                    if c_resp.hovered()
+                                                        && ui.input(|i| {
+                                                            i.pointer.primary_down()
+                                                                && i.pointer.delta().length_sq() > 0.0
+                                                        })
+                                                    {
+                                                        self.dragging_asset = Some(payload.clone());
+                                                    }
+                                                }
+                                                col += 1;
+                                                if col % cols == 0 {
+                                                    ui.end_row();
+                                                }
+                                            }
+                                        }
                                     }
                                     });
 
                                     if !hovered_any {
                                         self.hover_roll_asset = None;
                                     }
+
                             });
                     },
                 );
@@ -2017,7 +2718,11 @@ fn load_fbx_ascii_preview_mesh(path: &Path) -> Result<(Vec<glam::Vec3>, Vec<[u32
             continue;
         }
         let base = vertices.len() as u32;
-        vertices.extend(cps.iter().map(|p| glam::Vec3::new(p.x as f32, p.y as f32, p.z as f32)));
+        // FBX forward correction kept consistent with runtime mesh import.
+        vertices.extend(
+            cps.iter()
+                .map(|p| glam::Vec3::new(-(p.x as f32), p.y as f32, -(p.z as f32))),
+        );
 
         let mut poly: Vec<u32> = Vec::new();
         for raw in poly_verts.raw_polygon_vertices() {

@@ -48,6 +48,12 @@ struct InstalledEngine {
     is_current: bool,
 }
 
+#[derive(Clone, Copy, Default)]
+struct AnimatorRuntimeState {
+    current_clip_index: usize,
+    is_playing: bool,
+}
+
 struct EditorApp {
     inspector: InspectorWindow,
     hierarchy: HierarchyWindow,
@@ -91,6 +97,7 @@ struct EditorApp {
     terminai: terminai::TerminAiState,
     fios: fios::FiosState,
     rigidbody_vertical_vel: HashMap<String, f32>,
+    animator_runtime: HashMap<String, AnimatorRuntimeState>,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -956,6 +963,7 @@ impl App for EditorApp {
     fn update(&mut self, ctx: &egui::Context, frame: &mut Frame) {
         // Dark theme
         ctx.set_visuals(egui::Visuals::dark());
+        ctx.output_mut(|o| o.cursor_icon = egui::CursorIcon::Default);
         self.ensure_toolbar_icons_loaded(ctx);
         self.fios.update_input(ctx);
         self.poll_terminal_job();
@@ -1520,20 +1528,34 @@ impl App for EditorApp {
         let inspector_transform = self
             .viewport
             .object_transform_components(&hierarchy_selected);
-        self.viewport
-            .show(
+        if self.fios_enabled {
+            self.fios.draw_embedded(
                 ctx,
-                mode_label,
                 left_reserved,
                 right_reserved,
                 project_bottom,
-                self.viewport_gpu.as_ref(),
+                self.language,
             );
-        if let Some(selected_in_viewport) = self.viewport.selected_object_name() {
-            self.hierarchy.set_selected_object(selected_in_viewport);
+        } else {
+            self.fios.clear_embedded_rect();
+            self.viewport
+                .show(
+                    ctx,
+                    mode_label,
+                    left_reserved,
+                    right_reserved,
+                    project_bottom,
+                    self.viewport_gpu.as_ref(),
+                );
+            if let Some(selected_in_viewport) = self.viewport.selected_object_name() {
+                self.hierarchy.set_selected_object(selected_in_viewport);
+            }
         }
 
         // Janela Inspetor
+        let animation_controllers = self.project.list_animation_controller_assets();
+        let animation_modules = self.project.list_animation_modules();
+        let fbx_animation_clips = self.project.list_fbx_animation_clips();
         self.inspector
             .show(
                 ctx,
@@ -1543,6 +1565,9 @@ impl App for EditorApp {
                 self.language,
                 self.hierarchy.selected_object_name(),
                 inspector_transform,
+                &animation_controllers,
+                &animation_modules,
+                &fbx_animation_clips,
             );
         if let Some((object_name, pos, rot, scale)) = self.inspector.take_transform_live_request()
         {
@@ -1555,6 +1580,49 @@ impl App for EditorApp {
             let _ = self
                 .viewport
                 .apply_object_transform_components(&object_name, pos, rot, scale);
+        }
+
+        let animator_targets = self.inspector.animator_targets();
+        let live_anim_names: HashSet<String> =
+            animator_targets.iter().map(|(n, _)| n.clone()).collect();
+        self.animator_runtime
+            .retain(|name, _| live_anim_names.contains(name));
+        for (name, cfg) in &animator_targets {
+            let entry = self.animator_runtime.entry(name.clone()).or_default();
+            if !cfg.clip_ref.is_empty() {
+                if let Some(idx) = fbx_animation_clips
+                    .iter()
+                    .position(|c| c.eq_ignore_ascii_case(&cfg.clip_ref))
+                {
+                    entry.current_clip_index = idx;
+                }
+            }
+        }
+        if self.is_playing {
+            if let Some(anim_cmd) = self.fios.take_animation_command() {
+                for (name, _cfg) in &animator_targets {
+                    if fbx_animation_clips.is_empty() {
+                        continue;
+                    }
+                    let state = self.animator_runtime.entry(name.clone()).or_default();
+                    match anim_cmd {
+                        fios::FiosAnimationCommand::PlayPause => {
+                            state.is_playing = !state.is_playing;
+                        }
+                        fios::FiosAnimationCommand::Next => {
+                            state.current_clip_index =
+                                (state.current_clip_index + 1) % fbx_animation_clips.len();
+                        }
+                        fios::FiosAnimationCommand::Prev => {
+                            state.current_clip_index = if state.current_clip_index == 0 {
+                                fbx_animation_clips.len() - 1
+                            } else {
+                                state.current_clip_index - 1
+                            };
+                        }
+                    }
+                }
+            }
         }
         let axis = self.fios.movement_axis();
         let look = self.fios.look_axis();
@@ -1706,8 +1774,10 @@ impl App for EditorApp {
                         ui.id().with("toggle_rig_mode"),
                         egui::Sense::click(),
                     );
-                    if rig_resp.hovered() || self.rig_enabled {
+                    if rig_resp.hovered() {
                         ui.output_mut(|o| o.cursor_icon = egui::CursorIcon::PointingHand);
+                    }
+                    if rig_resp.hovered() || self.rig_enabled {
                         ui.painter().rect_filled(
                             rig_rect.expand(2.0),
                             3.0,
@@ -1741,8 +1811,10 @@ impl App for EditorApp {
                         ui.id().with("toggle_animator_mode"),
                         egui::Sense::click(),
                     );
-                    if animator_resp.hovered() || self.animator_enabled {
+                    if animator_resp.hovered() {
                         ui.output_mut(|o| o.cursor_icon = egui::CursorIcon::PointingHand);
+                    }
+                    if animator_resp.hovered() || self.animator_enabled {
                         ui.painter().rect_filled(
                             animator_rect.expand(2.0),
                             3.0,
@@ -1776,8 +1848,10 @@ impl App for EditorApp {
                         ui.id().with("toggle_fios_mode"),
                         egui::Sense::click(),
                     );
-                    if fios_resp.hovered() || self.fios_enabled {
+                    if fios_resp.hovered() {
                         ui.output_mut(|o| o.cursor_icon = egui::CursorIcon::PointingHand);
+                    }
+                    if fios_resp.hovered() || self.fios_enabled {
                         ui.painter().rect_filled(
                             fios_rect.expand(2.0),
                             3.0,
@@ -1812,8 +1886,10 @@ impl App for EditorApp {
                         ui.id().with("toggle_log_mode"),
                         egui::Sense::click(),
                     );
-                    if log_resp.hovered() || self.log_enabled {
+                    if log_resp.hovered() {
                         ui.output_mut(|o| o.cursor_icon = egui::CursorIcon::PointingHand);
+                    }
+                    if log_resp.hovered() || self.log_enabled {
                         ui.painter().rect_filled(
                             log_rect.expand(2.0),
                             3.0,
@@ -1844,8 +1920,10 @@ impl App for EditorApp {
                         ui.id().with("toggle_git_mode"),
                         egui::Sense::click(),
                     );
-                    if git_resp.hovered() || self.git_enabled {
+                    if git_resp.hovered() {
                         ui.output_mut(|o| o.cursor_icon = egui::CursorIcon::PointingHand);
+                    }
+                    if git_resp.hovered() || self.git_enabled {
                         ui.painter().rect_filled(
                             git_rect.expand(2.0),
                             3.0,
@@ -1876,8 +1954,10 @@ impl App for EditorApp {
                         ui.id().with("toggle_terminal_mode"),
                         egui::Sense::click(),
                     );
-                    if terminal_resp.hovered() || self.terminai.terminal_enabled {
+                    if terminal_resp.hovered() {
                         ui.output_mut(|o| o.cursor_icon = egui::CursorIcon::PointingHand);
+                    }
+                    if terminal_resp.hovered() || self.terminai.terminal_enabled {
                         ui.painter().rect_filled(
                             terminal_rect.expand(2.0),
                             3.0,
@@ -1972,9 +2052,12 @@ impl App for EditorApp {
         let pointer_down = ctx.input(|i| i.pointer.primary_down());
         if !pointer_down {
             if let (Some(asset_name), Some(pos)) = (self.project.dragging_asset_name(), drop_pos) {
-                if self.viewport.contains_point(pos) {
+                let drag_path = self.project.dragging_asset_path();
+                if self.fios_enabled && self.fios.contains_point(pos) {
+                    let _ = self.fios.on_asset_dropped(asset_name, drag_path.as_deref());
+                } else if self.viewport.contains_point(pos) {
                     let object_name = self.hierarchy.on_asset_dropped(asset_name);
-                    if let Some(path) = self.project.dragging_asset_path() {
+                    if let Some(path) = drag_path {
                         self.viewport.on_asset_file_dropped_named(&path, &object_name);
                     } else {
                         self.viewport.on_asset_dropped(&object_name);
@@ -2004,7 +2087,9 @@ impl App for EditorApp {
                     if let Some(path) = &file.path {
                         self.project.import_file_path(path, self.language);
                     }
-                    if self.viewport.contains_point(pos) {
+                    if self.fios_enabled && self.fios.contains_point(pos) {
+                        let _ = self.fios.on_asset_dropped(&asset_name, file.path.as_deref());
+                    } else if self.viewport.contains_point(pos) {
                         if let Some(path) = &file.path {
                             let object_name = self.hierarchy.on_asset_dropped(&asset_name);
                             self.viewport.on_asset_file_dropped_named(path, &object_name);
@@ -2034,6 +2119,7 @@ impl App for EditorApp {
         if let (Some(asset_name), Some(pos)) = (self.project.dragging_asset_name(), drop_pos) {
             let painter =
                 ctx.layer_painter(egui::LayerId::new(egui::Order::Tooltip, egui::Id::new("asset_drag_overlay")));
+            let dragging_anim_clip = asset_name.contains("::");
             let preview_rect = egui::Rect::from_min_size(pos + egui::vec2(14.0, 12.0), egui::vec2(170.0, 24.0));
             painter.rect_filled(
                 preview_rect,
@@ -2054,7 +2140,34 @@ impl App for EditorApp {
                 egui::Color32::from_gray(230),
             );
 
-            if self.viewport.contains_point(pos) {
+            if self.fios_enabled && self.fios.contains_point(pos) {
+                if let Some(rect) = self.fios.panel_rect() {
+                    painter.rect_stroke(
+                        rect.shrink(2.0),
+                        6.0,
+                        egui::Stroke::new(2.0, egui::Color32::from_rgb(15, 232, 121)),
+                        egui::StrokeKind::Outside,
+                    );
+                    if dragging_anim_clip {
+                        let hint_rect = egui::Rect::from_center_size(
+                            rect.center_top() + egui::vec2(0.0, 18.0),
+                            egui::vec2(310.0, 24.0),
+                        );
+                        painter.rect_filled(
+                            hint_rect,
+                            6.0,
+                            egui::Color32::from_rgba_unmultiplied(15, 232, 121, 38),
+                        );
+                        painter.text(
+                            hint_rect.center(),
+                            egui::Align2::CENTER_CENTER,
+                            "Solte para adicionar no Controlador de animação",
+                            egui::FontId::proportional(11.0),
+                            egui::Color32::from_gray(235),
+                        );
+                    }
+                }
+            } else if self.viewport.contains_point(pos) {
                 if let Some(rect) = self.viewport.panel_rect() {
                     painter.rect_stroke(
                         rect.shrink(2.0),
@@ -2076,7 +2189,6 @@ impl App for EditorApp {
         }
 
         self.draw_terminal_window(ctx);
-        self.fios.draw_window(ctx, &mut self.fios_enabled, self.language);
     }
 }
 
@@ -2218,6 +2330,7 @@ fn main() -> eframe::Result<()> {
                 terminai: terminai::TerminAiState::new(),
                 fios: fios::FiosState::new(),
                 rigidbody_vertical_vel: HashMap::new(),
+                animator_runtime: HashMap::new(),
             };
             app.refresh_hub_projects();
             app.refresh_hub_engines();

@@ -1,278 +1,363 @@
-# Dengine - User Manual / Manual do Usuario / Manual de Usuario
+# Manual do Usuario - Dengine (PT-BR)
 
-## PT-BR
-### 1) Visao geral
-O Dengine e um editor com foco em cena 3D, hierarquia, inspetor, projeto, hub e terminal integrado (TerminAI).
+## 1. Visao geral
+O Dengine e um editor 3D com foco em:
+- gerenciamento de projeto e assets
+- viewport 3D com gizmo
+- hierarquia de objetos
+- inspetor de componentes
+- sistema de controle por nos (Fios)
+- controlador de animacao
+- terminal integrado (TerminAI)
 
-### 2) Hub
-- Cria e abre projetos `.deng`.
-- Lista projetos locais recentes.
-- Mostra engine instalada, versao atual e versao disponivel.
-- Acoes de atualizar/remover engine (quando aplicavel).
-
-### 3) Janela principal
-- Barra superior customizada (menus Arquivo/Editar/Ajuda e selecao de idioma).
-- Barra inferior com botoes:
-  - Projeto
-  - Rig
-  - Animador
-  - Fios
-  - Log
-  - Git
-  - TerminAI
-
-### 4) Projeto
-- Importacao de assets (modelos, imagens etc.).
-- Grade de arquivos com miniaturas.
-- Salvar projeto em `.deng`.
-
-### 5) Hierarquia
-- Objetos padrao: `Directional Light` e `Main Camera`.
-- Selecao de objeto por clique.
-- Menu de contexto por objeto.
-- Delete/Backspace com confirmacao.
-- Clique direito em area vazia:
-  - submenu `3D` (Cube, Sphere, Cone, Cylinder, Plane)
-  - submenu de luzes.
-
-### 6) Viewport
-- Navegacao de camera:
-  - Alt + LMB: orbita
-  - RMB: look/orbita conforme modo
-  - MMB: pan
-  - Scroll: zoom
-  - Touchpad: 2 dedos pan, Ctrl + 2 dedos orbita
-- Atalhos de vista numerico:
-  - Num1 frente
-  - Num3 lado
-  - Num7 topo
-- Gizmo:
-  - Move/Rotate/Scale
-  - Local/Global
-- Selecao visual com outline.
-- Render com pipeline GPU e depth buffer.
-
-### 7) Inspetor
-- Componente Transform (posicao, rotacao, escala).
-- Aplicar Transformacoes (bake na malha e reset do transform local).
-- On/Off de componente.
-
-### 8) Undo/Redo
-- Undo: Ctrl + Z
-- Redo: Ctrl + Shift + Z (e Ctrl + Y como alternativo)
-
-### 9) TerminAI
-- Janela separada da main.
-- Escolha de modelo:
-  - Qwen CLI
-  - Gemini CLI
-  - Codex CLI
-- Fluxo:
-  1. verifica dependencias (Node/npm e CLI)
-  2. instala quando necessario
-  3. abre sessao no shell do sistema
-  4. entra na raiz do projeto aberto
-  5. executa o modelo
-- Output selecionavel.
-
-### 10) Formato de projeto
-- Extensao oficial: `.deng`.
-
-### 11) Fios (Nodes)
-- Conexao de fios com area de clique ampliada nos conectores (entrada/saida), facilitando o plug.
-- Selecao multipla:
-  - Shift + clique para adicionar/remover da selecao.
-  - Arraste em area vazia para selecao em caixa (marquee).
-- Renomear bloco:
-  - botao `Renomear` + `Aplicar Nome`
-  - atalho `F2` para iniciar renomeacao.
-- Cortar fios:
-  - segure `Alt` e arraste com botao direito sobre os fios para cortar conexoes cruzadas.
-- Exclusao:
-  - `Delete`/`Backspace` remove o(s) bloco(s) selecionado(s) e suas conexoes.
+Formato de projeto:
+- arquivo principal: `.deng`
+- estrutura de trabalho: pasta do projeto com subpastas como `Assets/`.
 
 ---
 
-## EN
-### 1) Overview
-Dengine is a 3D editor focused on scene editing, hierarchy, inspector, project assets, hub, and integrated terminal (TerminAI).
+## 2. Hub (inicio)
+Ao abrir o app, o Hub permite:
+- `Novo Projeto`
+- `Abrir .deng`
+- `Atualizar Lista`
+- listar projetos locais encontrados
+- abrir projeto por duplo clique ou botao `Abrir`
+- visualizar engines instaladas, versao atual/disponivel, atualizar/remover
 
-### 2) Hub
-- Create/open `.deng` projects.
-- List local recent projects.
-- Show installed engine, current version, and available version.
-- Update/remove engine actions (when available).
-
-### 3) Main window
-- Custom top bar (File/Edit/Help and language selector).
-- Bottom bar buttons:
-  - Project
-  - Rig
-  - Animator
-  - Wires
-  - Log
-  - Git
-  - TerminAI
-
-### 4) Project panel
-- Asset import (models, images, etc.).
-- File grid with thumbnails.
-- Save project as `.deng`.
-
-### 5) Hierarchy
-- Default objects: `Directional Light` and `Main Camera`.
-- Click to select objects.
-- Per-object context menu.
-- Delete/Backspace with confirmation.
-- Right-click empty area:
-  - `3D` submenu (Cube, Sphere, Cone, Cylinder, Plane)
-  - lights submenu.
-
-### 6) Viewport
-- Camera navigation:
-  - Alt + LMB: orbit
-  - RMB: look/orbit depending on mode
-  - MMB: pan
-  - Scroll: zoom
-  - Touchpad: 2-finger pan, Ctrl + 2-finger orbit
-- Numeric view hotkeys:
-  - Num1 front
-  - Num3 side
-  - Num7 top
-- Gizmo:
-  - Move/Rotate/Scale
-  - Local/Global
-- Outline-based visual selection.
-- GPU rendering path with depth buffer.
-
-### 7) Inspector
-- Transform component (position, rotation, scale).
-- Apply Transforms (mesh bake and local transform reset).
-- Component On/Off toggle.
-
-### 8) Undo/Redo
-- Undo: Ctrl + Z
-- Redo: Ctrl + Shift + Z (Ctrl + Y alternate)
-
-### 9) TerminAI
-- Separate window from main editor.
-- Model chooser:
-  - Qwen CLI
-  - Gemini CLI
-  - Codex CLI
-- Flow:
-  1. verify dependencies (Node/npm and CLI)
-  2. install if needed
-  3. start system shell session
-  4. cd into opened project root
-  5. execute selected model
-- Selectable output.
-
-### 10) Project format
-- Official project extension: `.deng`.
-
-### 11) Wires (Nodes)
-- Wire connection now uses larger input/output connector hit areas for easier plugging.
-- Multi-selection:
-  - Shift + click to add/remove nodes from selection.
-  - Drag on empty canvas to marquee-select.
-- Node rename:
-  - `Rename` button + `Apply Name`
-  - `F2` shortcut to start renaming.
-- Wire cut:
-  - hold `Alt` and drag with right mouse button across wires to cut crossed links.
-- Deletion:
-  - `Delete`/`Backspace` removes selected node(s) and connected links.
+Quando um projeto e aberto, o editor principal aparece.
 
 ---
 
-## ES
-### 1) Resumen
-Dengine es un editor 3D enfocado en escena, jerarquia, inspector, proyecto, hub y terminal integrado (TerminAI).
+## 3. Janela principal
+### 3.1 Barra superior
+- botoes de janela: minimizar, maximizar, fechar
+- seletor de idioma: Portugues, English, Espanol
+- menu `Arquivo`:
+  - `Novo`
+  - `Salvar`
+  - `Importar`
+  - `Sair`
+- menu `Editar`:
+  - `Undo (Ctrl+Z)`
+  - `Redo (Ctrl+Shift+Z)`
+- menu `Ajuda`:
+  - `Sobre`
 
-### 2) Hub
-- Crear/abrir proyectos `.deng`.
-- Listar proyectos locales recientes.
-- Mostrar engine instalada, version actual y version disponible.
-- Acciones de actualizar/eliminar engine (cuando aplique).
+### 3.2 Barra de modo
+- `Cena` e `Game`
+- controles de execucao: play/pause e stop
 
-### 3) Ventana principal
-- Barra superior personalizada (Archivo/Editar/Ayuda e idioma).
-- Barra inferior:
-  - Proyecto
-  - Rig
-  - Animador
-  - Fios/Wires
-  - Log
-  - Git
-  - TerminAI
+### 3.3 Barra inferior (dock)
+Atalhos de paineis:
+- `Projeto`
+- `Rig`
+- `Animador`
+- `Fios`
+- `Log`
+- `Git`
+- `TerminAI`
 
-### 4) Proyecto
-- Importacion de assets (modelos, imagenes, etc.).
-- Cuadricula con miniaturas.
-- Guardar proyecto en `.deng`.
+Obs.: `Fios` ocupa a area central no lugar da viewport quando ativado.
 
-### 5) Jerarquia
-- Objetos por defecto: `Directional Light` y `Main Camera`.
-- Seleccion por clic.
-- Menu contextual por objeto.
-- Delete/Backspace con confirmacion.
-- Clic derecho en area vacia:
-  - submenu `3D` (Cube, Sphere, Cone, Cylinder, Plane)
-  - submenu de luces.
+---
 
-### 6) Viewport
-- Navegacion de camara:
-  - Alt + LMB: orbita
-  - RMB: look/orbita segun modo
-  - MMB: pan
-  - Scroll: zoom
-  - Touchpad: 2 dedos pan, Ctrl + 2 dedos orbita
-- Atajos numericos:
-  - Num1 frente
-  - Num3 lado
-  - Num7 arriba
-- Gizmo:
-  - Move/Rotate/Scale
-  - Local/Global
-- Seleccion visual por contorno (outline).
-- Render GPU con depth buffer.
+## 4. Painel Projeto
+O painel Projeto fica acoplado embaixo e pode ser redimensionado.
 
-### 7) Inspector
-- Componente Transform (posicion, rotacion, escala).
-- Aplicar Transformaciones (bake de malla y reset local).
-- On/Off de componente.
+### 4.1 Recursos principais
+- busca (`Buscar em Assets`)
+- importacao de arquivo (`Importar`)
+- menu de contexto no grid:
+  - criar `Script C#`
+  - criar `Material`
+  - criar `Pasta`
+  - importar
+- breadcrumb de navegacao (`Assets`, `Packages`, subpastas)
 
-### 8) Undo/Redo
-- Undo: Ctrl + Z
-- Redo: Ctrl + Shift + Z (Ctrl + Y alternativo)
+### 4.2 Estrutura de pastas suportada
+Assets:
+- `Animations`
+- `Materials`
+- `Meshes`
+- `Mold`
+- `Scripts`
 
-### 9) TerminAI
-- Ventana separada del editor principal.
-- Selector de modelo:
-  - Qwen CLI
-  - Gemini CLI
-  - Codex CLI
-- Flujo:
-  1. verificar dependencias (Node/npm y CLI)
-  2. instalar si falta
-  3. abrir sesion de shell del sistema
-  4. entrar a la raiz del proyecto abierto
-  5. ejecutar el modelo
-- Salida seleccionable.
+Packages:
+- `TextMeshPro`
+- `InputSystem`
 
-### 10) Formato de proyecto
-- Extension oficial: `.deng`.
+### 4.3 Miniaturas e FBX expandido
+No grid de assets:
+- arquivos mostram thumbnail
+- FBX tem botao de expandir no thumbnail
+- expandido mostra sub-thumbnails (ex.: `Mesh`, `Esqueleto`, `Animacoes`, `Anim: <clip>`)
+- sub-thumbnails suportam selecao por clique e feedback visual
 
-### 11) Fios/Wires (Nodos)
-- Conexion de cables con area de clic ampliada en conectores de entrada/salida para facilitar el enlace.
-- Seleccion multiple:
-  - Shift + clic para agregar/quitar nodos de la seleccion.
-  - Arrastrar en area vacia para seleccion por caja (marquee).
-- Renombrar nodo:
-  - boton `Renomear/Rename` + `Aplicar Nombre`
-  - atajo `F2` para iniciar renombrado.
-- Corte de cables:
-  - mantener `Alt` y arrastrar con boton derecho sobre cables para cortar conexiones cruzadas.
-- Eliminacion:
-  - `Delete`/`Backspace` elimina nodo(s) seleccionado(s) y sus conexiones.
+Na arvore lateral (quando em `Meshes`):
+- FBX tambem expande para `Mesh`, `Esqueleto` e lista de clips de animacao.
+
+### 4.4 Arrastar e soltar (drag and drop)
+Voce pode arrastar assets do Projeto para:
+- viewport (instanciar objeto)
+- hierarquia (criar objeto)
+- aba `Controlador de animacao` em Fios
+
+Feedback visual de arrasto:
+- overlay com nome do item
+- highlight da area de drop (viewport/hierarquia/fios)
+
+---
+
+## 5. Importacao e fluxo de animacao FBX
+Ao importar FBX:
+- arquivo vai para `Assets/Meshes` (com nome unico se necessario)
+- o sistema detecta clipes de animacao e esqueleto
+- e gerado automaticamente um modulo padrao `.animodule` em:
+  - `Assets/Animations/Modules/`
+
+Esse modulo padrao inclui:
+- `skeleton_key`
+- `source_fbx`
+- mapeamento inferido (quando possivel):
+  - `state.idle`
+  - `state.walk`
+  - `state.run`
+  - `state.jump`
+- lista de `clip=<fbx>::<clip>`
+
+---
+
+## 6. Hierarquia
+A Hierarquia pode ficar dockada na esquerda/direita ou flutuando.
+
+### 6.1 Operacoes
+- selecionar objeto
+- arrastar objetos para reorganizar
+- menu de contexto por objeto
+- delete por teclado (`Delete`/`Backspace`)
+
+### 6.2 Criacao rapida (menu de contexto em area vazia)
+- submenu `3D`:
+  - Cube
+  - Sphere
+  - Cone
+  - Cylinder
+  - Plane
+- submenu `Luzes`
+
+### 6.3 Drag and drop de assets
+Soltar um asset na Hierarquia cria um objeto com nome derivado do arquivo.
+
+---
+
+## 7. Viewport
+A viewport suporta navegacao estilo Unity e gizmos.
+
+### 7.1 Navegacao
+- `Alt + LMB`: orbita
+- `RMB`: olhar/orbita (dependendo do modo)
+- `MMB`: pan
+- `Alt + RMB`: zoom dolly
+- `Scroll`: zoom
+- Touchpad:
+  - 2 dedos: pan
+  - pinch: zoom
+  - `Ctrl + 2 dedos`: orbita
+
+### 7.2 Atalhos de vista
+- `Num1`: frente
+- `Num3`: lado
+- `Num7`: topo
+- `F`: focar objeto selecionado
+
+### 7.3 Ferramentas
+- alterna `3D/2D`
+- alterna `Persp/Ortho`
+- orientacao `Local/Global`
+- gizmo de `Move`, `Rotate`, `Scale`
+- modo `Move View` (pan de camera)
+
+### 7.4 Cena e objeto
+- selecao por clique
+- transformacoes aplicadas via Inspector
+- suporta import de malha FBX/OBJ/GLB/GLTF com pipeline e cache
+
+---
+
+## 8. Inspetor
+Painel de propriedades do objeto selecionado.
+
+### 8.1 Transform
+- `Posicao`, `Rotacao`, `Escala`
+- ON/OFF de componente
+- `Aplicar Transformacoes` (bake e reset local)
+
+### 8.2 Adicao de componentes
+Botao `Componente` permite adicionar:
+- `Fios Controller`
+- `Rigidbody`
+- `Animator`
+
+### 8.3 Fios Controller
+Campos:
+- `Ativo` ON/OFF
+- `Move Speed`
+- `Rotate Speed`
+- `Action Speed`
+
+### 8.4 Rigidbody
+Campos:
+- `Ativo` ON/OFF
+- `Gravity`
+- `Jump Impulse`
+
+### 8.5 Animator
+Campos:
+- `Ativo` ON/OFF
+- `Modulo` (lista `.animodule`)
+- `Aplicar modulo` (define clipe default)
+- `Controller` (`.animctrl`/`.controller`)
+- `Animacao` (lista de clipes FBX)
+
+---
+
+## 9. Fios
+Quando ativo, substitui a viewport central.
+
+Tabs:
+- `Modulos`
+- `Fios`
+- `Controlador de animacao`
+
+### 9.1 Tab Modulos
+Configura entradas e modos de controle.
+
+### 9.2 Tab Fios (grafo de nos)
+Editor de nos para logica de controle.
+
+Recursos principais:
+- criar/remover nos
+- conectar portas
+- selecao multipla
+- marquee (arraste em area vazia)
+- renomear no (`F2`)
+- deletar selecao (`Delete`/`Backspace`)
+- cortar fios com gesto (Alt + botao direito arrastando)
+- zoom e pan do canvas
+
+Saidas de interesse:
+- movimento
+- look
+- action
+- comando de animacao (`PlayPause`, `Next`, `Prev`)
+
+### 9.3 Tab Controlador de animacao
+Canvas para estados de animacao.
+
+Fluxo:
+- lista de `Clipes` na coluna esquerda
+- arraste clipe para o canvas para criar estado
+- duplo clique em clipe tambem cria estado
+- conecte estados clicando na saida de um no e depois na entrada de outro
+- mover estado por drag
+- `Atualizar` recarrega cache de clipes
+- `Limpar` limpa canvas de estados
+
+Integracao de arrasto do Projeto:
+- soltar `Anim: <clip>` cria estado
+- soltar `Animacoes (N)` ou FBX cria multiplos estados conforme clipes do arquivo
+
+---
+
+## 10. Execucao em Game/Play
+Com `Play` ativo:
+- `Fios Controller` aplica movimento/rotacao/acao em objetos ativos
+- `Rigidbody` aplica gravidade e impulso de pulo
+- `Animator` usa clipes configurados
+- comandos de animacao vindos de Fios podem alternar play/pause e trocar clipe
+
+---
+
+## 11. TerminAI
+Janela separada (viewport propria) para CLI integrada.
+
+Modelos:
+- `Qwen CLI`
+- `Gemini CLI`
+- `Codex CLI`
+
+Fluxo:
+1. seleciona modelo
+2. verifica dependencias
+3. provisiona ambiente/CLI
+4. abre sessao de terminal no projeto atual
+
+Recursos:
+- terminal virtual com parser ANSI
+- entrada de teclado/paste
+- painel de log completo (colapsavel)
+
+---
+
+## 12. Undo/Redo e atalhos globais
+- `Ctrl + Z`: Undo
+- `Ctrl + Shift + Z`: Redo
+- `Ctrl + Y`: Redo alternativo
+
+Na Hierarquia:
+- `Delete`/`Backspace`: remove selecionado
+
+No Fios:
+- `F2`: renomear no
+- `Delete`/`Backspace`: remover no(s)
+
+---
+
+## 13. Salvamento de projeto
+Ao salvar:
+- arquivo `.deng` e gerado/atualizado
+- cabecalho atual: `DENG1`
+- lista assets como linhas `asset=<caminho_relativo>`
+
+Se salvar fora de uma pasta de projeto:
+- o app cria estrutura com `Assets/` automaticamente.
+
+---
+
+## 14. Arquivos auxiliares gerados pelo editor
+Na raiz do workspace podem existir:
+- `.dengine_fios_controls.cfg`
+- `.dengine_fios_graph.cfg`
+- `.dengine_fios.lua`
+- `.dengine_hub_projects.txt`
+
+Em `Assets/Animations/Modules/`:
+- modulos `.animodule` (incluindo os gerados automaticamente no import FBX)
+
+---
+
+## 15. Boas praticas de fluxo
+- importe FBX em `Assets/Meshes`
+- confira sub-thumbnails (`Mesh`, `Esqueleto`, `Animacoes`)
+- arraste clipes para `Fios > Controlador de animacao`
+- no Inspetor, configure `Animator` com `Modulo` e `Animacao`
+- use `Play` para validar locomocao e transicoes
+
+---
+
+## 16. Limitacoes atuais (estado atual do projeto)
+- o controlador de animacao em Fios e funcional para criacao/ligacao de estados, mas ainda e um fluxo em evolucao
+- alguns componentes/abas podem ter ajustes visuais incrementais entre builds
+- parte dos dados de editor avancado pode depender de arquivos de configuracao locais
+
+---
+
+## 17. Resumo rapido (primeiros passos)
+1. Abra o Hub e carregue um `.deng`.
+2. Importe um FBX em `Projeto`.
+3. Expanda o FBX e arraste um `Anim: ...` para `Fios > Controlador de animacao`.
+4. Na Hierarquia, selecione o objeto.
+5. No Inspetor, adicione `Animator` e `Fios Controller`.
+6. Defina modulo/clipe no Animator.
+7. Clique `Play` e teste movimento/animacao.

@@ -1757,7 +1757,11 @@ fn load_fbx_ascii_mesh(path: &Path) -> Result<MeshData, String> {
             continue;
         }
         let base = vertices.len() as u32;
-        vertices.extend(cps.iter().map(|p| Vec3::new(p.x as f32, p.y as f32, p.z as f32)));
+        // FBX forward correction: align imported meshes to editor forward (+Z).
+        vertices.extend(
+            cps.iter()
+                .map(|p| Vec3::new(-(p.x as f32), p.y as f32, -(p.z as f32))),
+        );
 
         let mut poly: Vec<u32> = Vec::new();
         for raw in poly_verts.raw_polygon_vertices() {
