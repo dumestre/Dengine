@@ -518,12 +518,15 @@ impl InspectorWindow {
                                 let mut transform_changed = false;
                                 let mut numeric_dragging = false;
                                 ui.add_enabled_ui(*enabled, |ui| {
+                                    let axis_labels = ["X", "Y", "Z"];
                                     ui.horizontal(|ui| {
                                         ui.add_sized([52.0, 18.0], egui::Label::new("Posição"));
                                         for i in 0..3 {
-                                            let resp = ui
-                                                .add_sized(
-                                                [field_w, 20.0],
+                                            ui.label(
+                                                egui::RichText::new(axis_labels[i]).size(10.0),
+                                            );
+                                            let resp = ui.add_sized(
+                                                [field_w - 10.0, 20.0],
                                                 egui::DragValue::new(&mut draft.position[i]).speed(0.1),
                                             );
                                             let changed = resp.changed();
@@ -534,9 +537,11 @@ impl InspectorWindow {
                                     ui.horizontal(|ui| {
                                         ui.add_sized([52.0, 18.0], egui::Label::new("Rotação"));
                                         for i in 0..3 {
-                                            let resp = ui
-                                                .add_sized(
-                                                [field_w, 20.0],
+                                            ui.label(
+                                                egui::RichText::new(axis_labels[i]).size(10.0),
+                                            );
+                                            let resp = ui.add_sized(
+                                                [field_w - 10.0, 20.0],
                                                 egui::DragValue::new(&mut draft.rotation[i]).speed(0.1),
                                             );
                                             let changed = resp.changed();
@@ -547,9 +552,11 @@ impl InspectorWindow {
                                     ui.horizontal(|ui| {
                                         ui.add_sized([52.0, 18.0], egui::Label::new("Escala"));
                                         for i in 0..3 {
-                                            let resp = ui
-                                                .add_sized(
-                                                [field_w, 20.0],
+                                            ui.label(
+                                                egui::RichText::new(axis_labels[i]).size(10.0),
+                                            );
+                                            let resp = ui.add_sized(
+                                                [field_w - 10.0, 20.0],
                                                 egui::DragValue::new(&mut draft.scale[i]).speed(0.05),
                                             );
                                             let changed = resp.changed();

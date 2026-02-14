@@ -153,6 +153,36 @@ impl ViewportPanel {
         entry.transform.transform_point3(local_center)
     }
 
+    fn scene_entry_world_radius(entry: &SceneEntry, world_center: Vec3) -> f32 {
+        let verts = &entry.proxy.vertices;
+        if verts.is_empty() {
+            return 0.5;
+        }
+        let mut max_d2 = 0.0_f32;
+        for v in verts.iter().take(2048) {
+            let w = entry.transform.transform_point3(*v);
+            let d2 = w.distance_squared(world_center);
+            if d2.is_finite() && d2 > max_d2 {
+                max_d2 = d2;
+            }
+        }
+        max_d2.sqrt().clamp(0.2, 50.0)
+    }
+
+    fn focus_selected_or_origin(&mut self) {
+        if let Some(name) = self.selected_scene_object.clone() {
+            if let Some(entry) = self.scene_entries.iter().find(|o| o.name == name) {
+                let center = Self::scene_entry_world_center(entry);
+                let radius = Self::scene_entry_world_radius(entry, center);
+                self.camera_target = center;
+                self.camera_distance = (radius * 3.0).clamp(0.8, 80.0);
+                return;
+            }
+        }
+        self.camera_target = Vec3::ZERO;
+        self.camera_distance = self.camera_distance.clamp(0.8, 80.0);
+    }
+
     pub fn new() -> Self {
         let import_pipeline = AssetImportPipeline::new();
         let mut s = Self {
@@ -936,6 +966,8 @@ impl ViewportPanel {
                         ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Num3));
                     let key_top =
                         ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Num7));
+                    let key_focus =
+                        ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::F));
                     if key_front {
                         self.camera_yaw = -std::f32::consts::FRAC_PI_2;
                         self.camera_pitch = 0.0;
@@ -949,6 +981,10 @@ impl ViewportPanel {
                     if key_top {
                         self.camera_yaw = -std::f32::consts::FRAC_PI_2;
                         self.camera_pitch = 1.45;
+                        ui.ctx().request_repaint();
+                    }
+                    if key_focus && viewport_resp.hovered() && !pointer_over_controls {
+                        self.focus_selected_or_origin();
                         ui.ctx().request_repaint();
                     }
 
@@ -1084,7 +1120,8 @@ impl ViewportPanel {
                         }
 
                         // Scroll zoom (mouse wheel / touchpad scroll).
-                        if scroll_delta.y.abs() > 0.0 {
+                        // Quando Ctrl estiver pressionado, o gesto vira orbita (não zoom).
+                        if scroll_delta.y.abs() > 0.0 && !ctrl_down {
                             self.camera_distance =
                                 (self.camera_distance - scroll_delta.y * 0.01).clamp(0.8, 80.0);
                             ui.ctx().request_repaint();
@@ -1093,9 +1130,58 @@ impl ViewportPanel {
                         // Touchpad: dois dedos = pan; Ctrl + dois dedos = orbita.
                         if scroll_delta.length_sq() > 0.0 {
                             if ctrl_down {
-                                self.camera_yaw -= scroll_delta.x * 0.008;
-                                self.camera_pitch =
-                                    (self.camera_pitch - scroll_delta.y * 0.006).clamp(-1.45, 1.45);
+                                // Local: orbita em torno do objeto selecionado.
+                                // Global: orbita livre mantendo o ponto de vista atual.
+                                let pivot_local = if self.gizmo_orientation == GizmoOrientation::Local {
+                                    self.selected_scene_object.as_ref().and_then(|name| {
+                                        self.scene_entries
+                                            .iter()
+                                            .find(|o| &o.name == name)
+                                            .map(Self::scene_entry_world_center)
+                                    })
+                                } else {
+                                    None
+                                };
+                                if let Some(pivot) = pivot_local {
+                                    let old_orbit = Vec3::new(
+                                        self.camera_yaw.cos() * self.camera_pitch.cos(),
+                                        self.camera_pitch.sin(),
+                                        self.camera_yaw.sin() * self.camera_pitch.cos(),
+                                    );
+                                    let eye = self.camera_target + old_orbit * self.camera_distance;
+                                    let pivot_to_eye = eye - pivot;
+                                    let len = pivot_to_eye.length();
+                                    if len > 1e-4 {
+                                        let dir = pivot_to_eye / len;
+                                        let base_yaw = dir.z.atan2(dir.x);
+                                        let base_pitch = dir.y.clamp(-1.0, 1.0).asin();
+                                        self.camera_yaw = base_yaw + scroll_delta.x * 0.008;
+                                        self.camera_pitch =
+                                            (base_pitch - scroll_delta.y * 0.006).clamp(-1.45, 1.45);
+                                        self.camera_target = pivot;
+                                        self.camera_distance = len.clamp(0.8, 80.0);
+                                    } else {
+                                        self.camera_yaw -= scroll_delta.x * 0.008;
+                                        self.camera_pitch =
+                                            (self.camera_pitch - scroll_delta.y * 0.006).clamp(-1.45, 1.45);
+                                    }
+                                } else {
+                                    let old_orbit = Vec3::new(
+                                        self.camera_yaw.cos() * self.camera_pitch.cos(),
+                                        self.camera_pitch.sin(),
+                                        self.camera_yaw.sin() * self.camera_pitch.cos(),
+                                    );
+                                    let eye = self.camera_target + old_orbit * self.camera_distance;
+                                    self.camera_yaw -= scroll_delta.x * 0.008;
+                                    self.camera_pitch =
+                                        (self.camera_pitch - scroll_delta.y * 0.006).clamp(-1.45, 1.45);
+                                    let new_orbit = Vec3::new(
+                                        self.camera_yaw.cos() * self.camera_pitch.cos(),
+                                        self.camera_pitch.sin(),
+                                        self.camera_yaw.sin() * self.camera_pitch.cos(),
+                                    );
+                                    self.camera_target = eye - new_orbit * self.camera_distance;
+                                }
                             } else {
                                 let right = Vec3::new(self.camera_yaw.sin(), 0.0, -self.camera_yaw.cos());
                                 let up = Vec3::Y;
@@ -1185,8 +1271,6 @@ impl ViewportPanel {
                                 );
                             }
                         }
-                    } else {
-                        draw_wire_cube(ui, viewport_rect, mvp, self.object_selected);
                     }
 
                     if self.object_selected {

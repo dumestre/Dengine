@@ -376,6 +376,7 @@ impl ProjectWindow {
         {
             path.set_extension("deng");
         }
+        let path = Self::normalize_project_save_path(&path);
 
         match self.save_project_file(&path) {
             Ok(()) => {
@@ -391,7 +392,8 @@ impl ProjectWindow {
     }
 
     pub fn save_project_to_path(&mut self, path: &Path, language: EngineLanguage) -> bool {
-        match self.save_project_file(path) {
+        let path = Self::normalize_project_save_path(path);
+        match self.save_project_file(&path) {
             Ok(()) => {
                 let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("project.deng");
                 self.status_text = format!("{}: {}", self.tr(language, "save"), name);
@@ -402,6 +404,30 @@ impl ProjectWindow {
                 false
             }
         }
+    }
+
+    fn normalize_project_save_path(path: &Path) -> PathBuf {
+        let mut p = path.to_path_buf();
+        if p
+            .extension()
+            .and_then(|e| e.to_str())
+            .map(|e| e.eq_ignore_ascii_case("deng"))
+            != Some(true)
+        {
+            p.set_extension("deng");
+        }
+        let parent = p.parent().unwrap_or_else(|| Path::new("."));
+        let stem = p
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .unwrap_or("project")
+            .to_string();
+        if parent.join("Assets").is_dir() {
+            return p;
+        }
+        let root = parent.join(&stem);
+        let _ = fs::create_dir_all(root.join("Assets"));
+        root.join(format!("{stem}.deng"))
     }
 
     fn save_project_file(&self, path: &Path) -> Result<(), String> {

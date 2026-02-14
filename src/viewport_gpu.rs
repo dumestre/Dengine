@@ -47,8 +47,8 @@ fn fs_main(v: VsOut) -> @location(0) vec4<f32> {
     let ndotl = max(dot(n, l), 0.0);
     let rim = pow(1.0 - abs(n.z), 1.4) * 0.12;
     let shade = clamp(0.30 + ndotl * 0.70 + rim, 0.0, 1.0);
-    let c = ubo.tint.rgb * shade;
-    return vec4<f32>(c, 1.0);
+    let color = ubo.tint.rgb * shade;
+    return vec4<f32>(color, 1.0);
 }
 "#;
 
