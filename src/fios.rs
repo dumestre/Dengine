@@ -1418,6 +1418,11 @@ impl FiosState {
             .unwrap_or_else(|| self.add_node_custom(FiosNodeKind::OutputMove, egui::vec2(420.0, 120.0), 0.0, 0.0, 0.0));
         self.create_link(input_id, 0, output_id, 0);
         self.create_link(input_id, 1, output_id, 1);
+        self.create_module_group(
+            "Modulo Movimento Basico",
+            egui::Color32::from_rgb(72, 132, 102),
+            vec![input_id, output_id],
+        );
         let _ = self.save_graph_to_disk();
     }
 
@@ -1430,6 +1435,11 @@ impl FiosState {
             .unwrap_or_else(|| self.add_node_custom(FiosNodeKind::OutputLook, egui::vec2(420.0, 240.0), 0.0, 0.0, 0.0));
         self.create_link(input_id, 0, output_id, 0);
         self.create_link(input_id, 1, output_id, 1);
+        self.create_module_group(
+            "Modulo Look Basico",
+            egui::Color32::from_rgb(72, 108, 132),
+            vec![input_id, output_id],
+        );
         let _ = self.save_graph_to_disk();
     }
 
@@ -1446,6 +1456,11 @@ impl FiosState {
             .first_node_id_of_kind(FiosNodeKind::OutputAction)
             .unwrap_or_else(|| self.add_node_custom(FiosNodeKind::OutputAction, egui::vec2(420.0, 360.0), 0.0, 0.0, 0.0));
         self.create_link(input_id, 0, output_id, 0);
+        self.create_module_group(
+            "Modulo Acao Basico",
+            egui::Color32::from_rgb(158, 102, 62),
+            vec![input_id, output_id],
+        );
         let _ = self.save_graph_to_disk();
     }
 
@@ -1476,6 +1491,13 @@ impl FiosState {
         self.create_link(ky, 0, my, 1);
         self.create_link(mx, 0, output_id, 0);
         self.create_link(my, 0, output_id, 1);
+        self.create_module_group(
+            "Modulo Movimento Avancado",
+            egui::Color32::from_rgb(72, 132, 102),
+            vec![
+                input_id, output_id, dz_x, dz_y, sm_x, sm_y, kx, ky, mx, my,
+            ],
+        );
         let _ = self.save_graph_to_disk();
     }
 
@@ -1506,6 +1528,13 @@ impl FiosState {
         self.create_link(kpitch, 0, mpitch, 1);
         self.create_link(myaw, 0, output_id, 0);
         self.create_link(mpitch, 0, output_id, 1);
+        self.create_module_group(
+            "Modulo Look Avancado",
+            egui::Color32::from_rgb(72, 108, 132),
+            vec![
+                input_id, output_id, dz_yaw, dz_pitch, sm_yaw, sm_pitch, kyaw, kpitch, myaw, mpitch,
+            ],
+        );
         let _ = self.save_graph_to_disk();
     }
 
@@ -1563,7 +1592,28 @@ impl FiosState {
         self.create_link(add_1, 0, add_2, 0);
         self.create_link(m_play, 0, add_2, 1);
         self.create_link(add_2, 0, out_id, 0);
+        self.create_module_group(
+            "Modulo Animacao",
+            egui::Color32::from_rgb(122, 88, 152),
+            vec![
+                out_id, in_play, in_next, in_prev, c_play, c_next, c_prev, m_play, m_next, m_prev, add_1, add_2,
+            ],
+        );
         let _ = self.save_graph_to_disk();
+    }
+
+    fn create_module_group(&mut self, name: &str, color: egui::Color32, node_ids: Vec<u32>) {
+        let nodes: HashSet<u32> = node_ids.into_iter().collect();
+        if nodes.is_empty() {
+            return;
+        }
+        let id = self.alloc_group_id();
+        self.groups.push(FiosGroup {
+            id,
+            name: format!("{name} {id}"),
+            color,
+            nodes,
+        });
     }
 
     fn remove_selected_nodes(&mut self) -> bool {
@@ -2924,10 +2974,25 @@ impl FiosState {
             EngineLanguage::En => "Controls",
             EngineLanguage::Es => "Controles",
         };
+        let enabled_txt = match lang {
+            EngineLanguage::Pt => "Ativo",
+            EngineLanguage::En => "Enabled",
+            EngineLanguage::Es => "Activo",
+        };
+        let modules_txt = match lang {
+            EngineLanguage::Pt => "Modulos",
+            EngineLanguage::En => "Modules",
+            EngineLanguage::Es => "Modulos",
+        };
+        let remove_txt = match lang {
+            EngineLanguage::Pt => "Remover",
+            EngineLanguage::En => "Remove",
+            EngineLanguage::Es => "Remover",
+        };
         let add_control_txt = match lang {
-            EngineLanguage::Pt => "Add",
-            EngineLanguage::En => "Add",
-            EngineLanguage::Es => "Add",
+            EngineLanguage::Pt => "Add Modulo",
+            EngineLanguage::En => "Add Module",
+            EngineLanguage::Es => "Add Modulo",
         };
         let action_header = match lang {
             EngineLanguage::Pt => "Acao",
@@ -2964,10 +3029,16 @@ impl FiosState {
             .corner_radius(8)
             .inner_margin(egui::Margin::same(10))
             .show(ui, |ui| {
-                ui.with_layout(
-                    egui::Layout::left_to_right(egui::Align::Center).with_main_align(egui::Align::Center),
-                    |ui| {
+                ui.horizontal_wrapped(|ui| {
                     section_title(ui, controls_title);
+                    ui.add_space(8.0);
+                    ui.checkbox(&mut self.controls_enabled, enabled_txt);
+                });
+                ui.add_space(6.0);
+
+                ui.horizontal_wrapped(|ui| {
+                    ui.label(egui::RichText::new(modules_txt).strong());
+                    let mut to_remove: Option<FiosControlMode> = None;
                     for mode in self.control_modes.clone() {
                         let selected = self.active_control_mode == mode;
                         if ui
@@ -2982,6 +3053,29 @@ impl FiosState {
                             .clicked()
                         {
                             self.active_control_mode = mode;
+                        }
+                        if self.control_modes.len() > 1
+                            && ui
+                                .add(
+                                    egui::Button::new(
+                                        egui::RichText::new(remove_txt)
+                                            .color(egui::Color32::from_rgb(255, 235, 235)),
+                                    )
+                                    .fill(egui::Color32::from_rgb(148, 74, 74)),
+                                )
+                                .on_hover_text(Self::control_mode_label(mode, lang))
+                                .clicked()
+                        {
+                            to_remove = Some(mode);
+                        }
+                    }
+                    if let Some(mode) = to_remove {
+                        self.control_modes.retain(|m| *m != mode);
+                        if self.control_modes.is_empty() {
+                            self.control_modes.push(FiosControlMode::Movement);
+                        }
+                        if self.active_control_mode == mode {
+                            self.active_control_mode = self.control_modes[0];
                         }
                     }
                     ui.add_space(6.0);
@@ -3004,21 +3098,21 @@ impl FiosState {
                     egui::Popup::menu(&add_resp)
                         .id(ui.id().with("fios_add_control_mode_popup"))
                         .show(|ui| {
-                        if !self.control_modes.contains(&FiosControlMode::Animation)
-                            && ui.button(Self::control_mode_label(FiosControlMode::Animation, lang)).clicked()
-                        {
-                            self.control_modes.push(FiosControlMode::Animation);
-                            self.active_control_mode = FiosControlMode::Animation;
-                            ui.close();
-                        }
-                        if !self.control_modes.contains(&FiosControlMode::Movement)
-                            && ui.button(Self::control_mode_label(FiosControlMode::Movement, lang)).clicked()
-                        {
-                            self.control_modes.push(FiosControlMode::Movement);
-                            self.active_control_mode = FiosControlMode::Movement;
-                            ui.close();
-                        }
-                    });
+                            if !self.control_modes.contains(&FiosControlMode::Animation)
+                                && ui.button(Self::control_mode_label(FiosControlMode::Animation, lang)).clicked()
+                            {
+                                self.control_modes.push(FiosControlMode::Animation);
+                                self.active_control_mode = FiosControlMode::Animation;
+                                ui.close();
+                            }
+                            if !self.control_modes.contains(&FiosControlMode::Movement)
+                                && ui.button(Self::control_mode_label(FiosControlMode::Movement, lang)).clicked()
+                            {
+                                self.control_modes.push(FiosControlMode::Movement);
+                                self.active_control_mode = FiosControlMode::Movement;
+                                ui.close();
+                            }
+                        });
                 });
                 egui::Grid::new("fios_bind_grid")
                     .num_columns(3)
@@ -3265,9 +3359,8 @@ impl FiosState {
                     self.add_icon_texture = Self::load_png_texture(ctx, "src/assets/icons/add.png");
                 }
                 egui::CentralPanel::default().show(ctx, |ui| {
-                    ui.with_layout(
-                        egui::Layout::left_to_right(egui::Align::Center).with_main_align(egui::Align::Center),
-                        |ui| {
+                    ui.add_space(4.0);
+                    ui.horizontal(|ui| {
                         let controls_txt = match lang {
                             EngineLanguage::Pt => "Controles",
                             EngineLanguage::En => "Controls",
@@ -3296,7 +3389,9 @@ impl FiosState {
                             self.tab = FiosTab::Controller;
                         }
                     });
+                    ui.add_space(4.0);
                     ui.separator();
+                    ui.add_space(8.0);
                     match self.tab {
                         FiosTab::Controls => self.draw_controls_tab(ui, lang),
                         FiosTab::Graph => self.draw_graph(ui, lang),
