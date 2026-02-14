@@ -9,6 +9,7 @@ use eframe::egui::{self, Align2, Color32, FontId, PointerButton, Pos2, Rect, Sen
 use egui_gizmo::{Gizmo, GizmoMode, GizmoOrientation};
 use epaint::ColorImage;
 use glam::{EulerRot, Mat4, Quat, Vec3};
+use crate::hierarchy::Primitive3DKind;
 use crate::viewport_gpu::ViewportGpuRenderer;
 
 const MAX_RUNTIME_TRIANGLES: usize = 90_000;
@@ -386,6 +387,34 @@ impl ViewportPanel {
             self.object_selected = true;
             self.dropped_asset_label = Some(asset_name.to_string());
         }
+    }
+
+    pub fn spawn_primitive(&mut self, kind: Primitive3DKind, object_name: &str) -> bool {
+        let full = make_primitive_mesh(kind);
+        if full.vertices.is_empty() || full.triangles.is_empty() {
+            return false;
+        }
+        self.push_undo_snapshot();
+        let nav_proxy = make_proxy_mesh(&full, VIEWPORT_NAV_TRIANGLES, VIEWPORT_NAV_VERTICES);
+        let idx = self.scene_entries.len();
+        let col = (idx % 4) as f32;
+        let row = (idx / 4) as f32;
+        let spacing = 1.9_f32;
+        let tx = (col - 1.5) * spacing;
+        let tz = row * spacing;
+        let transform = Mat4::from_translation(Vec3::new(tx, 0.0, tz));
+        let name = object_name.to_string();
+        self.scene_entries.push(SceneEntry {
+            name: name.clone(),
+            transform,
+            full,
+            proxy: nav_proxy,
+        });
+        self.selected_scene_object = Some(name.clone());
+        self.dropped_asset_label = Some(name);
+        self.object_selected = true;
+        self.mesh_status = Some("Primitiva 3D criada".to_string());
+        true
     }
 
     pub fn on_asset_file_dropped_named(&mut self, path: &Path, object_name: &str) {
@@ -914,12 +943,12 @@ impl ViewportPanel {
                                     let base_pitch = dir.y.clamp(-1.0, 1.0).asin();
                                     self.camera_yaw = base_yaw + pointer_delta.x * 0.012;
                                     self.camera_pitch =
-                                        (base_pitch - pointer_delta.y * 0.009).clamp(-1.45, 1.45);
+                                        (base_pitch + pointer_delta.y * 0.009).clamp(-1.45, 1.45);
                                     self.camera_target = pivot;
                                     self.camera_distance = len.clamp(0.8, 80.0);
                                 } else {
                                     self.camera_yaw -= pointer_delta.x * 0.012;
-                                    self.camera_pitch = (self.camera_pitch - pointer_delta.y * 0.009)
+                                    self.camera_pitch = (self.camera_pitch + pointer_delta.y * 0.009)
                                         .clamp(-1.45, 1.45);
                                 }
                             } else {
@@ -960,12 +989,12 @@ impl ViewportPanel {
                                     let base_pitch = dir.y.clamp(-1.0, 1.0).asin();
                                     self.camera_yaw = base_yaw + pointer_delta.x * 0.012;
                                     self.camera_pitch =
-                                        (base_pitch - pointer_delta.y * 0.009).clamp(-1.45, 1.45);
+                                        (base_pitch + pointer_delta.y * 0.009).clamp(-1.45, 1.45);
                                     self.camera_target = pivot;
                                     self.camera_distance = len.clamp(0.8, 80.0);
                                 } else {
                                     self.camera_yaw -= pointer_delta.x * 0.012;
-                                    self.camera_pitch = (self.camera_pitch - pointer_delta.y * 0.009)
+                                    self.camera_pitch = (self.camera_pitch + pointer_delta.y * 0.009)
                                         .clamp(-1.45, 1.45);
                                 }
                             } else {
@@ -1265,6 +1294,159 @@ fn make_proxy_mesh(full: &MeshData, max_tris: usize, max_vertices: usize) -> Mes
         } else {
             full.name.clone()
         },
+        vertices,
+        triangles,
+    }
+}
+
+fn make_primitive_mesh(kind: Primitive3DKind) -> MeshData {
+    match kind {
+        Primitive3DKind::Cube => make_cube_mesh(),
+        Primitive3DKind::Sphere => make_sphere_mesh(14, 20),
+        Primitive3DKind::Cone => make_cone_mesh(24),
+        Primitive3DKind::Cylinder => make_cylinder_mesh(24),
+        Primitive3DKind::Plane => make_plane_mesh(),
+    }
+}
+
+fn make_cube_mesh() -> MeshData {
+    let h = 0.5_f32;
+    let vertices = vec![
+        Vec3::new(-h, -h, -h),
+        Vec3::new(h, -h, -h),
+        Vec3::new(h, h, -h),
+        Vec3::new(-h, h, -h),
+        Vec3::new(-h, -h, h),
+        Vec3::new(h, -h, h),
+        Vec3::new(h, h, h),
+        Vec3::new(-h, h, h),
+    ];
+    let triangles = vec![
+        [0, 2, 1], [0, 3, 2], // back
+        [4, 5, 6], [4, 6, 7], // front
+        [0, 1, 5], [0, 5, 4], // bottom
+        [3, 7, 6], [3, 6, 2], // top
+        [0, 4, 7], [0, 7, 3], // left
+        [1, 2, 6], [1, 6, 5], // right
+    ];
+    MeshData {
+        name: "Cube".to_string(),
+        vertices,
+        triangles,
+    }
+}
+
+fn make_plane_mesh() -> MeshData {
+    let h = 0.5_f32;
+    let vertices = vec![
+        Vec3::new(-h, 0.0, -h),
+        Vec3::new(h, 0.0, -h),
+        Vec3::new(h, 0.0, h),
+        Vec3::new(-h, 0.0, h),
+    ];
+    let triangles = vec![[0, 1, 2], [0, 2, 3]];
+    MeshData {
+        name: "Plane".to_string(),
+        vertices,
+        triangles,
+    }
+}
+
+fn make_cone_mesh(segments: usize) -> MeshData {
+    let seg = segments.max(8);
+    let r = 0.5_f32;
+    let half_h = 0.5_f32;
+    let mut vertices = Vec::with_capacity(seg + 2);
+    vertices.push(Vec3::new(0.0, half_h, 0.0)); // apex = 0
+    for i in 0..seg {
+        let a = (i as f32 / seg as f32) * std::f32::consts::TAU;
+        vertices.push(Vec3::new(a.cos() * r, -half_h, a.sin() * r));
+    }
+    vertices.push(Vec3::new(0.0, -half_h, 0.0)); // base center
+    let base_center = (vertices.len() - 1) as u32;
+
+    let mut triangles = Vec::with_capacity(seg * 2);
+    for i in 0..seg {
+        let a = (1 + i) as u32;
+        let b = (1 + ((i + 1) % seg)) as u32;
+        triangles.push([0, b, a]);
+        triangles.push([base_center, a, b]);
+    }
+    MeshData {
+        name: "Cone".to_string(),
+        vertices,
+        triangles,
+    }
+}
+
+fn make_cylinder_mesh(segments: usize) -> MeshData {
+    let seg = segments.max(8);
+    let r = 0.5_f32;
+    let half_h = 0.5_f32;
+    let mut vertices = Vec::with_capacity(seg * 2 + 2);
+    for i in 0..seg {
+        let a = (i as f32 / seg as f32) * std::f32::consts::TAU;
+        vertices.push(Vec3::new(a.cos() * r, -half_h, a.sin() * r)); // bottom ring
+    }
+    for i in 0..seg {
+        let a = (i as f32 / seg as f32) * std::f32::consts::TAU;
+        vertices.push(Vec3::new(a.cos() * r, half_h, a.sin() * r)); // top ring
+    }
+    vertices.push(Vec3::new(0.0, -half_h, 0.0));
+    vertices.push(Vec3::new(0.0, half_h, 0.0));
+    let bottom_center = (seg * 2) as u32;
+    let top_center = (seg * 2 + 1) as u32;
+
+    let mut triangles = Vec::with_capacity(seg * 4);
+    for i in 0..seg {
+        let n = (i + 1) % seg;
+        let b0 = i as u32;
+        let b1 = n as u32;
+        let t0 = (i + seg) as u32;
+        let t1 = (n + seg) as u32;
+        triangles.push([b0, b1, t1]);
+        triangles.push([b0, t1, t0]);
+        triangles.push([bottom_center, b1, b0]);
+        triangles.push([top_center, t0, t1]);
+    }
+    MeshData {
+        name: "Cylinder".to_string(),
+        vertices,
+        triangles,
+    }
+}
+
+fn make_sphere_mesh(stacks: usize, slices: usize) -> MeshData {
+    let st = stacks.max(6);
+    let sl = slices.max(8);
+    let r = 0.5_f32;
+    let mut vertices = Vec::with_capacity((st + 1) * (sl + 1));
+    for i in 0..=st {
+        let v = i as f32 / st as f32;
+        let phi = v * std::f32::consts::PI;
+        let y = (phi.cos()) * r;
+        let ring_r = (phi.sin()) * r;
+        for j in 0..=sl {
+            let u = j as f32 / sl as f32;
+            let theta = u * std::f32::consts::TAU;
+            vertices.push(Vec3::new(theta.cos() * ring_r, y, theta.sin() * ring_r));
+        }
+    }
+
+    let cols = sl + 1;
+    let mut triangles = Vec::with_capacity(st * sl * 2);
+    for i in 0..st {
+        for j in 0..sl {
+            let a = (i * cols + j) as u32;
+            let b = (i * cols + j + 1) as u32;
+            let c = ((i + 1) * cols + j) as u32;
+            let d = ((i + 1) * cols + j + 1) as u32;
+            triangles.push([a, c, d]);
+            triangles.push([a, d, b]);
+        }
+    }
+    MeshData {
+        name: "Sphere".to_string(),
         vertices,
         triangles,
     }

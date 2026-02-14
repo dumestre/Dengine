@@ -1476,6 +1476,9 @@ impl App for EditorApp {
         let i_right = self.inspector.docked_right_width();
         self.hierarchy
             .show(ctx, i_left, i_right, project_bottom, self.language);
+        while let Some(req) = self.hierarchy.take_spawn_primitive_request() {
+            let _ = self.viewport.spawn_primitive(req.kind, &req.object_name);
+        }
         for name in self.viewport.scene_object_names() {
             if self.hierarchy.object_is_deleted(&name) {
                 let _ = self.viewport.remove_scene_object(&name);
