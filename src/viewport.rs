@@ -876,8 +876,11 @@ impl ViewportPanel {
 
                     if can_navigate_camera && self.move_view_mode {
                         ui.output_mut(|o| {
-                            let _ = primary_down;
-                            o.cursor_icon = egui::CursorIcon::Move;
+                            o.cursor_icon = if primary_down {
+                                egui::CursorIcon::Grabbing
+                            } else {
+                                egui::CursorIcon::Grab
+                            };
                         });
                     }
 
