@@ -6,6 +6,7 @@ mod viewport;
 mod viewport_gpu;
 
 use eframe::egui::{TextureHandle, TextureOptions};
+use eframe::egui::text::LayoutJob;
 use eframe::{App, Frame, NativeOptions, egui};
 use epaint::ColorImage;
 use hierarchy::HierarchyWindow;
@@ -1245,6 +1246,128 @@ impl EditorApp {
         }
     }
 
+    fn terminal_color_256(idx: u8) -> egui::Color32 {
+        const BASE16: [(u8, u8, u8); 16] = [
+            (0, 0, 0),
+            (205, 49, 49),
+            (13, 188, 121),
+            (229, 229, 16),
+            (36, 114, 200),
+            (188, 63, 188),
+            (17, 168, 205),
+            (229, 229, 229),
+            (102, 102, 102),
+            (241, 76, 76),
+            (35, 209, 139),
+            (245, 245, 67),
+            (59, 142, 234),
+            (214, 112, 214),
+            (41, 184, 219),
+            (255, 255, 255),
+        ];
+        if idx < 16 {
+            let (r, g, b) = BASE16[idx as usize];
+            return egui::Color32::from_rgb(r, g, b);
+        }
+        if idx < 232 {
+            let v = idx - 16;
+            let r = v / 36;
+            let g = (v % 36) / 6;
+            let b = v % 6;
+            let comp = |n: u8| if n == 0 { 0 } else { 55 + n * 40 };
+            return egui::Color32::from_rgb(comp(r), comp(g), comp(b));
+        }
+        let gray = 8 + (idx - 232) * 10;
+        egui::Color32::from_rgb(gray, gray, gray)
+    }
+
+    fn terminal_color(color: vt100::Color) -> Option<egui::Color32> {
+        match color {
+            vt100::Color::Default => None,
+            vt100::Color::Idx(i) => Some(Self::terminal_color_256(i)),
+            vt100::Color::Rgb(r, g, b) => Some(egui::Color32::from_rgb(r, g, b)),
+        }
+    }
+
+    fn build_terminal_layout_job(&self) -> LayoutJob {
+        let mut job = LayoutJob::default();
+        let default_fg = egui::Color32::from_rgb(220, 220, 220);
+        let default_bg = egui::Color32::TRANSPARENT;
+        let base_font = egui::FontId::monospace(13.0);
+
+        let Some(parser) = &self.terminal_parser else {
+            let mut fmt = egui::TextFormat::default();
+            fmt.font_id = base_font;
+            fmt.color = default_fg;
+            fmt.background = default_bg;
+            job.append(&self.terminal_output, 0.0, fmt);
+            return job;
+        };
+
+        let screen = parser.screen();
+        let (rows, cols) = screen.size();
+        let (cursor_row, cursor_col) = screen.cursor_position();
+        let cursor_visible = !screen.hide_cursor();
+
+        for row in 0..rows {
+            for col in 0..cols {
+                let mut text = String::from(" ");
+                let mut fmt = egui::TextFormat::default();
+                fmt.font_id = base_font.clone();
+                fmt.color = default_fg;
+                fmt.background = default_bg;
+
+                if let Some(cell) = screen.cell(row, col) {
+                    let c = cell.contents();
+                    if !c.is_empty() {
+                        text = c;
+                    }
+                    if let Some(fg) = Self::terminal_color(cell.fgcolor()) {
+                        fmt.color = fg;
+                    }
+                    if let Some(bg) = Self::terminal_color(cell.bgcolor()) {
+                        fmt.background = bg;
+                    }
+                    if cell.bold() {
+                        fmt.font_id = egui::FontId::monospace(14.0);
+                    }
+                    if cell.italic() {
+                        fmt.italics = true;
+                    }
+                    if cell.underline() {
+                        fmt.underline = egui::Stroke::new(1.0, fmt.color);
+                    }
+                    if cell.inverse() {
+                        std::mem::swap(&mut fmt.color, &mut fmt.background);
+                        if fmt.background == egui::Color32::TRANSPARENT {
+                            fmt.background = default_fg;
+                        }
+                    }
+                }
+
+                if cursor_visible && row == cursor_row && col == cursor_col {
+                    fmt.background = egui::Color32::from_rgb(210, 210, 210);
+                    fmt.color = egui::Color32::from_rgb(15, 15, 15);
+                }
+
+                job.append(&text, 0.0, fmt);
+            }
+            if row + 1 < rows {
+                job.append(
+                    "\n",
+                    0.0,
+                    egui::TextFormat {
+                        font_id: base_font.clone(),
+                        color: default_fg,
+                        background: default_bg,
+                        ..Default::default()
+                    },
+                );
+            }
+        }
+        job
+    }
+
     fn start_embedded_cli_session(&mut self, model: TerminalCliModel) -> Result<(), String> {
         self.stop_embedded_terminal_session();
         let pty_system = native_pty_system();
@@ -1509,23 +1632,21 @@ impl EditorApp {
                         let cols = (max.x / 8.2).floor().max(40.0) as u16;
                         let rows = (max.y / 16.0).floor().max(10.0) as u16;
                         self.resize_embedded_terminal(cols, rows);
+                        let layout_job = self.build_terminal_layout_job();
                         egui::ScrollArea::both()
                             .id_salt("terminai_output_scroll")
                             .stick_to_bottom(true)
                             .show(ui, |ui| {
                                 ui.add(
-                                    egui::Label::new(
-                                        egui::RichText::new(&self.terminal_output)
-                                            .monospace()
-                                            .size(13.0),
-                                    )
-                                    .selectable(true),
+                                    egui::Label::new(layout_job).selectable(true),
                                 );
                             });
                     });
                     let term_resp =
                         ui.interact(frame_resp.response.rect, term_id, egui::Sense::click());
-                    if term_resp.clicked() {
+                    if self.terminal_session.is_some() {
+                        ui.memory_mut(|m| m.request_focus(term_id));
+                    } else if term_resp.clicked() {
                         ui.memory_mut(|m| m.request_focus(term_id));
                     }
                     let terminal_has_focus = ui.memory(|m| m.has_focus(term_id));
