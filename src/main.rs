@@ -1457,6 +1457,12 @@ impl App for EditorApp {
                 self.hierarchy.selected_object_name(),
                 inspector_transform,
             );
+        if let Some((object_name, pos, rot, scale)) = self.inspector.take_transform_live_request()
+        {
+            let _ = self
+                .viewport
+                .set_object_transform_components(&object_name, pos, rot, scale);
+        }
         if let Some((object_name, pos, rot, scale)) = self.inspector.take_transform_apply_request()
         {
             let _ = self

@@ -273,6 +273,36 @@ impl ViewportPanel {
         true
     }
 
+    pub fn set_object_transform_components(
+        &mut self,
+        object_name: &str,
+        position: [f32; 3],
+        rotation_deg: [f32; 3],
+        scale: [f32; 3],
+    ) -> bool {
+        let Some(idx) = self.scene_entries.iter().position(|o| o.name == object_name) else {
+            return false;
+        };
+        let pos = Vec3::new(position[0], position[1], position[2]);
+        let scl = Vec3::new(scale[0], scale[1], scale[2]);
+        let rot = Quat::from_euler(
+            EulerRot::XYZ,
+            rotation_deg[0].to_radians(),
+            rotation_deg[1].to_radians(),
+            rotation_deg[2].to_radians(),
+        );
+        let new_transform = Mat4::from_scale_rotation_translation(scl, rot, pos);
+        let old_transform = self.scene_entries[idx].transform;
+        if old_transform == new_transform {
+            return false;
+        }
+        self.scene_entries[idx].transform = new_transform;
+        self.model_matrix = new_transform;
+        self.object_selected = true;
+        self.selected_scene_object = Some(object_name.to_string());
+        true
+    }
+
     pub fn can_undo(&self) -> bool {
         !self.undo_stack.is_empty()
     }
@@ -903,7 +933,7 @@ impl ViewportPanel {
                                 .as_ref()
                                 .is_some_and(|name| name == &entry.name);
                             if selected {
-                                draw_wire_mesh(ui, viewport_rect, mvp_one, &entry.proxy, true);
+                                draw_mesh_outline(ui, viewport_rect, mvp_one, &entry.proxy);
                             }
                         } else {
                             for entry in &self.scene_entries {
@@ -920,7 +950,7 @@ impl ViewportPanel {
                                     .as_ref()
                                     .is_some_and(|name| name == &entry.name);
                                 if selected {
-                                    draw_wire_mesh(ui, viewport_rect, mvp_obj, &entry.proxy, true);
+                                    draw_mesh_outline(ui, viewport_rect, mvp_obj, &entry.proxy);
                                 }
                             }
                         }
@@ -930,25 +960,6 @@ impl ViewportPanel {
 
                     if self.object_selected {
                         let selected_name = self.selected_scene_object.clone();
-                        if let Some(name) = selected_name.clone() {
-                            if let Some(entry) = self.scene_entries.iter().find(|o| o.name == name) {
-                                let center_world = Self::scene_entry_world_center(entry);
-                                if let Some(center_screen) =
-                                    project_point(viewport_rect, proj * view, center_world)
-                                {
-                                    ui.painter().circle_stroke(
-                                        center_screen,
-                                        14.0,
-                                        Stroke::new(2.0, Color32::from_rgb(15, 232, 121)),
-                                    );
-                                    ui.painter().circle_filled(
-                                        center_screen,
-                                        3.0,
-                                        Color32::from_rgb(15, 232, 121),
-                                    );
-                                }
-                            }
-                        }
                         let selected_transform = selected_name
                             .as_ref()
                             .and_then(|name| {
@@ -1619,6 +1630,35 @@ fn draw_solid_mesh(ui: &mut egui::Ui, viewport: Rect, mvp: Mat4, mesh: &MeshData
     if !solid.vertices.is_empty() {
         ui.painter().add(egui::Shape::mesh(solid));
     }
+}
+
+fn draw_mesh_outline(ui: &mut egui::Ui, viewport: Rect, mvp: Mat4, mesh: &MeshData) {
+    if mesh.vertices.is_empty() {
+        return;
+    }
+    let mut min = egui::pos2(f32::INFINITY, f32::INFINITY);
+    let mut max = egui::pos2(f32::NEG_INFINITY, f32::NEG_INFINITY);
+    let mut count = 0usize;
+    for v in &mesh.vertices {
+        if let Some(p) = project_point(viewport, mvp, *v) {
+            count += 1;
+            min.x = min.x.min(p.x);
+            min.y = min.y.min(p.y);
+            max.x = max.x.max(p.x);
+            max.y = max.y.max(p.y);
+        }
+    }
+    if count == 0 {
+        return;
+    }
+    let mut rect = Rect::from_min_max(min, max);
+    rect = rect.expand(3.0);
+    let border = Stroke::new(2.0, Color32::from_rgb(15, 232, 121));
+    let glow = Stroke::new(4.0, Color32::from_rgba_unmultiplied(15, 232, 121, 54));
+    ui.painter()
+        .rect_stroke(rect, 4.0, glow, egui::StrokeKind::Outside);
+    ui.painter()
+        .rect_stroke(rect, 4.0, border, egui::StrokeKind::Outside);
 }
 
 fn draw_wire_cube(ui: &mut egui::Ui, viewport: Rect, mvp: Mat4, selected: bool) {

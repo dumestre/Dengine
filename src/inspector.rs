@@ -43,6 +43,7 @@ pub struct InspectorWindow {
     object_transforms: HashMap<String, TransformDraft>,
     object_transform_enabled: HashMap<String, bool>,
     last_selected_object: String,
+    pending_live_request: Option<(String, TransformDraft)>,
     pending_apply_request: Option<(String, TransformDraft)>,
     apply_loading_until: Option<Instant>,
 }
@@ -99,6 +100,7 @@ impl InspectorWindow {
             object_transforms: HashMap::new(),
             object_transform_enabled: HashMap::new(),
             last_selected_object: String::new(),
+            pending_live_request: None,
             pending_apply_request: None,
             apply_loading_until: None,
         }
@@ -108,6 +110,13 @@ impl InspectorWindow {
         &mut self,
     ) -> Option<(String, [f32; 3], [f32; 3], [f32; 3])> {
         let (name, draft) = self.pending_apply_request.take()?;
+        Some((name, draft.position, draft.rotation, draft.scale))
+    }
+
+    pub fn take_transform_live_request(
+        &mut self,
+    ) -> Option<(String, [f32; 3], [f32; 3], [f32; 3])> {
+        let (name, draft) = self.pending_live_request.take()?;
         Some((name, draft.position, draft.rotation, draft.scale))
     }
 
@@ -221,6 +230,18 @@ impl InspectorWindow {
                 self.object_transform_enabled
                     .entry(selected_object.to_string())
                     .or_insert(true);
+            }
+        }
+        if !selected_object.is_empty() {
+            if let Some((position, rotation, scale)) = selected_transform {
+                self.object_transforms.insert(
+                    selected_object.to_string(),
+                    TransformDraft {
+                        position,
+                        rotation,
+                        scale,
+                    },
+                );
             }
         }
 
@@ -492,35 +513,49 @@ impl InspectorWindow {
                                     (ui.available_width() - label_w - row_spacing * 3.0).max(72.0);
                                 let field_w = (fields_total / 3.0).max(20.0);
 
+                                let mut transform_changed = false;
                                 ui.add_enabled_ui(*enabled, |ui| {
                                     ui.horizontal(|ui| {
                                         ui.add_sized([52.0, 18.0], egui::Label::new("Posição"));
                                         for i in 0..3 {
-                                            ui.add_sized(
+                                            let changed = ui
+                                                .add_sized(
                                                 [field_w, 20.0],
                                                 egui::DragValue::new(&mut draft.position[i]).speed(0.1),
-                                            );
+                                            )
+                                                .changed();
+                                            transform_changed |= changed;
                                         }
                                     });
                                     ui.horizontal(|ui| {
                                         ui.add_sized([52.0, 18.0], egui::Label::new("Rotação"));
                                         for i in 0..3 {
-                                            ui.add_sized(
+                                            let changed = ui
+                                                .add_sized(
                                                 [field_w, 20.0],
                                                 egui::DragValue::new(&mut draft.rotation[i]).speed(0.1),
-                                            );
+                                            )
+                                                .changed();
+                                            transform_changed |= changed;
                                         }
                                     });
                                     ui.horizontal(|ui| {
                                         ui.add_sized([52.0, 18.0], egui::Label::new("Escala"));
                                         for i in 0..3 {
-                                            ui.add_sized(
+                                            let changed = ui
+                                                .add_sized(
                                                 [field_w, 20.0],
                                                 egui::DragValue::new(&mut draft.scale[i]).speed(0.05),
-                                            );
+                                            )
+                                                .changed();
+                                            transform_changed |= changed;
                                         }
                                     });
                                 });
+                                if *enabled && transform_changed {
+                                    self.pending_live_request =
+                                        Some((selected_object.to_string(), *draft));
+                                }
 
                                 ui.add_space(10.0);
                                 let is_loading = self
