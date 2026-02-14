@@ -2,6 +2,7 @@ use std::collections::HashSet;
 use std::fs::{self, File};
 use std::io::{Read, Write};
 use std::hash::{Hash, Hasher};
+use std::collections::hash_map::DefaultHasher;
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{self, Receiver, Sender};
 
@@ -158,7 +159,7 @@ impl ViewportPanel {
             is_3d: true,
             is_ortho: false,
             gizmo_mode: GizmoMode::Translate,
-            gizmo_orientation: GizmoOrientation::Global,
+            gizmo_orientation: GizmoOrientation::Local,
             model_matrix: Mat4::IDENTITY,
             camera_yaw: 0.78,
             camera_pitch: 0.42,
@@ -207,6 +208,51 @@ impl ViewportPanel {
 
     pub fn scene_object_names(&self) -> Vec<String> {
         self.scene_entries.iter().map(|o| o.name.clone()).collect()
+    }
+
+    fn gpu_scene_mesh_id(&self, use_proxy: bool) -> u64 {
+        let mut hasher = DefaultHasher::new();
+        use_proxy.hash(&mut hasher);
+        self.scene_entries.len().hash(&mut hasher);
+        for entry in &self.scene_entries {
+            entry.name.hash(&mut hasher);
+            let mesh = if use_proxy { &entry.proxy } else { &entry.full };
+            mesh.vertices.len().hash(&mut hasher);
+            mesh.triangles.len().hash(&mut hasher);
+            for col in entry.transform.to_cols_array_2d() {
+                for f in col {
+                    f.to_bits().hash(&mut hasher);
+                }
+            }
+        }
+        hasher.finish().max(1)
+    }
+
+    fn build_gpu_scene_mesh(&self, use_proxy: bool) -> MeshData {
+        let mut vertices: Vec<Vec3> = Vec::new();
+        let mut triangles: Vec<[u32; 3]> = Vec::new();
+        for entry in &self.scene_entries {
+            let mesh = if use_proxy { &entry.proxy } else { &entry.full };
+            let base = vertices.len() as u32;
+            vertices.extend(
+                mesh.vertices
+                    .iter()
+                    .map(|v| entry.transform.transform_point3(*v)),
+            );
+            for tri in &mesh.triangles {
+                if (tri[0] as usize) < mesh.vertices.len()
+                    && (tri[1] as usize) < mesh.vertices.len()
+                    && (tri[2] as usize) < mesh.vertices.len()
+                {
+                    triangles.push([base + tri[0], base + tri[1], base + tri[2]]);
+                }
+            }
+        }
+        MeshData {
+            name: "SceneBatch".to_string(),
+            vertices,
+            triangles,
+        }
     }
 
     pub fn set_selected_object(&mut self, object_name: &str) {
@@ -813,7 +859,7 @@ impl ViewportPanel {
                 ui.painter().text(
                     egui::pos2(viewport_rect.left() + 12.0, viewport_rect.bottom() - 10.0),
                     Align2::LEFT_BOTTOM,
-                    "Mouse (Unity): Alt+LMB orbitar | RMB arrastar olhar (camera fixa) | MMB pan | Alt+RMB zoom | Scroll zoom | LMB selecionar | Touchpad: clique selecionar | 2 dedos pan | Pinch zoom | Shift+2 dedos orbitar",
+                    "Mouse (Unity): Alt+LMB orbitar | RMB arrastar olhar (camera fixa) | MMB pan | Alt+RMB zoom | Scroll zoom | LMB selecionar | Touchpad: clique selecionar | 2 dedos pan | Pinch zoom | Ctrl+2 dedos orbitar",
                     FontId::proportional(11.0),
                     Color32::from_gray(170),
                 );
@@ -823,7 +869,7 @@ impl ViewportPanel {
                     let scroll_delta = ctx.input(|i| i.smooth_scroll_delta);
                     let pinch_zoom = ctx.input(|i| i.zoom_delta());
                     let alt_down = ctx.input(|i| i.modifiers.alt);
-                    let shift_down = ctx.input(|i| i.modifiers.shift);
+                    let ctrl_down = ctx.input(|i| i.modifiers.ctrl);
                     let primary_down = ctx.input(|i| i.pointer.primary_down());
                     let middle_down = ctx.input(|i| i.pointer.middle_down());
                     let secondary_down = ctx.input(|i| i.pointer.secondary_down());
@@ -1044,9 +1090,9 @@ impl ViewportPanel {
                             ui.ctx().request_repaint();
                         }
 
-                        // Touchpad: dois dedos = pan; Shift + dois dedos = orbita.
+                        // Touchpad: dois dedos = pan; Ctrl + dois dedos = orbita.
                         if scroll_delta.length_sq() > 0.0 {
-                            if shift_down {
+                            if ctrl_down {
                                 self.camera_yaw -= scroll_delta.x * 0.008;
                                 self.camera_pitch =
                                     (self.camera_pitch - scroll_delta.y * 0.006).clamp(-1.45, 1.45);
@@ -1100,39 +1146,17 @@ impl ViewportPanel {
                     }
 
                     if !self.scene_entries.is_empty() {
-                        if self.scene_entries.len() == 1 {
-                            let entry = &self.scene_entries[0];
-                            let model = entry.transform;
-                            let mvp_one = proj * view * model;
-                            let mesh = if is_navigating {
-                                &entry.proxy
-                            } else {
-                                &entry.full
-                            };
-                            let mut gpu_drawn = false;
-                            if let Some(gpu) = gpu_renderer {
-                                gpu.update_scene(1, &mesh.vertices, &mesh.triangles, mvp_one);
-                                let cb = gpu.paint_callback(viewport_rect);
-                                ui.painter().add(egui::Shape::Callback(cb));
-                                gpu_drawn = true;
-                            }
-                            if !gpu_drawn {
-                                draw_solid_mesh(ui, viewport_rect, mvp_one, mesh);
-                            }
-                            let selected = self
-                                .selected_scene_object
-                                .as_ref()
-                                .is_some_and(|name| name == &entry.name);
-                            if selected {
-                                draw_mesh_silhouette(
-                                    ui,
-                                    viewport_rect,
-                                    mvp_one,
-                                    view * model,
-                                    &entry.proxy,
-                                );
-                            }
-                        } else {
+                        let use_proxy = is_navigating;
+                        let mut gpu_drawn = false;
+                        if let Some(gpu) = gpu_renderer {
+                            let scene_batch = self.build_gpu_scene_mesh(use_proxy);
+                            let mesh_id = self.gpu_scene_mesh_id(use_proxy);
+                            gpu.update_scene(mesh_id, &scene_batch.vertices, &scene_batch.triangles, proj * view);
+                            let cb = gpu.paint_callback(viewport_rect);
+                            ui.painter().add(egui::Shape::Callback(cb));
+                            gpu_drawn = true;
+                        }
+                        if !gpu_drawn {
                             for entry in &self.scene_entries {
                                 let model = entry.transform;
                                 let mvp_obj = proj * view * model;
@@ -1142,19 +1166,23 @@ impl ViewportPanel {
                                     &entry.full
                                 };
                                 draw_solid_mesh(ui, viewport_rect, mvp_obj, mesh);
-                                let selected = self
-                                    .selected_scene_object
-                                    .as_ref()
-                                    .is_some_and(|name| name == &entry.name);
-                                if selected {
-                                    draw_mesh_silhouette(
-                                        ui,
-                                        viewport_rect,
-                                        mvp_obj,
-                                        view * model,
-                                        &entry.proxy,
-                                    );
-                                }
+                            }
+                        }
+                        for entry in &self.scene_entries {
+                            let model = entry.transform;
+                            let mvp_obj = proj * view * model;
+                            let selected = self
+                                .selected_scene_object
+                                .as_ref()
+                                .is_some_and(|name| name == &entry.name);
+                            if selected {
+                                draw_mesh_silhouette(
+                                    ui,
+                                    viewport_rect,
+                                    mvp_obj,
+                                    view * model,
+                                    &entry.proxy,
+                                );
                             }
                         }
                     } else {
@@ -1947,8 +1975,10 @@ fn draw_wire_mesh(ui: &mut egui::Ui, viewport: Rect, mvp: Mat4, mesh: &MeshData,
 }
 
 fn draw_solid_mesh(ui: &mut egui::Ui, viewport: Rect, mvp: Mat4, mesh: &MeshData) {
-    let mut solid = egui::epaint::Mesh::default();
     let max_triangles = 14_000usize;
+    let light = Vec3::new(0.42, 0.78, 0.46).normalize();
+    let mut tris: Vec<(f32, Pos2, Pos2, Pos2, Color32)> = Vec::new();
+    tris.reserve(mesh.triangles.len().min(max_triangles));
 
     for tri in mesh.triangles.iter().take(max_triangles) {
         let ia = tri[0] as usize;
@@ -1962,20 +1992,57 @@ fn draw_solid_mesh(ui: &mut egui::Ui, viewport: Rect, mvp: Mat4, mesh: &MeshData
         let b3 = mesh.vertices[ib];
         let c3 = mesh.vertices[ic];
         let n = (b3 - a3).cross(c3 - a3);
-        if n.length_squared() <= 1e-8 {
+        let n_len2 = n.length_squared();
+        if n_len2 <= 1e-8 {
             continue;
         }
-        let lum = n.normalize().dot(Vec3::new(0.45, 0.7, 0.55)).abs();
-        let v = (70.0 + lum * 120.0) as u8;
-        let color = Color32::from_rgb(v, v, (v as f32 * 1.07).min(255.0) as u8);
+        let nrm = n / n_len2.sqrt();
+        let diff = nrm.dot(light).max(0.0);
+        let amb = 0.28_f32;
+        let lit = (amb + diff * 0.72).clamp(0.0, 1.0);
 
-        let pa = project_point(viewport, mvp, a3);
-        let pb = project_point(viewport, mvp, b3);
-        let pc = project_point(viewport, mvp, c3);
-        let (Some(pa), Some(pb), Some(pc)) = (pa, pb, pc) else {
+        let clip_a = mvp * a3.extend(1.0);
+        let clip_b = mvp * b3.extend(1.0);
+        let clip_c = mvp * c3.extend(1.0);
+        if clip_a.w.abs() <= 1e-6 || clip_b.w.abs() <= 1e-6 || clip_c.w.abs() <= 1e-6 {
             continue;
-        };
+        }
+        let ndc_a = clip_a.truncate() / clip_a.w;
+        let ndc_b = clip_b.truncate() / clip_b.w;
+        let ndc_c = clip_c.truncate() / clip_c.w;
+        if ndc_a.z < -1.2 || ndc_a.z > 1.2 || ndc_b.z < -1.2 || ndc_b.z > 1.2 || ndc_c.z < -1.2 || ndc_c.z > 1.2 {
+            continue;
+        }
 
+        let pa = egui::pos2(
+            viewport.left() + (ndc_a.x * 0.5 + 0.5) * viewport.width(),
+            viewport.top() + (1.0 - (ndc_a.y * 0.5 + 0.5)) * viewport.height(),
+        );
+        let pb = egui::pos2(
+            viewport.left() + (ndc_b.x * 0.5 + 0.5) * viewport.width(),
+            viewport.top() + (1.0 - (ndc_b.y * 0.5 + 0.5)) * viewport.height(),
+        );
+        let pc = egui::pos2(
+            viewport.left() + (ndc_c.x * 0.5 + 0.5) * viewport.width(),
+            viewport.top() + (1.0 - (ndc_c.y * 0.5 + 0.5)) * viewport.height(),
+        );
+
+        let area2 = (pb.x - pa.x) * (pc.y - pa.y) - (pb.y - pa.y) * (pc.x - pa.x);
+        if area2 <= 0.0 {
+            continue;
+        }
+
+        let depth = (ndc_a.z + ndc_b.z + ndc_c.z) / 3.0;
+        let edge_boost = (1.0 - nrm.z.abs()).clamp(0.0, 1.0) * 0.12;
+        let v = ((58.0 + (lit + edge_boost) * 156.0).min(255.0)) as u8;
+        let b = ((v as f32) * 1.06).min(255.0) as u8;
+        let color = Color32::from_rgb(v, v, b);
+        tris.push((depth, pa, pb, pc, color));
+    }
+
+    tris.sort_by(|a, b| b.0.total_cmp(&a.0));
+    let mut solid = egui::epaint::Mesh::default();
+    for (_, pa, pb, pc, color) in tris {
         let base = solid.vertices.len() as u32;
         solid.colored_vertex(pa, color);
         solid.colored_vertex(pb, color);

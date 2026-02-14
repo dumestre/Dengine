@@ -17,7 +17,9 @@ use raw_window_handle::{HasWindowHandle, RawWindowHandle};
 use std::fs::{self, File};
 use std::io::Write;
 use std::path::{Path, PathBuf};
+use std::process::Command;
 use std::sync::Arc;
+use std::sync::mpsc::{self, Receiver, TryRecvError};
 #[cfg(target_os = "windows")]
 use windows_sys::Win32::Graphics::Dwm::DwmSetWindowAttribute;
 
@@ -38,6 +40,44 @@ struct InstalledEngine {
     available_version: Option<String>,
     path: PathBuf,
     is_current: bool,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum TerminalCliModel {
+    Qwen,
+    Gemini,
+    Codex,
+}
+
+impl TerminalCliModel {
+    fn label(self) -> &'static str {
+        match self {
+            TerminalCliModel::Qwen => "Qwen CLI",
+            TerminalCliModel::Gemini => "Gemini CLI",
+            TerminalCliModel::Codex => "Codex CLI",
+        }
+    }
+
+    fn exe_name(self) -> &'static str {
+        match self {
+            TerminalCliModel::Qwen => "qwen",
+            TerminalCliModel::Gemini => "gemini",
+            TerminalCliModel::Codex => "codex",
+        }
+    }
+
+    fn npm_package(self) -> &'static str {
+        match self {
+            TerminalCliModel::Qwen => "@qwen-code/qwen-code",
+            TerminalCliModel::Gemini => "@google/gemini-cli",
+            TerminalCliModel::Codex => "@openai/codex",
+        }
+    }
+}
+
+struct TerminalProvisionResult {
+    ok: bool,
+    message: String,
 }
 
 struct EditorApp {
@@ -81,6 +121,10 @@ struct EditorApp {
     hub_selected: Option<usize>,
     hub_engine_status: Option<String>,
     current_project: Option<PathBuf>,
+    terminal_selected_model: Option<TerminalCliModel>,
+    terminal_status: Option<String>,
+    terminal_busy: bool,
+    terminal_job_rx: Option<Receiver<TerminalProvisionResult>>,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -916,6 +960,338 @@ impl EditorApp {
             self.lang_es_icon = load_png_as_texture(ctx, "src/assets/icons/espanhol.png");
         }
     }
+
+    fn poll_terminal_job(&mut self) {
+        let Some(rx) = &self.terminal_job_rx else {
+            return;
+        };
+        match rx.try_recv() {
+            Ok(result) => {
+                self.terminal_busy = false;
+                self.terminal_status = Some(result.message);
+                self.terminal_job_rx = None;
+                if !result.ok {
+                    self.terminal_selected_model = None;
+                }
+            }
+            Err(TryRecvError::Empty) => {}
+            Err(TryRecvError::Disconnected) => {
+                self.terminal_busy = false;
+                self.terminal_status = Some("Falha ao iniciar tarefa do terminal".to_string());
+                self.terminal_job_rx = None;
+                self.terminal_selected_model = None;
+            }
+        }
+    }
+
+    fn is_cli_installed(exe: &str) -> bool {
+        #[cfg(target_os = "windows")]
+        {
+            Command::new("where")
+                .arg(exe)
+                .output()
+                .map(|o| o.status.success())
+                .unwrap_or(false)
+        }
+        #[cfg(not(target_os = "windows"))]
+        {
+            Command::new("which")
+                .arg(exe)
+                .output()
+                .map(|o| o.status.success())
+                .unwrap_or(false)
+        }
+    }
+
+    fn node_tooling_ready() -> Result<(), String> {
+        let has_node = Self::is_cli_installed("node");
+        let has_npm = Self::is_cli_installed("npm");
+        if has_node && has_npm {
+            return Ok(());
+        }
+        Self::try_install_node_tooling()
+    }
+
+    fn try_install_node_tooling() -> Result<(), String> {
+        #[cfg(target_os = "windows")]
+        {
+            let winget_ok = Command::new("winget")
+                .args(["install", "-e", "--id", "OpenJS.NodeJS.LTS", "--accept-package-agreements", "--accept-source-agreements"])
+                .output()
+                .map(|o| o.status.success())
+                .unwrap_or(false);
+            if winget_ok && Self::is_cli_installed("node") && Self::is_cli_installed("npm") {
+                return Ok(());
+            }
+
+            let choco_ok = Command::new("choco")
+                .args(["install", "nodejs-lts", "-y"])
+                .output()
+                .map(|o| o.status.success())
+                .unwrap_or(false);
+            if choco_ok && Self::is_cli_installed("node") && Self::is_cli_installed("npm") {
+                return Ok(());
+            }
+
+            Err("Node.js/npm não encontrados e falhou a instalação automática. Instale Node LTS e reabra a engine.".to_string())
+        }
+        #[cfg(target_os = "macos")]
+        {
+            let brew_ok = Command::new("brew")
+                .args(["install", "node"])
+                .output()
+                .map(|o| o.status.success())
+                .unwrap_or(false);
+            if brew_ok && Self::is_cli_installed("node") && Self::is_cli_installed("npm") {
+                return Ok(());
+            }
+            Err("Node.js/npm não encontrados e falhou a instalação automática via Homebrew. Instale Node LTS para continuar.".to_string())
+        }
+        #[cfg(all(unix, not(target_os = "macos")))]
+        {
+            let apt_ok = if Self::is_cli_installed("apt-get") {
+                Command::new("sh")
+                    .args(["-lc", "sudo apt-get update && sudo apt-get install -y nodejs npm"])
+                    .output()
+                    .map(|o| o.status.success())
+                    .unwrap_or(false)
+            } else {
+                false
+            };
+            if apt_ok && Self::is_cli_installed("node") && Self::is_cli_installed("npm") {
+                return Ok(());
+            }
+
+            let dnf_ok = if Self::is_cli_installed("dnf") {
+                Command::new("sh")
+                    .args(["-lc", "sudo dnf install -y nodejs npm"])
+                    .output()
+                    .map(|o| o.status.success())
+                    .unwrap_or(false)
+            } else {
+                false
+            };
+            if dnf_ok && Self::is_cli_installed("node") && Self::is_cli_installed("npm") {
+                return Ok(());
+            }
+
+            let pacman_ok = if Self::is_cli_installed("pacman") {
+                Command::new("sh")
+                    .args(["-lc", "sudo pacman -S --noconfirm nodejs npm"])
+                    .output()
+                    .map(|o| o.status.success())
+                    .unwrap_or(false)
+            } else {
+                false
+            };
+            if pacman_ok && Self::is_cli_installed("node") && Self::is_cli_installed("npm") {
+                return Ok(());
+            }
+
+            Err("Node.js/npm não encontrados e falhou a instalação automática (apt/dnf/pacman). Instale Node LTS para continuar.".to_string())
+        }
+    }
+
+    fn install_cli_npm(model: TerminalCliModel) -> Result<(), String> {
+        let pkg = model.npm_package();
+        #[cfg(target_os = "windows")]
+        let output = Command::new("cmd")
+            .args(["/C", &format!("npm install -g {pkg}")])
+            .output()
+            .map_err(|e| format!("erro ao executar npm: {e}"))?;
+        #[cfg(not(target_os = "windows"))]
+        let output = Command::new("sh")
+            .args(["-lc", &format!("npm install -g {pkg}")])
+            .output()
+            .map_err(|e| format!("erro ao executar npm: {e}"))?;
+
+        if output.status.success() {
+            Ok(())
+        } else {
+            let err = String::from_utf8_lossy(&output.stderr).trim().to_string();
+            if err.is_empty() {
+                Err("falha ao instalar CLI via npm".to_string())
+            } else {
+                Err(err)
+            }
+        }
+    }
+
+    fn launch_cli_terminal(model: TerminalCliModel) -> Result<(), String> {
+        let exe = model.exe_name();
+        #[cfg(target_os = "windows")]
+        {
+            Command::new("cmd")
+                .args(["/C", "start", "", "powershell", "-NoExit", "-Command", exe])
+                .spawn()
+                .map_err(|e| format!("erro ao abrir terminal: {e}"))?;
+            Ok(())
+        }
+        #[cfg(target_os = "macos")]
+        {
+            let script = format!("tell application \"Terminal\" to do script \"{exe}\"");
+            Command::new("osascript")
+                .args(["-e", &script])
+                .spawn()
+                .map_err(|e| format!("erro ao abrir terminal: {e}"))?;
+            Ok(())
+        }
+        #[cfg(all(unix, not(target_os = "macos")))]
+        {
+            let candidates: [(&str, Vec<&str>); 4] = [
+                ("x-terminal-emulator", vec!["-e", exe]),
+                ("gnome-terminal", vec!["--", exe]),
+                ("konsole", vec!["-e", exe]),
+                ("xfce4-terminal", vec!["-e", exe]),
+            ];
+            for (term, args) in candidates {
+                let launched = Command::new(term).args(args).spawn();
+                if launched.is_ok() {
+                    return Ok(());
+                }
+            }
+            Err("nenhum emulador de terminal suportado foi encontrado (x-terminal-emulator/gnome-terminal/konsole/xfce4-terminal)".to_string())
+        }
+    }
+
+    fn start_terminal_provision(&mut self, model: TerminalCliModel) {
+        if self.terminal_busy {
+            return;
+        }
+        if let Err(err) = Self::node_tooling_ready() {
+            self.terminal_busy = false;
+            self.terminal_status = Some(err);
+            self.terminal_selected_model = None;
+            return;
+        }
+        self.terminal_busy = true;
+        self.terminal_status = Some(format!("Verificando {}...", model.label()));
+        let (tx, rx) = mpsc::channel::<TerminalProvisionResult>();
+        self.terminal_job_rx = Some(rx);
+        std::thread::spawn(move || {
+            let exe = model.exe_name();
+            if !Self::is_cli_installed(exe) {
+                let install = Self::install_cli_npm(model);
+                if let Err(err) = install {
+                    let _ = tx.send(TerminalProvisionResult {
+                        ok: false,
+                        message: format!("Falha ao instalar {}: {}", model.label(), err),
+                    });
+                    return;
+                }
+                if !Self::is_cli_installed(exe) {
+                    let _ = tx.send(TerminalProvisionResult {
+                        ok: false,
+                        message: format!("{} instalado, mas comando não foi encontrado no PATH", model.label()),
+                    });
+                    return;
+                }
+            }
+
+            match Self::launch_cli_terminal(model) {
+                Ok(()) => {
+                    let _ = tx.send(TerminalProvisionResult {
+                        ok: true,
+                        message: format!("{} iniciado com sucesso", model.label()),
+                    });
+                }
+                Err(err) => {
+                    let _ = tx.send(TerminalProvisionResult {
+                        ok: false,
+                        message: format!("Falha ao abrir {}: {}", model.label(), err),
+                    });
+                }
+            }
+        });
+    }
+
+    fn draw_terminal_window(&mut self, ctx: &egui::Context) {
+        self.poll_terminal_job();
+        if !self.terminal_enabled {
+            return;
+        }
+        let viewport_id = egui::ViewportId::from_hash_of("dengine_terminal_viewport");
+        let mut close_terminal = false;
+        ctx.show_viewport_immediate(
+            viewport_id,
+            egui::ViewportBuilder::default()
+                .with_title("TerminAI")
+                .with_inner_size([520.0, 280.0])
+                .with_min_inner_size([420.0, 220.0])
+                .with_resizable(true)
+                .with_decorations(true),
+            |ctx, _class| {
+                if ctx.input(|i| i.viewport().close_requested()) {
+                    close_terminal = true;
+                    return;
+                }
+                egui::CentralPanel::default().show(ctx, |ui| {
+                    ui.label("Escolha um modelo para abrir no terminal:");
+                    ui.add_space(8.0);
+
+                    let button_w = ((ui.available_width() - 16.0) / 3.0).max(96.0);
+                    ui.horizontal(|ui| {
+                        for model in [TerminalCliModel::Qwen, TerminalCliModel::Gemini, TerminalCliModel::Codex] {
+                            let selected = self.terminal_selected_model == Some(model);
+                            let button = egui::Button::new(model.label())
+                                .fill(if selected {
+                                    egui::Color32::from_rgb(58, 84, 64)
+                                } else {
+                                    egui::Color32::from_rgb(52, 52, 52)
+                                })
+                                .stroke(egui::Stroke::new(
+                                    1.0,
+                                    if selected {
+                                        egui::Color32::from_rgb(15, 232, 121)
+                                    } else {
+                                        egui::Color32::from_gray(80)
+                                    },
+                                ));
+                            if ui
+                                .add_enabled(!self.terminal_busy, button.min_size(egui::vec2(button_w, 34.0)))
+                                .clicked()
+                            {
+                                self.terminal_selected_model = Some(model);
+                                self.start_terminal_provision(model);
+                            }
+                        }
+                    });
+
+                    ui.add_space(10.0);
+                    if let Some(model) = self.terminal_selected_model {
+                        ui.label(format!("Selecionado: {}", model.label()));
+                    } else {
+                        ui.label("Selecionado: nenhum");
+                    }
+
+                    if self.terminal_busy {
+                        ui.add_space(6.0);
+                        ui.horizontal(|ui| {
+                            ui.add(egui::Spinner::new().size(14.0).color(egui::Color32::from_rgb(15, 232, 121)));
+                            ui.label("Preparando terminal...");
+                        });
+                    }
+                    if let Some(status) = &self.terminal_status {
+                        ui.add_space(6.0);
+                        ui.label(status);
+                    }
+
+                    ui.add_space(10.0);
+                    if ui
+                        .add_enabled(!self.terminal_busy, egui::Button::new("Trocar modelo"))
+                        .clicked()
+                    {
+                        self.terminal_selected_model = None;
+                        self.terminal_status = Some("Escolha outro modelo".to_string());
+                    }
+                });
+            },
+        );
+        if close_terminal {
+            self.terminal_enabled = false;
+            ctx.send_viewport_cmd_to(viewport_id, egui::ViewportCommand::Close);
+        }
+    }
 }
 
 impl App for EditorApp {
@@ -927,6 +1303,7 @@ impl App for EditorApp {
         // Dark theme
         ctx.set_visuals(egui::Visuals::dark());
         self.ensure_toolbar_icons_loaded(ctx);
+        self.poll_terminal_job();
         if self.show_hub {
             self.draw_hub(ctx);
             return;
@@ -1734,7 +2111,7 @@ impl App for EditorApp {
                         );
                     }
                     if terminal_resp.clicked() {
-                        self.terminal_enabled = !self.terminal_enabled;
+                        self.terminal_enabled = true;
                     }
                     if let Some(terminal_icon) = &self.terminal_icon {
                         let _ = ui.put(
@@ -1783,7 +2160,7 @@ impl App for EditorApp {
                     draw_spaced_label(egui::pos2(fios_rect.center().x, label_y), "Fios");
                     draw_spaced_label(egui::pos2(log_rect.center().x, label_y), "Log");
                     draw_spaced_label(egui::pos2(git_rect.center().x, label_y), "Git");
-                    draw_spaced_label(egui::pos2(terminal_rect.center().x, label_y), "Terminal");
+                    draw_spaced_label(egui::pos2(terminal_rect.center().x, label_y), "TerminAI");
 
                     if engine_busy {
                         ui.ctx().request_repaint();
@@ -1919,6 +2296,8 @@ impl App for EditorApp {
                 }
             }
         }
+
+        self.draw_terminal_window(ctx);
     }
 }
 
@@ -2005,6 +2384,8 @@ fn main() -> eframe::Result<()> {
                     })
                 }),
             ),
+        depth_buffer: 24,
+        stencil_buffer: 0,
         ..Default::default()
     };
 
@@ -2056,6 +2437,10 @@ fn main() -> eframe::Result<()> {
                 hub_selected: None,
                 hub_engine_status: None,
                 current_project: None,
+                terminal_selected_model: None,
+                terminal_status: None,
+                terminal_busy: false,
+                terminal_job_rx: None,
             };
             app.refresh_hub_projects();
             app.refresh_hub_engines();

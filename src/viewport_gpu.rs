@@ -25,20 +25,29 @@ struct VsIn {
 
 struct VsOut {
     @builtin(position) clip_pos: vec4<f32>,
-    @location(0) shade: f32,
+    @location(0) world_pos: vec3<f32>,
 };
 
 @vertex
 fn vs_main(v: VsIn) -> VsOut {
     var out: VsOut;
     out.clip_pos = ubo.mvp * vec4<f32>(v.pos, 1.0);
-    out.shade = 0.78 + 0.22 * clamp(v.pos.y * 0.7 + 0.3, 0.0, 1.0);
+    out.world_pos = v.pos;
     return out;
 }
 
 @fragment
 fn fs_main(v: VsOut) -> @location(0) vec4<f32> {
-    let c = ubo.tint.rgb * v.shade;
+    let dpdx_pos = dpdx(v.world_pos);
+    let dpdy_pos = dpdy(v.world_pos);
+    let c = cross(dpdx_pos, dpdy_pos);
+    let len2 = max(dot(c, c), 1e-8);
+    let n = c * inverseSqrt(len2);
+    let l = normalize(vec3<f32>(0.42, 0.78, 0.46));
+    let ndotl = max(dot(n, l), 0.0);
+    let rim = pow(1.0 - abs(n.z), 1.4) * 0.12;
+    let shade = clamp(0.30 + ndotl * 0.70 + rim, 0.0, 1.0);
+    let c = ubo.tint.rgb * shade;
     return vec4<f32>(c, 1.0);
 }
 "#;
@@ -199,7 +208,13 @@ impl Draw3dCallback {
                 front_face: wgpu::FrontFace::Ccw,
                 ..Default::default()
             },
-            depth_stencil: None,
+            depth_stencil: Some(wgpu::DepthStencilState {
+                format: wgpu::TextureFormat::Depth24Plus,
+                depth_write_enabled: true,
+                depth_compare: wgpu::CompareFunction::LessEqual,
+                stencil: wgpu::StencilState::default(),
+                bias: wgpu::DepthBiasState::default(),
+            }),
             multisample: wgpu::MultisampleState::default(),
             multiview: None,
             cache: None,
