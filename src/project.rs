@@ -2183,7 +2183,7 @@ impl ProjectWindow {
                                                 let child_tile_w = (tile_w * 0.82).max(48.0);
                                                 let child_tile_name_h = 16.0;
                                                 let child_tile_pad = 5.0;
-                                                let child_visual_size = Vec2::new(
+                                                let child_tile_size = Vec2::new(
                                                     child_tile_w,
                                                     child_tile_w
                                                         + child_tile_name_h
@@ -2237,14 +2237,9 @@ impl ProjectWindow {
                                                 for (label, icon_opt, drag_payload, child_key) in
                                                     children
                                                 {
-                                                    let (slot_rect, c_resp) = ui
-                                                        .allocate_exact_size(
-                                                            tile_size,
-                                                            Sense::click_and_drag(),
-                                                        );
-                                                    let c_rect = Rect::from_center_size(
-                                                        slot_rect.center(),
-                                                        child_visual_size,
+                                                    let (c_rect, c_resp) = ui.allocate_exact_size(
+                                                        child_tile_size,
+                                                        Sense::click_and_drag(),
                                                     );
                                                     let selected_sub = self
                                                         .selected_sub_asset

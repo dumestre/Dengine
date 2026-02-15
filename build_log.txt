@@ -1,0 +1,63 @@
+    Checking Dengine v0.1.0 (D:\Dev\Porjetos\Dengine)
+warning: use of deprecated method `eframe::egui::Ui::allocate_ui_at_rect`: Use `allocate_new_ui` instead
+    --> src\fios.rs:4298:16
+     |
+4298 |             ui.allocate_ui_at_rect(content_rect, |ui| {
+     |                ^^^^^^^^^^^^^^^^^^^
+     |
+     = note: `#[warn(deprecated)]` on by default
+
+warning: value assigned to `selected_asset` is never read
+   --> src\fios.rs:897:21
+    |
+897 |                     selected_asset = Some(module.asset.clone());
+    |                     ^^^^^^^^^^^^^^
+    |
+    = help: maybe it is overwritten before being read?
+    = note: `#[warn(unused_assignments)]` (part of `#[warn(unused)]`) on by default
+
+error[E0502]: cannot borrow `self.nodes` as immutable because it is also borrowed as mutable
+    --> src\fios.rs:4189:28
+     |
+4090 |         for node in &mut self.nodes {
+     |                     ---------------
+     |                     |
+     |                     mutable borrow occurs here
+     |                     mutable borrow later used here
+...
+4189 |             let node_idx = self.nodes.iter().position(|n| n.id == node.id).unwrap();
+     |                            ^^^^^^^^^^ immutable borrow occurs here
+
+error[E0500]: closure requires unique access to `*self` but it is already borrowed
+    --> src\fios.rs:4298:50
+     |
+4090 |         for node in &mut self.nodes {
+     |                     ---------------
+     |                     |
+     |                     borrow occurs here
+     |                     first borrow later used here
+...
+4298 |             ui.allocate_ui_at_rect(content_rect, |ui| {
+     |                                                  ^^^^ closure construction occurs here
+4299 |                 ui.set_clip_rect(content_rect); // Clip to node body
+4300 |                 if self.render_node_widgets(ui, node_idx, lang) {
+     |                    ---- second borrow occurs due to use of `*self` in closure
+
+warning: unused variable: `header_rect`
+    --> src\fios.rs:3885:17
+     |
+3885 |             let header_rect =
+     |                 ^^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_header_rect`
+     |
+     = note: `#[warn(unused_variables)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused variable: `preview_y_off`
+    --> src\fios.rs:4192:17
+     |
+4192 |             let preview_y_off = if rect.height() > 80.0 { 32.0 } else { 28.0 };
+     |                 ^^^^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_preview_y_off`
+
+Some errors have detailed explanations: E0500, E0502.
+For more information about an error, try `rustc --explain E0500`.
+warning: `Dengine` (bin "Dengine") generated 4 warnings
+error: could not compile `Dengine` (bin "Dengine") due to 2 previous errors; 4 warnings emitted

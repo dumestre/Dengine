@@ -19,6 +19,7 @@ pub struct ModuleCategory {
 
 #[derive(Clone)]
 pub struct ModuleControl {
+    #[allow(dead_code)]
     pub node_id: u32,
     pub name: String,
     pub value: f32,
