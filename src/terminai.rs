@@ -103,7 +103,8 @@ impl EditorApp {
             }
             Err(TryRecvError::Disconnected) => {
                 self.terminai.terminal_busy = false;
-                self.terminai.terminal_status = Some("Falha ao iniciar tarefa do terminal".to_string());
+                self.terminai.terminal_status =
+                    Some("Falha ao iniciar tarefa do terminal".to_string());
                 self.terminai.terminal_selected_model = None;
             }
         }
@@ -117,10 +118,15 @@ impl EditorApp {
         loop {
             match rx.try_recv() {
                 Ok(chunk) => {
-                    self.terminai.terminal_transcript
+                    self.terminai
+                        .terminal_transcript
                         .push_str(&String::from_utf8_lossy(&chunk));
                     if self.terminai.terminal_transcript.len() > 800_000 {
-                        let cut = self.terminai.terminal_transcript.len().saturating_sub(700_000);
+                        let cut = self
+                            .terminai
+                            .terminal_transcript
+                            .len()
+                            .saturating_sub(700_000);
                         self.terminai.terminal_transcript.drain(..cut);
                     }
                     if chunk.windows(4).any(|w| w == b"\x1b[6n")
@@ -135,14 +141,16 @@ impl EditorApp {
                         parser.process(&chunk);
                         self.terminai.terminal_output = parser.screen().contents().to_string();
                     } else {
-                        self.terminai.terminal_output
+                        self.terminai
+                            .terminal_output
                             .push_str(&String::from_utf8_lossy(&chunk));
                     }
                 }
                 Err(TryRecvError::Empty) => break,
                 Err(TryRecvError::Disconnected) => {
                     keep_rx = false;
-                    self.terminai.terminal_status = Some("Sessão de terminal finalizada".to_string());
+                    self.terminai.terminal_status =
+                        Some("Sessão de terminal finalizada".to_string());
                     break;
                 }
             }
@@ -184,7 +192,14 @@ impl EditorApp {
         #[cfg(target_os = "windows")]
         {
             let winget_ok = Command::new("winget")
-                .args(["install", "-e", "--id", "OpenJS.NodeJS.LTS", "--accept-package-agreements", "--accept-source-agreements"])
+                .args([
+                    "install",
+                    "-e",
+                    "--id",
+                    "OpenJS.NodeJS.LTS",
+                    "--accept-package-agreements",
+                    "--accept-source-agreements",
+                ])
                 .output()
                 .map(|o| o.status.success())
                 .unwrap_or(false);
@@ -219,7 +234,10 @@ impl EditorApp {
         {
             let apt_ok = if Self::is_cli_installed("apt-get") {
                 Command::new("sh")
-                    .args(["-lc", "sudo apt-get update && sudo apt-get install -y nodejs npm"])
+                    .args([
+                        "-lc",
+                        "sudo apt-get update && sudo apt-get install -y nodejs npm",
+                    ])
                     .output()
                     .map(|o| o.status.success())
                     .unwrap_or(false)
@@ -594,16 +612,17 @@ impl EditorApp {
             10_000,
         ));
         self.terminai.terminal_output_rx = Some(rx);
-        self.terminai.terminal_session = Some(EmbeddedTerminalSession { child, master, writer });
+        self.terminai.terminal_session = Some(EmbeddedTerminalSession {
+            child,
+            master,
+            writer,
+        });
         let mut wd = self.terminal_working_dir().to_string_lossy().to_string();
         if wd.starts_with(r"\\?\") {
             wd = wd.trim_start_matches(r"\\?\").to_string();
         }
-        self.terminai.terminal_status = Some(format!(
-            "{} iniciado no TerminAI em {}",
-            model.label(),
-            wd
-        ));
+        self.terminai.terminal_status =
+            Some(format!("{} iniciado no TerminAI em {}", model.label(), wd));
         Ok(())
     }
 
@@ -621,12 +640,14 @@ impl EditorApp {
             return;
         }
         if self.current_project.is_none() {
-            self.terminai.terminal_status = Some("Abra um projeto (.deng) antes de iniciar o TerminAI".to_string());
+            self.terminai.terminal_status =
+                Some("Abra um projeto (.deng) antes de iniciar o TerminAI".to_string());
             self.terminai.terminal_selected_model = None;
             return;
         }
         self.terminai.terminal_busy = true;
-        self.terminai.terminal_status = Some(format!("Verificando e preparando {}...", model.label()));
+        self.terminai.terminal_status =
+            Some(format!("Verificando e preparando {}...", model.label()));
         let (tx, rx) = mpsc::channel::<TerminalProvisionResult>();
         self.terminai.terminal_job_rx = Some(rx);
         std::thread::spawn(move || {
@@ -652,7 +673,10 @@ impl EditorApp {
                 if !Self::is_cli_installed(exe) {
                     let _ = tx.send(TerminalProvisionResult {
                         ok: false,
-                        message: format!("{} instalado, mas comando não foi encontrado no PATH", model.label()),
+                        message: format!(
+                            "{} instalado, mas comando não foi encontrado no PATH",
+                            model.label()
+                        ),
                         model: None,
                     });
                     return;
@@ -697,7 +721,11 @@ impl EditorApp {
 
                     let button_w = ((ui.available_width() - 16.0) / 3.0).max(96.0);
                     ui.horizontal(|ui| {
-                        for model in [TerminalCliModel::Qwen, TerminalCliModel::Gemini, TerminalCliModel::Codex] {
+                        for model in [
+                            TerminalCliModel::Qwen,
+                            TerminalCliModel::Gemini,
+                            TerminalCliModel::Codex,
+                        ] {
                             let selected = self.terminai.terminal_selected_model == Some(model);
                             let button = egui::Button::new(model.label())
                                 .fill(if selected {
@@ -714,7 +742,10 @@ impl EditorApp {
                                     },
                                 ));
                             if ui
-                                .add_enabled(!self.terminai.terminal_busy, button.min_size(egui::vec2(button_w, 34.0)))
+                                .add_enabled(
+                                    !self.terminai.terminal_busy,
+                                    button.min_size(egui::vec2(button_w, 34.0)),
+                                )
                                 .clicked()
                             {
                                 self.terminai.terminal_selected_model = Some(model);
@@ -726,7 +757,11 @@ impl EditorApp {
                     if self.terminai.terminal_busy {
                         ui.add_space(6.0);
                         ui.horizontal(|ui| {
-                            ui.add(egui::Spinner::new().size(14.0).color(egui::Color32::from_rgb(15, 232, 121)));
+                            ui.add(
+                                egui::Spinner::new()
+                                    .size(14.0)
+                                    .color(egui::Color32::from_rgb(15, 232, 121)),
+                            );
                             ui.label("Preparando terminal...");
                         });
                     }
@@ -742,30 +777,32 @@ impl EditorApp {
                         .fill(egui::Color32::from_rgb(14, 14, 14))
                         .stroke(egui::Stroke::new(1.0, egui::Color32::from_gray(60)))
                         .inner_margin(egui::Margin::same(6));
-                    let frame_resp = ui.allocate_ui_with_layout(
-                        egui::vec2(ui.available_width(), term_h),
-                        egui::Layout::top_down(egui::Align::Min),
-                        |ui| {
-                            frame.show(ui, |ui| {
-                                let max = ui.available_size();
-                                let cols = (max.x / 8.2).floor().max(40.0) as u16;
-                                let rows = (max.y / 16.0).floor().max(10.0) as u16;
-                                self.resize_embedded_terminal(cols, rows);
-                                let layout_job = self.build_terminal_layout_job();
-                                egui::ScrollArea::both()
-                                    .id_salt("terminai_output_scroll")
-                                    .stick_to_bottom(true)
+                    let frame_resp = ui
+                        .allocate_ui_with_layout(
+                            egui::vec2(ui.available_width(), term_h),
+                            egui::Layout::top_down(egui::Align::Min),
+                            |ui| {
+                                frame
                                     .show(ui, |ui| {
-                                        ui.add(
-                                            egui::Label::new(layout_job).selectable(true),
-                                        );
-                                    });
-                            })
-                            .response
-                        },
-                    ).inner;
-                    let term_resp =
-                        ui.interact(frame_resp.rect, term_id, egui::Sense::click());
+                                        let max = ui.available_size();
+                                        let cols = (max.x / 8.2).floor().max(40.0) as u16;
+                                        let rows = (max.y / 16.0).floor().max(10.0) as u16;
+                                        self.resize_embedded_terminal(cols, rows);
+                                        let layout_job = self.build_terminal_layout_job();
+                                        egui::ScrollArea::both()
+                                            .id_salt("terminai_output_scroll")
+                                            .stick_to_bottom(true)
+                                            .show(ui, |ui| {
+                                                ui.add(
+                                                    egui::Label::new(layout_job).selectable(true),
+                                                );
+                                            });
+                                    })
+                                    .response
+                            },
+                        )
+                        .inner;
+                    let term_resp = ui.interact(frame_resp.rect, term_id, egui::Sense::click());
                     if self.terminai.terminal_enabled {
                         ui.memory_mut(|m| m.request_focus(term_id));
                     } else if term_resp.clicked() {
@@ -852,7 +889,3 @@ impl EditorApp {
         }
     }
 }
-
-
-
-

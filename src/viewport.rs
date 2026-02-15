@@ -1,17 +1,20 @@
 use std::collections::HashSet;
-use std::fs::{self, File};
-use std::io::{Read, Write};
-use std::hash::{Hash, Hasher};
 use std::collections::hash_map::DefaultHasher;
+use std::fs::{self, File};
+use std::hash::{Hash, Hasher};
+use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{self, Receiver, Sender};
 
-use eframe::egui::{self, Align2, Color32, FontId, PointerButton, Pos2, Rect, Sense, Stroke, TextureHandle, TextureOptions, Vec2};
+use crate::hierarchy::Primitive3DKind;
+use crate::viewport_gpu::ViewportGpuRenderer;
+use eframe::egui::{
+    self, Align2, Color32, FontId, PointerButton, Pos2, Rect, Sense, Stroke, TextureHandle,
+    TextureOptions, Vec2,
+};
 use egui_gizmo::{Gizmo, GizmoMode, GizmoOrientation};
 use epaint::ColorImage;
 use glam::{EulerRot, Mat4, Quat, Vec3};
-use crate::hierarchy::Primitive3DKind;
-use crate::viewport_gpu::ViewportGpuRenderer;
 
 const MAX_RUNTIME_TRIANGLES: usize = 90_000;
 const MAX_RUNTIME_VERTICES: usize = 120_000;
@@ -106,22 +109,24 @@ impl AssetImportPipeline {
         std::thread::spawn(move || {
             while let Ok(req) = rx_req.recv() {
                 match req {
-                    ImportRequest::LoadMesh { job_id, path } => match load_viewport_mesh_asset_cached(&path) {
-                        Ok(asset) => {
-                            let _ = tx_evt.send(ImportEvent::Mesh {
-                                job_id,
-                                event: MeshLoadEvent::Proxy(asset.proxy),
-                            });
-                            let _ = tx_evt.send(ImportEvent::Mesh {
-                                job_id,
-                                event: MeshLoadEvent::Full(Ok(asset.full)),
-                            });
-                        }
-                        Err(err) => {
-                            let _ = tx_evt.send(ImportEvent::Mesh {
-                                job_id,
-                                event: MeshLoadEvent::Full(Err(err)),
-                            });
+                    ImportRequest::LoadMesh { job_id, path } => {
+                        match load_viewport_mesh_asset_cached(&path) {
+                            Ok(asset) => {
+                                let _ = tx_evt.send(ImportEvent::Mesh {
+                                    job_id,
+                                    event: MeshLoadEvent::Proxy(asset.proxy),
+                                });
+                                let _ = tx_evt.send(ImportEvent::Mesh {
+                                    job_id,
+                                    event: MeshLoadEvent::Full(Ok(asset.full)),
+                                });
+                            }
+                            Err(err) => {
+                                let _ = tx_evt.send(ImportEvent::Mesh {
+                                    job_id,
+                                    event: MeshLoadEvent::Full(Err(err)),
+                                });
+                            }
                         }
                     }
                 }
@@ -296,7 +301,11 @@ impl ViewportPanel {
     }
 
     pub fn remove_scene_object(&mut self, object_name: &str) -> bool {
-        let Some(idx) = self.scene_entries.iter().position(|o| o.name == object_name) else {
+        let Some(idx) = self
+            .scene_entries
+            .iter()
+            .position(|o| o.name == object_name)
+        else {
             return false;
         };
         self.push_undo_snapshot();
@@ -337,7 +346,11 @@ impl ViewportPanel {
         rotation_deg: [f32; 3],
         scale: [f32; 3],
     ) -> bool {
-        let Some(idx) = self.scene_entries.iter().position(|o| o.name == object_name) else {
+        let Some(idx) = self
+            .scene_entries
+            .iter()
+            .position(|o| o.name == object_name)
+        else {
             return false;
         };
         let pos = Vec3::new(position[0], position[1], position[2]);
@@ -378,7 +391,11 @@ impl ViewportPanel {
         rotation_deg: [f32; 3],
         scale: [f32; 3],
     ) -> bool {
-        let Some(idx) = self.scene_entries.iter().position(|o| o.name == object_name) else {
+        let Some(idx) = self
+            .scene_entries
+            .iter()
+            .position(|o| o.name == object_name)
+        else {
             return false;
         };
         let pos = Vec3::new(position[0], position[1], position[2]);
@@ -402,15 +419,20 @@ impl ViewportPanel {
     }
 
     pub fn move_object_by(&mut self, object_name: &str, delta: [f32; 3]) -> bool {
-        let Some(idx) = self.scene_entries.iter().position(|o| o.name == object_name) else {
+        let Some(idx) = self
+            .scene_entries
+            .iter()
+            .position(|o| o.name == object_name)
+        else {
             return false;
         };
         let d = Vec3::new(delta[0], delta[1], delta[2]);
         if d.length_squared() <= 1e-12 {
             return false;
         }
-        let (scale, rotation, translation) =
-            self.scene_entries[idx].transform.to_scale_rotation_translation();
+        let (scale, rotation, translation) = self.scene_entries[idx]
+            .transform
+            .to_scale_rotation_translation();
         let next_t = translation + d;
         self.scene_entries[idx].transform =
             Mat4::from_scale_rotation_translation(scale, rotation, next_t);
@@ -418,15 +440,20 @@ impl ViewportPanel {
     }
 
     pub fn rotate_object_by(&mut self, object_name: &str, delta_deg: [f32; 3]) -> bool {
-        let Some(idx) = self.scene_entries.iter().position(|o| o.name == object_name) else {
+        let Some(idx) = self
+            .scene_entries
+            .iter()
+            .position(|o| o.name == object_name)
+        else {
             return false;
         };
         let d = Vec3::new(delta_deg[0], delta_deg[1], delta_deg[2]);
         if d.length_squared() <= 1e-12 {
             return false;
         }
-        let (scale, rotation, translation) =
-            self.scene_entries[idx].transform.to_scale_rotation_translation();
+        let (scale, rotation, translation) = self.scene_entries[idx]
+            .transform
+            .to_scale_rotation_translation();
         let dq = Quat::from_euler(
             EulerRot::XYZ,
             delta_deg[0].to_radians(),
@@ -554,7 +581,8 @@ impl ViewportPanel {
                 if let Ok(meta) = fs::metadata(path) {
                     if meta.len() > MAX_IMPORT_FILE_BYTES {
                         self.mesh_status = Some(
-                            "Arquivo muito grande para importacao direta; reduza a malha".to_string(),
+                            "Arquivo muito grande para importacao direta; reduza a malha"
+                                .to_string(),
                         );
                         self.mesh_loading = false;
                         self.pending_mesh_job = None;
@@ -573,7 +601,8 @@ impl ViewportPanel {
                             .to_string(),
                     );
                 }
-                self.import_pipeline.enqueue_mesh(job_id, path.to_path_buf());
+                self.import_pipeline
+                    .enqueue_mesh(job_id, path.to_path_buf());
             }
             "png" | "jpg" | "jpeg" | "webp" => {
                 self.mesh_status = Some("Viewport em modo sólido: textura desativada".to_string());
@@ -612,9 +641,13 @@ impl ViewportPanel {
                             self.push_undo_snapshot();
                             let is_heavy = mesh.triangles.len() > MAX_RUNTIME_TRIANGLES
                                 || mesh.vertices.len() > MAX_RUNTIME_VERTICES;
-                            let full = make_proxy_mesh(&mesh, MAX_RUNTIME_TRIANGLES, MAX_RUNTIME_VERTICES);
-                            let nav_proxy =
-                                make_proxy_mesh(&full, VIEWPORT_NAV_TRIANGLES, VIEWPORT_NAV_VERTICES);
+                            let full =
+                                make_proxy_mesh(&mesh, MAX_RUNTIME_TRIANGLES, MAX_RUNTIME_VERTICES);
+                            let nav_proxy = make_proxy_mesh(
+                                &full,
+                                VIEWPORT_NAV_TRIANGLES,
+                                VIEWPORT_NAV_VERTICES,
+                            );
                             let name = self
                                 .pending_mesh_name
                                 .take()
@@ -1391,9 +1424,7 @@ fn make_proxy_mesh(full: &MeshData, max_tris: usize, max_vertices: usize) -> Mes
         .flat_map(|t| [t[0], t[1], t[2]])
         .collect();
 
-    let target_index_count = (max_tris.saturating_mul(3))
-        .min(src_indices.len())
-        .max(3);
+    let target_index_count = (max_tris.saturating_mul(3)).min(src_indices.len()).max(3);
     let simplified = meshopt::simplify_decoder(
         &src_indices,
         &positions,
@@ -1409,7 +1440,8 @@ fn make_proxy_mesh(full: &MeshData, max_tris: usize, max_vertices: usize) -> Mes
         Vec::new()
     };
     let mut working_vertices = positions.clone();
-    let compact_vertices = meshopt::optimize_vertex_fetch(&mut optimized_indices, &working_vertices);
+    let compact_vertices =
+        meshopt::optimize_vertex_fetch(&mut optimized_indices, &working_vertices);
     working_vertices.clear();
 
     let vertices: Vec<Vec3> = compact_vertices
@@ -1472,12 +1504,18 @@ fn make_cube_mesh() -> MeshData {
         Vec3::new(-h, h, h),
     ];
     let triangles = vec![
-        [0, 2, 1], [0, 3, 2], // back
-        [4, 5, 6], [4, 6, 7], // front
-        [0, 1, 5], [0, 5, 4], // bottom
-        [3, 7, 6], [3, 6, 2], // top
-        [0, 4, 7], [0, 7, 3], // left
-        [1, 2, 6], [1, 6, 5], // right
+        [0, 2, 1],
+        [0, 3, 2], // back
+        [4, 5, 6],
+        [4, 6, 7], // front
+        [0, 1, 5],
+        [0, 5, 4], // bottom
+        [3, 7, 6],
+        [3, 6, 2], // top
+        [0, 4, 7],
+        [0, 7, 3], // left
+        [1, 2, 6],
+        [1, 6, 5], // right
     ];
     MeshData {
         name: "Cube".to_string(),
@@ -1639,17 +1677,22 @@ fn viewport_cache_file_path(source: &Path) -> Result<std::path::PathBuf, String>
 fn write_mesh_blob(f: &mut File, mesh: &MeshData) -> Result<(), String> {
     let vcount = mesh.vertices.len() as u32;
     let tcount = mesh.triangles.len() as u32;
-    f.write_all(&vcount.to_le_bytes()).map_err(|e| e.to_string())?;
-    f.write_all(&tcount.to_le_bytes()).map_err(|e| e.to_string())?;
+    f.write_all(&vcount.to_le_bytes())
+        .map_err(|e| e.to_string())?;
+    f.write_all(&tcount.to_le_bytes())
+        .map_err(|e| e.to_string())?;
     for v in &mesh.vertices {
         f.write_all(&v.x.to_le_bytes()).map_err(|e| e.to_string())?;
         f.write_all(&v.y.to_le_bytes()).map_err(|e| e.to_string())?;
         f.write_all(&v.z.to_le_bytes()).map_err(|e| e.to_string())?;
     }
     for tri in &mesh.triangles {
-        f.write_all(&tri[0].to_le_bytes()).map_err(|e| e.to_string())?;
-        f.write_all(&tri[1].to_le_bytes()).map_err(|e| e.to_string())?;
-        f.write_all(&tri[2].to_le_bytes()).map_err(|e| e.to_string())?;
+        f.write_all(&tri[0].to_le_bytes())
+            .map_err(|e| e.to_string())?;
+        f.write_all(&tri[1].to_le_bytes())
+            .map_err(|e| e.to_string())?;
+        f.write_all(&tri[2].to_le_bytes())
+            .map_err(|e| e.to_string())?;
     }
     Ok(())
 }
@@ -1689,12 +1732,18 @@ fn read_mesh_blob(f: &mut File, name: &str) -> Result<MeshData, String> {
     })
 }
 
-fn write_vmesh_cache(source: &Path, asset: &ViewportMeshAsset, stamp: (u64, u64)) -> Result<(), String> {
+fn write_vmesh_cache(
+    source: &Path,
+    asset: &ViewportMeshAsset,
+    stamp: (u64, u64),
+) -> Result<(), String> {
     let cache = viewport_cache_file_path(source)?;
     let mut f = File::create(cache).map_err(|e| e.to_string())?;
     f.write_all(b"VMSH2").map_err(|e| e.to_string())?;
-    f.write_all(&stamp.0.to_le_bytes()).map_err(|e| e.to_string())?;
-    f.write_all(&stamp.1.to_le_bytes()).map_err(|e| e.to_string())?;
+    f.write_all(&stamp.0.to_le_bytes())
+        .map_err(|e| e.to_string())?;
+    f.write_all(&stamp.1.to_le_bytes())
+        .map_err(|e| e.to_string())?;
     write_mesh_blob(&mut f, &asset.full)?;
     write_mesh_blob(&mut f, &asset.proxy)?;
     Ok(())
@@ -1766,7 +1815,11 @@ fn load_fbx_ascii_mesh(path: &Path) -> Result<MeshData, String> {
         let mut poly: Vec<u32> = Vec::new();
         for raw in poly_verts.raw_polygon_vertices() {
             let is_end = *raw < 0;
-            let local_idx = if is_end { (-raw - 1) as u32 } else { *raw as u32 };
+            let local_idx = if is_end {
+                (-raw - 1) as u32
+            } else {
+                *raw as u32
+            };
             if (local_idx as usize) < cps.len() {
                 poly.push(base + local_idx);
             }
@@ -1789,7 +1842,11 @@ fn load_fbx_ascii_mesh(path: &Path) -> Result<MeshData, String> {
         .and_then(|s| s.to_str())
         .unwrap_or("FBX")
         .to_string();
-    Ok(MeshData { name, vertices, triangles })
+    Ok(MeshData {
+        name,
+        vertices,
+        triangles,
+    })
 }
 
 fn load_obj_mesh(path: &Path) -> Result<MeshData, String> {
@@ -1839,11 +1896,23 @@ fn load_gltf_mesh(path: &Path) -> Result<MeshData, String> {
         .or_else(|| gltf.document.scenes().next())
     {
         for node in scene.nodes() {
-            append_gltf_node_meshes(node, Mat4::IDENTITY, &buffers, &mut vertices, &mut triangles);
+            append_gltf_node_meshes(
+                node,
+                Mat4::IDENTITY,
+                &buffers,
+                &mut vertices,
+                &mut triangles,
+            );
         }
     } else {
         for node in gltf.document.nodes() {
-            append_gltf_node_meshes(node, Mat4::IDENTITY, &buffers, &mut vertices, &mut triangles);
+            append_gltf_node_meshes(
+                node,
+                Mat4::IDENTITY,
+                &buffers,
+                &mut vertices,
+                &mut triangles,
+            );
         }
     }
 
@@ -1963,10 +2032,20 @@ fn draw_view_orientation_gizmo(ui: &mut egui::Ui, rect: Rect, view: Mat4) -> Opt
         radius,
         Color32::from_rgba_unmultiplied(28, 31, 36, if resp.hovered() { 230 } else { 205 }),
     );
-    painter.circle_stroke(center, radius, Stroke::new(1.0, Color32::from_rgb(74, 82, 95)));
+    painter.circle_stroke(
+        center,
+        radius,
+        Stroke::new(1.0, Color32::from_rgb(74, 82, 95)),
+    );
 
     let axes = [
-        (Vec3::X, Color32::from_rgb(228, 78, 88), 0.0_f32, 0.0_f32, Some("X")),
+        (
+            Vec3::X,
+            Color32::from_rgb(228, 78, 88),
+            0.0_f32,
+            0.0_f32,
+            Some("X"),
+        ),
         (
             Vec3::NEG_X,
             Color32::from_rgb(124, 50, 57),
@@ -1974,8 +2053,20 @@ fn draw_view_orientation_gizmo(ui: &mut egui::Ui, rect: Rect, view: Mat4) -> Opt
             0.0_f32,
             None,
         ),
-        (Vec3::Y, Color32::from_rgb(98, 206, 110), 0.0_f32, 1.45_f32, Some("Y")),
-        (Vec3::NEG_Y, Color32::from_rgb(54, 110, 62), 0.0_f32, -1.45_f32, None),
+        (
+            Vec3::Y,
+            Color32::from_rgb(98, 206, 110),
+            0.0_f32,
+            1.45_f32,
+            Some("Y"),
+        ),
+        (
+            Vec3::NEG_Y,
+            Color32::from_rgb(54, 110, 62),
+            0.0_f32,
+            -1.45_f32,
+            None,
+        ),
         (
             Vec3::Z,
             Color32::from_rgb(84, 153, 236),
@@ -2011,7 +2102,11 @@ fn draw_view_orientation_gizmo(ui: &mut egui::Ui, rect: Rect, view: Mat4) -> Opt
         painter.circle_filled(pos, if depth > 0.0 { 4.2 } else { 3.2 }, draw_color);
 
         let hit_rect = Rect::from_center_size(pos, egui::vec2(14.0, 14.0));
-        let hit_resp = ui.interact(hit_rect, id.with((pos.x as i32, pos.y as i32)), Sense::click());
+        let hit_resp = ui.interact(
+            hit_rect,
+            id.with((pos.x as i32, pos.y as i32)),
+            Sense::click(),
+        );
         if hit_resp.hovered() {
             painter.circle_stroke(pos, 6.0, Stroke::new(1.0, Color32::WHITE));
         }
@@ -2079,8 +2174,10 @@ fn draw_wire_mesh(ui: &mut egui::Ui, viewport: Rect, mvp: Mat4, mesh: &MeshData,
             }
             let ai = a as usize;
             let bi = b as usize;
-            if let (Some(pa), Some(pb)) = (projected.get(ai).and_then(|p| *p), projected.get(bi).and_then(|p| *p))
-            {
+            if let (Some(pa), Some(pb)) = (
+                projected.get(ai).and_then(|p| *p),
+                projected.get(bi).and_then(|p| *p),
+            ) {
                 ui.painter().line_segment([pa, pb], stroke);
             }
         }
@@ -2133,7 +2230,13 @@ fn draw_solid_mesh(ui: &mut egui::Ui, viewport: Rect, mvp: Mat4, mesh: &MeshData
         let ndc_a = clip_a.truncate() / clip_a.w;
         let ndc_b = clip_b.truncate() / clip_b.w;
         let ndc_c = clip_c.truncate() / clip_c.w;
-        if ndc_a.z < -1.2 || ndc_a.z > 1.2 || ndc_b.z < -1.2 || ndc_b.z > 1.2 || ndc_c.z < -1.2 || ndc_c.z > 1.2 {
+        if ndc_a.z < -1.2
+            || ndc_a.z > 1.2
+            || ndc_b.z < -1.2
+            || ndc_b.z > 1.2
+            || ndc_c.z < -1.2
+            || ndc_c.z > 1.2
+        {
             continue;
         }
 
@@ -2206,9 +2309,7 @@ fn draw_mesh_silhouette(
 
     let mut lower: Vec<Pos2> = Vec::new();
     for p in &pts {
-        while lower.len() >= 2
-            && cross(lower[lower.len() - 2], lower[lower.len() - 1], *p) <= 0.0
-        {
+        while lower.len() >= 2 && cross(lower[lower.len() - 2], lower[lower.len() - 1], *p) <= 0.0 {
             lower.pop();
         }
         lower.push(*p);
@@ -2216,9 +2317,7 @@ fn draw_mesh_silhouette(
 
     let mut upper: Vec<Pos2> = Vec::new();
     for p in pts.iter().rev() {
-        while upper.len() >= 2
-            && cross(upper[upper.len() - 2], upper[upper.len() - 1], *p) <= 0.0
-        {
+        while upper.len() >= 2 && cross(upper[upper.len() - 2], upper[upper.len() - 1], *p) <= 0.0 {
             upper.pop();
         }
         upper.push(*p);

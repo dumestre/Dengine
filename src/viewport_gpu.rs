@@ -344,7 +344,9 @@ impl egui_wgpu::CallbackTrait for Draw3dCallback {
                 resources.staged_vertices.clear();
                 resources.staged_vertices.extend_from_slice(&scene.vertices);
                 resources.staged_triangles.clear();
-                resources.staged_triangles.extend_from_slice(&scene.triangles);
+                resources
+                    .staged_triangles
+                    .extend_from_slice(&scene.triangles);
 
                 resources.pending_mesh_upload = Some(PendingMeshUpload {
                     mesh_id: scene.mesh_id,

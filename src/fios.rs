@@ -1,9 +1,15 @@
 use crate::EngineLanguage;
 use eframe::egui::{self, UiKind};
 use mlua::{Function, Lua, MultiValue, RegistryKey, Table, Value};
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
+
+mod modules;
+use modules::{
+    AvailableModule, ModuleCategory, ModuleChainItem, ModuleControl, friendly_module_name,
+    group_modules_by_category, parse_available_module,
+};
 
 const ACTION_COUNT: usize = 8;
 
@@ -12,27 +18,6 @@ enum FiosTab {
     Controls,
     Graph,
     Controller,
-}
-
-#[derive(Clone)]
-struct AvailableModule {
-    asset: String,
-    display_name: String,
-    category: String,
-}
-
-#[derive(Clone)]
-struct ModuleCategory {
-    name: String,
-    modules: Vec<AvailableModule>,
-}
-
-#[derive(Clone)]
-struct ModuleChainItem {
-    id: u32,
-    name: String,
-    asset: String,
-    enabled: bool,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -387,6 +372,7 @@ pub struct FiosState {
     capture_index: Option<usize>,
     status: Option<String>,
     add_icon_texture: Option<egui::TextureHandle>,
+    module_add_texture: Option<egui::TextureHandle>,
     available_modules: Vec<ModuleCategory>,
     module_chain: Vec<ModuleChainItem>,
     next_module_id: u32,
@@ -446,107 +432,12 @@ impl FiosState {
         }
     }
 
-    fn friendly_module_name(asset: &str) -> String {
-        let stem = Path::new(asset)
-            .file_stem()
-            .and_then(|stem| stem.to_str())
-            .unwrap_or(asset);
-        stem.split(|c: char| c == '_' || c == '-')
-            .filter(|part| !part.trim().is_empty())
-            .map(|part| {
-                let mut chars = part.chars();
-                if let Some(first) = chars.next() {
-                    let mut result = first.to_uppercase().collect::<String>();
-                    result.push_str(chars.as_str());
-                    result
-                } else {
-                    String::new()
-                }
-            })
-            .collect::<Vec<_>>()
-            .join(" ")
-    }
-
-    fn module_category(module_name: &str) -> String {
-        let stem = Path::new(module_name)
-            .file_stem()
-            .and_then(|s| s.to_str())
-            .unwrap_or(module_name)
-            .to_string();
-        if let Some(idx) = stem.find('_') {
-            let prefix = &stem[..idx];
-            if !prefix.trim().is_empty() {
-                return prefix.to_string();
-            }
-        }
-        if let Some(idx) = stem.find('-') {
-            let prefix = &stem[..idx];
-            if !prefix.trim().is_empty() {
-                return prefix.to_string();
-            }
-        }
-        "General".to_string()
-    }
-
-    fn parse_available_module(asset: String) -> AvailableModule {
-        let mut display = Self::friendly_module_name(&asset);
-        let mut category = String::new();
-        let path = Path::new("Assets")
-            .join("Animations")
-            .join("Modules")
-            .join(&asset);
-        if let Ok(contents) = fs::read_to_string(&path) {
-            for line in contents.lines() {
-                let trimmed = line.trim();
-                if trimmed.is_empty() || trimmed.starts_with('#') {
-                    continue;
-                }
-                if let Some((key, value)) = trimmed.split_once('=') {
-                    let key = key.trim().to_ascii_lowercase();
-                    let value = value.trim();
-                    if value.is_empty() {
-                        continue;
-                    }
-                    match key.as_str() {
-                        "name" => display = value.to_string(),
-                        "category" => category = value.to_string(),
-                        _ => {}
-                    }
-                }
-            }
-        }
-        if category.is_empty() {
-            category = Self::module_category(&asset);
-        }
-        AvailableModule {
-            asset,
-            display_name: display,
-            category,
-        }
-    }
-
-    fn group_modules_by_category(modules: Vec<AvailableModule>) -> Vec<ModuleCategory> {
-        let mut map: BTreeMap<String, Vec<AvailableModule>> = BTreeMap::new();
-        for module in modules {
-            map.entry(module.category.clone()).or_default().push(module);
-        }
-        let mut out = Vec::new();
-        for (category, mut modules) in map {
-            modules.sort_by_key(|m| m.display_name.clone());
-            out.push(ModuleCategory { name: category, modules });
-        }
-        out
-    }
-
     pub fn set_available_modules(&mut self, modules: Vec<String>) {
-        let defs = modules
-            .into_iter()
-            .map(Self::parse_available_module)
-            .collect();
-        self.available_modules = Self::group_modules_by_category(defs);
+        let defs = modules.into_iter().map(parse_available_module).collect();
+        self.available_modules = group_modules_by_category(defs);
     }
 
-    fn instantiate_module_from_asset(&mut self, asset: &str) {
+    fn instantiate_module_from_asset(&mut self, asset: &str) -> Option<u32> {
         let key = asset.to_ascii_lowercase();
         match key.as_str() {
             "movimento_basico.animodule" => self.add_module_move_basic(),
@@ -556,23 +447,309 @@ impl FiosState {
             "acao_principal.animodule" => self.add_module_action_basic(FiosAction::Action1.index()),
             "acao_pulo.animodule" => self.add_module_action_basic(FiosAction::Jump.index()),
             "controlador_animacao.animodule" => self.add_module_animation_controls(),
-            "mapa_teclas.animodule" => {
-                // Placeholder for future key-mapping module
-            }
-            _ => {}
+            "mapa_teclas.animodule" => self.add_module_key_map(),
+            _ => None,
         }
     }
 
-    fn push_module_from_asset(&mut self, asset: &str) {
+    fn push_module_from_asset(&mut self, asset: &str, group_id: Option<u32>) {
         let id = self.next_module_id;
         self.next_module_id = self.next_module_id.saturating_add(1);
-        let name = Self::friendly_module_name(asset);
+        let name = friendly_module_name(asset);
+        let (description, extra_info) = match self.available_module_by_asset(asset) {
+            Some(module) => (module.description.clone(), module.extra_info.clone()),
+            None => (None, Vec::new()),
+        };
+        let controls = self.module_controls_for_group(group_id);
         self.module_chain.push(ModuleChainItem {
             id,
             name,
             asset: asset.to_string(),
             enabled: true,
+            group_id,
+            description,
+            controls,
+            extra_info,
         });
+    }
+
+    fn available_module_by_asset(&self, asset: &str) -> Option<&AvailableModule> {
+        self.available_modules.iter().find_map(|category| {
+            category
+                .modules
+                .iter()
+                .find(|module| module.asset.eq_ignore_ascii_case(asset))
+        })
+    }
+
+    fn module_controls_for_group(&self, group_id: Option<u32>) -> Vec<ModuleControl> {
+        if let Some(group_id) = group_id {
+            if let Some(group) = self.groups.iter().find(|g| g.id == group_id) {
+                let mut controls: Vec<ModuleControl> = group
+                    .nodes
+                    .iter()
+                    .filter_map(|node_id| self.node_index_by_id(*node_id))
+                    .map(|idx| {
+                        let node = &self.nodes[idx];
+                        ModuleControl {
+                            node_id: node.id,
+                            name: node.display_name.clone(),
+                            value: node.value,
+                            param_a: node.param_a,
+                            param_b: node.param_b,
+                        }
+                    })
+                    .collect();
+                controls.sort_by(|a, b| a.name.cmp(&b.name));
+                controls
+            } else {
+                Vec::new()
+            }
+        } else {
+            Vec::new()
+        }
+    }
+
+    fn apply_module_controls(&mut self, module_idx: usize) {
+        if module_idx >= self.module_chain.len() {
+            return;
+        }
+        let controls = self.module_chain[module_idx].controls.clone();
+        for control in controls {
+            if let Some(node_idx) = self.node_index_by_id(control.node_id) {
+                let node = &mut self.nodes[node_idx];
+                node.value = control.value;
+                node.param_a = control.param_a;
+                node.param_b = control.param_b;
+            }
+        }
+    }
+
+    fn add_module_key_map(&mut self) -> Option<u32> {
+        let mut ids = Vec::new();
+        let columns = 4;
+        let spacing = egui::vec2(180.0, 140.0);
+        for (i, action) in FiosAction::ALL.iter().enumerate() {
+            let col = (i % columns) as f32;
+            let row = (i / columns) as f32;
+            let pos_input = egui::vec2(60.0 + col * spacing.x, 120.0 + row * spacing.y);
+            let pos_output = pos_input + egui::vec2(360.0, 0.0);
+            let input_id = self.add_node_custom(
+                FiosNodeKind::InputAction,
+                pos_input,
+                0.0,
+                action.index() as f32,
+                1.0,
+            );
+            let output_id =
+                self.add_node_custom(FiosNodeKind::OutputAction, pos_output, 0.0, 0.0, 0.0);
+            self.create_link(input_id, 0, output_id, 0);
+            ids.push(input_id);
+            ids.push(output_id);
+        }
+        let group = self.create_module_group(
+            "Modulo Mapa de Teclas",
+            egui::Color32::from_rgb(122, 88, 152),
+            ids,
+        );
+        let _ = self.save_graph_to_disk();
+        group
+    }
+
+    fn render_module_card_details(
+        ui: &mut egui::Ui,
+        module: &mut ModuleChainItem,
+        lang: EngineLanguage,
+        bindings: &[egui::Key; ACTION_COUNT],
+    ) {
+        match module.asset.to_ascii_lowercase().as_str() {
+            "mapa_teclas.animodule" => Self::render_module_key_map(ui, lang, bindings),
+            _ => Self::render_module_controls(ui, module, lang),
+        }
+    }
+
+    fn render_module_extra_info(ui: &mut egui::Ui, module: &ModuleChainItem) {
+        if module.extra_info.is_empty() {
+            return;
+        }
+        ui.vertical(|ui| {
+            for (key, value) in &module.extra_info {
+                ui.horizontal(|ui| {
+                    ui.label(
+                        egui::RichText::new(format!("{key}:"))
+                            .small()
+                            .color(egui::Color32::from_gray(170)),
+                    );
+                    let info_label = egui::Label::new(
+                        egui::RichText::new(value)
+                            .small()
+                            .color(egui::Color32::from_gray(190)),
+                    )
+                    .wrap();
+                    ui.add(info_label);
+                });
+            }
+        });
+    }
+
+    fn render_module_controls(
+        ui: &mut egui::Ui,
+        module: &mut ModuleChainItem,
+        lang: EngineLanguage,
+    ) {
+        if module.controls.is_empty() {
+            let empty_txt = match lang {
+                EngineLanguage::Pt => "Nenhum controle disponível para este módulo",
+                EngineLanguage::En => "No editable controls for this module",
+                EngineLanguage::Es => "Ningún control editable para este módulo",
+            };
+            ui.label(
+                egui::RichText::new(empty_txt)
+                    .small()
+                    .color(egui::Color32::from_gray(150)),
+            );
+            return;
+        }
+        let label_txt = match lang {
+            EngineLanguage::Pt => "Controle",
+            EngineLanguage::En => "Control",
+            EngineLanguage::Es => "Control",
+        };
+        let value_txt = match lang {
+            EngineLanguage::Pt => "Valor",
+            EngineLanguage::En => "Value",
+            EngineLanguage::Es => "Valor",
+        };
+        let param_a_txt = match lang {
+            EngineLanguage::Pt => "Parâmetro A",
+            EngineLanguage::En => "Param A",
+            EngineLanguage::Es => "Parámetro A",
+        };
+        let param_b_txt = match lang {
+            EngineLanguage::Pt => "Parâmetro B",
+            EngineLanguage::En => "Param B",
+            EngineLanguage::Es => "Parámetro B",
+        };
+        let grid_id = format!("module_controls_grid_{}", module.id);
+        egui::ScrollArea::vertical()
+            .max_height(160.0)
+            .auto_shrink([false, true])
+            .show(ui, |ui| {
+                ui.spacing_mut().item_spacing = egui::vec2(10.0, 4.0);
+                egui::Grid::new(grid_id)
+                    .striped(true)
+                    .spacing((12.0, 6.0))
+                    .show(ui, |ui| {
+                        ui.label(
+                            egui::RichText::new(label_txt)
+                                .strong()
+                                .color(egui::Color32::from_gray(220)),
+                        );
+                        ui.label(
+                            egui::RichText::new(value_txt)
+                                .strong()
+                                .color(egui::Color32::from_gray(220)),
+                        );
+                        ui.label(
+                            egui::RichText::new(param_a_txt)
+                                .strong()
+                                .color(egui::Color32::from_gray(220)),
+                        );
+                        ui.label(
+                            egui::RichText::new(param_b_txt)
+                                .strong()
+                                .color(egui::Color32::from_gray(220)),
+                        );
+                        ui.end_row();
+                        for control in &mut module.controls {
+                            ui.label(
+                                egui::RichText::new(&control.name)
+                                    .small()
+                                    .color(egui::Color32::from_gray(210)),
+                            );
+                            ui.add(
+                                egui::DragValue::new(&mut control.value)
+                                    .speed(0.05)
+                                    .range(-10.0..=10.0),
+                            );
+                            ui.add(
+                                egui::DragValue::new(&mut control.param_a)
+                                    .speed(0.05)
+                                    .range(-10.0..=10.0),
+                            );
+                            ui.add(
+                                egui::DragValue::new(&mut control.param_b)
+                                    .speed(0.05)
+                                    .range(-10.0..=10.0),
+                            );
+                            ui.end_row();
+                        }
+                    });
+            });
+    }
+
+    fn render_module_key_map(
+        ui: &mut egui::Ui,
+        lang: EngineLanguage,
+        bindings: &[egui::Key; ACTION_COUNT],
+    ) {
+        let key_map_title = match lang {
+            EngineLanguage::Pt => "Mapa de teclas",
+            EngineLanguage::En => "Key map",
+            EngineLanguage::Es => "Mapa de teclas",
+        };
+        let action_col = match lang {
+            EngineLanguage::Pt => "Ação",
+            EngineLanguage::En => "Action",
+            EngineLanguage::Es => "Acción",
+        };
+        let key_col = match lang {
+            EngineLanguage::Pt => "Tecla",
+            EngineLanguage::En => "Key",
+            EngineLanguage::Es => "Tecla",
+        };
+        ui.label(
+            egui::RichText::new(key_map_title)
+                .small()
+                .color(egui::Color32::from_gray(180)),
+        );
+        ui.add_space(4.0);
+        let grid_id = ui.id().with("module_key_map_grid");
+        egui::Grid::new(grid_id)
+            .striped(true)
+            .spacing((12.0, 6.0))
+            .show(ui, |ui| {
+                ui.label(egui::RichText::new(action_col).small().strong());
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    ui.label(egui::RichText::new(key_col).small().strong())
+                });
+                ui.end_row();
+                for action in FiosAction::ALL {
+                    ui.label(
+                        egui::RichText::new(action.label(lang))
+                            .small()
+                            .color(egui::Color32::from_gray(200)),
+                    );
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        let key_name = Self::key_display_name(bindings[action.index()]);
+                        ui.label(
+                            egui::RichText::new(key_name)
+                                .small()
+                                .color(egui::Color32::from_gray(185)),
+                        );
+                    });
+                    ui.end_row();
+                }
+            });
+        ui.add_space(4.0);
+    }
+
+    fn key_display_name(key: egui::Key) -> String {
+        let mut out = format!("{key:?}");
+        if let Some(stripped) = out.strip_prefix("Key::") {
+            out = stripped.to_string();
+        }
+        out.replace("::", " ")
     }
 
     fn module_menu_content(&mut self, ui: &mut egui::Ui, lang: EngineLanguage) -> bool {
@@ -596,12 +773,30 @@ impl FiosState {
                     .strong()
                     .color(egui::Color32::from_gray(200)),
                 |ui| {
+                    ui.set_min_width(208.0);
                     for module in &category.modules {
-                        if ui.button(&module.display_name).clicked() {
+                        let btn = ui.add(
+                            egui::Button::new(
+                                egui::RichText::new(&module.display_name)
+                                    .strong()
+                                    .size(12.0),
+                            )
+                            .frame(false)
+                            .fill(egui::Color32::from_rgba_unmultiplied(80, 80, 90, 200)),
+                        );
+                        if btn.clicked() {
                             selected_asset = Some(module.asset.clone());
                             ui.close_kind(UiKind::Menu);
                             return;
                         }
+                        if let Some(desc) = module.description.as_ref() {
+                            ui.label(
+                                egui::RichText::new(desc)
+                                    .small()
+                                    .color(egui::Color32::from_gray(150)),
+                            );
+                        }
+                        ui.add_space(4.0);
                     }
                 },
             );
@@ -610,12 +805,33 @@ impl FiosState {
             }
         }
         if let Some(asset) = selected_asset {
-            self.push_module_from_asset(&asset);
-            self.instantiate_module_from_asset(&asset);
+            let group_id = self.instantiate_module_from_asset(&asset);
+            self.push_module_from_asset(&asset, group_id);
             true
         } else {
             false
         }
+    }
+
+    fn module_add_button(&mut self, ui: &mut egui::Ui, label: &str) -> egui::Response {
+        if self.module_add_texture.is_none() {
+            self.module_add_texture =
+                Self::load_png_texture(ui.ctx(), "src/assets/icons/addmodulo.png");
+        }
+        let button = if let Some(texture) = &self.module_add_texture {
+            let icon = egui::Image::new(texture).fit_to_exact_size(egui::vec2(18.0, 18.0));
+            egui::Button::image_and_text(icon, egui::RichText::new(label).strong())
+        } else {
+            egui::Button::new(egui::RichText::new(label).strong())
+        }
+        .fill(egui::Color32::from_rgba_unmultiplied(255, 255, 255, 24))
+        .stroke(egui::Stroke::new(
+            1.0,
+            egui::Color32::from_rgba_unmultiplied(255, 255, 255, 72),
+        ))
+        .corner_radius(18.0)
+        .min_size(egui::vec2(142.0, 36.0));
+        ui.add(button)
     }
 
     fn load_png_texture(ctx: &egui::Context, path: &str) -> Option<egui::TextureHandle> {
@@ -752,7 +968,8 @@ impl FiosState {
             self.tab = FiosTab::Controller;
             if clips.is_empty() {
                 self.add_anim_controller_node(file_name.clone(), egui::pos2(320.0, 120.0));
-                self.anim_tab_status = Some("FBX sem clipes detectados; estado base criado".to_string());
+                self.anim_tab_status =
+                    Some("FBX sem clipes detectados; estado base criado".to_string());
                 return true;
             }
             let start = egui::pos2(320.0, 120.0);
@@ -762,7 +979,11 @@ impl FiosState {
                 let pos = start + egui::vec2(col * 196.0, row * 76.0);
                 self.add_anim_controller_node(format!("{file_name}::{clip}"), pos);
             }
-            self.anim_tab_status = Some(format!("{} estados criados a partir de {}", clips.len(), file_name));
+            self.anim_tab_status = Some(format!(
+                "{} estados criados a partir de {}",
+                clips.len(),
+                file_name
+            ));
             return true;
         }
         if lower.ends_with(".anim") || asset_name.contains("::") {
@@ -869,8 +1090,7 @@ impl FiosState {
             .any(|c| c.eq_ignore_ascii_case(clip_ref))
         {
             self.anim_clip_cache.push(clip_ref.to_string());
-            self.anim_clip_cache
-                .sort_by_key(|s| s.to_ascii_lowercase());
+            self.anim_clip_cache.sort_by_key(|s| s.to_ascii_lowercase());
             self.anim_clip_cache
                 .dedup_by(|a, b| a.eq_ignore_ascii_case(b));
         }
@@ -937,11 +1157,7 @@ impl FiosState {
     fn add_anim_controller_node(&mut self, clip_ref: String, pos: egui::Pos2) -> u32 {
         let id = self.anim_next_node_id;
         self.anim_next_node_id = self.anim_next_node_id.saturating_add(1).max(1);
-        let name = clip_ref
-            .split("::")
-            .last()
-            .unwrap_or("State")
-            .to_string();
+        let name = clip_ref.split("::").last().unwrap_or("State").to_string();
         self.anim_nodes.push(AnimControllerNode {
             id,
             name,
@@ -967,6 +1183,7 @@ impl FiosState {
             capture_index: None,
             status: None,
             add_icon_texture: None,
+            module_add_texture: None,
             available_modules: Vec::new(),
             module_chain: Vec::new(),
             next_module_id: 1,
@@ -1251,7 +1468,10 @@ impl FiosState {
             let Some(key) = Self::key_from_string(key_name) else {
                 continue;
             };
-            if let Some(idx) = FiosAction::ALL.iter().position(|a| a.id() == action_id.trim()) {
+            if let Some(idx) = FiosAction::ALL
+                .iter()
+                .position(|a| a.id() == action_id.trim())
+            {
                 self.bindings[idx] = key;
             }
         }
@@ -1320,8 +1540,12 @@ impl FiosState {
         let mut next_node_id = 1_u32;
         for line in raw.lines() {
             let mut parts = line.splitn(2, '=');
-            let Some(k) = parts.next() else { continue; };
-            let Some(v) = parts.next() else { continue; };
+            let Some(k) = parts.next() else {
+                continue;
+            };
+            let Some(v) = parts.next() else {
+                continue;
+            };
             match k.trim() {
                 "next_node_id" => {
                     if let Ok(n) = v.trim().parse::<u32>() {
@@ -1333,13 +1557,27 @@ impl FiosState {
                     if seg.len() < 7 {
                         continue;
                     }
-                    let Ok(id) = seg[0].parse::<u32>() else { continue; };
-                    let Some(kind) = FiosNodeKind::from_id(seg[1]) else { continue; };
-                    let Ok(x) = seg[2].parse::<f32>() else { continue; };
-                    let Ok(y) = seg[3].parse::<f32>() else { continue; };
-                    let Ok(value) = seg[4].parse::<f32>() else { continue; };
-                    let Ok(param_a) = seg[5].parse::<f32>() else { continue; };
-                    let Ok(param_b) = seg[6].parse::<f32>() else { continue; };
+                    let Ok(id) = seg[0].parse::<u32>() else {
+                        continue;
+                    };
+                    let Some(kind) = FiosNodeKind::from_id(seg[1]) else {
+                        continue;
+                    };
+                    let Ok(x) = seg[2].parse::<f32>() else {
+                        continue;
+                    };
+                    let Ok(y) = seg[3].parse::<f32>() else {
+                        continue;
+                    };
+                    let Ok(value) = seg[4].parse::<f32>() else {
+                        continue;
+                    };
+                    let Ok(param_a) = seg[5].parse::<f32>() else {
+                        continue;
+                    };
+                    let Ok(param_b) = seg[6].parse::<f32>() else {
+                        continue;
+                    };
                     let display_name = if seg.len() >= 8 {
                         Self::decode_field(seg[7])
                     } else {
@@ -1360,10 +1598,18 @@ impl FiosState {
                     if seg.len() < 4 {
                         continue;
                     }
-                    let Ok(from_node) = seg[0].parse::<u32>() else { continue; };
-                    let Ok(from_port) = seg[1].parse::<u8>() else { continue; };
-                    let Ok(to_node) = seg[2].parse::<u32>() else { continue; };
-                    let Ok(to_port) = seg[3].parse::<u8>() else { continue; };
+                    let Ok(from_node) = seg[0].parse::<u32>() else {
+                        continue;
+                    };
+                    let Ok(from_port) = seg[1].parse::<u8>() else {
+                        continue;
+                    };
+                    let Ok(to_node) = seg[2].parse::<u32>() else {
+                        continue;
+                    };
+                    let Ok(to_port) = seg[3].parse::<u8>() else {
+                        continue;
+                    };
                     parsed_links.push(FiosLink {
                         from_node,
                         from_port,
@@ -1376,11 +1622,19 @@ impl FiosState {
                     if seg.len() < 6 {
                         continue;
                     }
-                    let Ok(id) = seg[0].parse::<u32>() else { continue; };
+                    let Ok(id) = seg[0].parse::<u32>() else {
+                        continue;
+                    };
                     let name = Self::decode_field(seg[1]);
-                    let Ok(r) = seg[2].parse::<u8>() else { continue; };
-                    let Ok(g) = seg[3].parse::<u8>() else { continue; };
-                    let Ok(b) = seg[4].parse::<u8>() else { continue; };
+                    let Ok(r) = seg[2].parse::<u8>() else {
+                        continue;
+                    };
+                    let Ok(g) = seg[3].parse::<u8>() else {
+                        continue;
+                    };
+                    let Ok(b) = seg[4].parse::<u8>() else {
+                        continue;
+                    };
                     let mut ids = HashSet::new();
                     for part in seg[5].split(',') {
                         if let Ok(v) = part.parse::<u32>() {
@@ -1451,7 +1705,10 @@ impl FiosState {
         if let Some(idx) = self.capture_index {
             let events = ctx.input(|i| i.events.clone());
             for ev in events {
-                if let egui::Event::Key { key, pressed: true, .. } = ev {
+                if let egui::Event::Key {
+                    key, pressed: true, ..
+                } = ev
+                {
                     if key == egui::Key::Escape {
                         self.capture_index = None;
                         self.status = Some("Captura cancelada".to_string());
@@ -1811,69 +2068,322 @@ impl FiosState {
         let out = if let Some(idx) = Self::node_index_by_id_in(nodes, node_id) {
             let node = &nodes[idx];
             match node.kind {
-                FiosNodeKind::InputAxis => if output_port == 0 { base_axis[0] } else { base_axis[1] },
+                FiosNodeKind::InputAxis => {
+                    if output_port == 0 {
+                        base_axis[0]
+                    } else {
+                        base_axis[1]
+                    }
+                }
                 FiosNodeKind::InputAction => {
-                    let action_idx = node.param_a.round().clamp(0.0, (ACTION_COUNT.saturating_sub(1)) as f32) as usize;
+                    let action_idx = node
+                        .param_a
+                        .round()
+                        .clamp(0.0, (ACTION_COUNT.saturating_sub(1)) as f32)
+                        as usize;
                     let mode_just = node.param_b.round() >= 1.0;
-                    let active = if mode_just { just_pressed[action_idx] } else { pressed[action_idx] };
+                    let active = if mode_just {
+                        just_pressed[action_idx]
+                    } else {
+                        pressed[action_idx]
+                    };
                     if active { 1.0 } else { 0.0 }
                 }
                 FiosNodeKind::Constant => node.value,
                 FiosNodeKind::Add => {
-                    let a = Self::eval_input_of_node(nodes, links, smooth_state, pressed, just_pressed, node_id, 0, 0.0, base_axis, cache, stack);
-                    let b = Self::eval_input_of_node(nodes, links, smooth_state, pressed, just_pressed, node_id, 1, 0.0, base_axis, cache, stack);
+                    let a = Self::eval_input_of_node(
+                        nodes,
+                        links,
+                        smooth_state,
+                        pressed,
+                        just_pressed,
+                        node_id,
+                        0,
+                        0.0,
+                        base_axis,
+                        cache,
+                        stack,
+                    );
+                    let b = Self::eval_input_of_node(
+                        nodes,
+                        links,
+                        smooth_state,
+                        pressed,
+                        just_pressed,
+                        node_id,
+                        1,
+                        0.0,
+                        base_axis,
+                        cache,
+                        stack,
+                    );
                     a + b
                 }
                 FiosNodeKind::Subtract => {
-                    let a = Self::eval_input_of_node(nodes, links, smooth_state, pressed, just_pressed, node_id, 0, 0.0, base_axis, cache, stack);
-                    let b = Self::eval_input_of_node(nodes, links, smooth_state, pressed, just_pressed, node_id, 1, 0.0, base_axis, cache, stack);
+                    let a = Self::eval_input_of_node(
+                        nodes,
+                        links,
+                        smooth_state,
+                        pressed,
+                        just_pressed,
+                        node_id,
+                        0,
+                        0.0,
+                        base_axis,
+                        cache,
+                        stack,
+                    );
+                    let b = Self::eval_input_of_node(
+                        nodes,
+                        links,
+                        smooth_state,
+                        pressed,
+                        just_pressed,
+                        node_id,
+                        1,
+                        0.0,
+                        base_axis,
+                        cache,
+                        stack,
+                    );
                     a - b
                 }
                 FiosNodeKind::Multiply => {
-                    let a = Self::eval_input_of_node(nodes, links, smooth_state, pressed, just_pressed, node_id, 0, 0.0, base_axis, cache, stack);
-                    let b = Self::eval_input_of_node(nodes, links, smooth_state, pressed, just_pressed, node_id, 1, 0.0, base_axis, cache, stack);
+                    let a = Self::eval_input_of_node(
+                        nodes,
+                        links,
+                        smooth_state,
+                        pressed,
+                        just_pressed,
+                        node_id,
+                        0,
+                        0.0,
+                        base_axis,
+                        cache,
+                        stack,
+                    );
+                    let b = Self::eval_input_of_node(
+                        nodes,
+                        links,
+                        smooth_state,
+                        pressed,
+                        just_pressed,
+                        node_id,
+                        1,
+                        0.0,
+                        base_axis,
+                        cache,
+                        stack,
+                    );
                     a * b
                 }
                 FiosNodeKind::Divide => {
-                    let a = Self::eval_input_of_node(nodes, links, smooth_state, pressed, just_pressed, node_id, 0, 0.0, base_axis, cache, stack);
-                    let b = Self::eval_input_of_node(nodes, links, smooth_state, pressed, just_pressed, node_id, 1, 1.0, base_axis, cache, stack);
+                    let a = Self::eval_input_of_node(
+                        nodes,
+                        links,
+                        smooth_state,
+                        pressed,
+                        just_pressed,
+                        node_id,
+                        0,
+                        0.0,
+                        base_axis,
+                        cache,
+                        stack,
+                    );
+                    let b = Self::eval_input_of_node(
+                        nodes,
+                        links,
+                        smooth_state,
+                        pressed,
+                        just_pressed,
+                        node_id,
+                        1,
+                        1.0,
+                        base_axis,
+                        cache,
+                        stack,
+                    );
                     if b.abs() < 1e-5 { 0.0 } else { a / b }
                 }
                 FiosNodeKind::Max => {
-                    let a = Self::eval_input_of_node(nodes, links, smooth_state, pressed, just_pressed, node_id, 0, 0.0, base_axis, cache, stack);
-                    let b = Self::eval_input_of_node(nodes, links, smooth_state, pressed, just_pressed, node_id, 1, 0.0, base_axis, cache, stack);
+                    let a = Self::eval_input_of_node(
+                        nodes,
+                        links,
+                        smooth_state,
+                        pressed,
+                        just_pressed,
+                        node_id,
+                        0,
+                        0.0,
+                        base_axis,
+                        cache,
+                        stack,
+                    );
+                    let b = Self::eval_input_of_node(
+                        nodes,
+                        links,
+                        smooth_state,
+                        pressed,
+                        just_pressed,
+                        node_id,
+                        1,
+                        0.0,
+                        base_axis,
+                        cache,
+                        stack,
+                    );
                     a.max(b)
                 }
                 FiosNodeKind::Min => {
-                    let a = Self::eval_input_of_node(nodes, links, smooth_state, pressed, just_pressed, node_id, 0, 0.0, base_axis, cache, stack);
-                    let b = Self::eval_input_of_node(nodes, links, smooth_state, pressed, just_pressed, node_id, 1, 0.0, base_axis, cache, stack);
+                    let a = Self::eval_input_of_node(
+                        nodes,
+                        links,
+                        smooth_state,
+                        pressed,
+                        just_pressed,
+                        node_id,
+                        0,
+                        0.0,
+                        base_axis,
+                        cache,
+                        stack,
+                    );
+                    let b = Self::eval_input_of_node(
+                        nodes,
+                        links,
+                        smooth_state,
+                        pressed,
+                        just_pressed,
+                        node_id,
+                        1,
+                        0.0,
+                        base_axis,
+                        cache,
+                        stack,
+                    );
                     a.min(b)
                 }
                 FiosNodeKind::Gate => {
-                    let v = Self::eval_input_of_node(nodes, links, smooth_state, pressed, just_pressed, node_id, 0, 0.0, base_axis, cache, stack);
-                    let g = Self::eval_input_of_node(nodes, links, smooth_state, pressed, just_pressed, node_id, 1, 0.0, base_axis, cache, stack);
+                    let v = Self::eval_input_of_node(
+                        nodes,
+                        links,
+                        smooth_state,
+                        pressed,
+                        just_pressed,
+                        node_id,
+                        0,
+                        0.0,
+                        base_axis,
+                        cache,
+                        stack,
+                    );
+                    let g = Self::eval_input_of_node(
+                        nodes,
+                        links,
+                        smooth_state,
+                        pressed,
+                        just_pressed,
+                        node_id,
+                        1,
+                        0.0,
+                        base_axis,
+                        cache,
+                        stack,
+                    );
                     if g > 0.0 { v } else { 0.0 }
                 }
-                FiosNodeKind::Abs => {
-                    Self::eval_input_of_node(nodes, links, smooth_state, pressed, just_pressed, node_id, 0, 0.0, base_axis, cache, stack).abs()
-                }
-                FiosNodeKind::Sign => {
-                    Self::eval_input_of_node(nodes, links, smooth_state, pressed, just_pressed, node_id, 0, 0.0, base_axis, cache, stack).signum()
-                }
+                FiosNodeKind::Abs => Self::eval_input_of_node(
+                    nodes,
+                    links,
+                    smooth_state,
+                    pressed,
+                    just_pressed,
+                    node_id,
+                    0,
+                    0.0,
+                    base_axis,
+                    cache,
+                    stack,
+                )
+                .abs(),
+                FiosNodeKind::Sign => Self::eval_input_of_node(
+                    nodes,
+                    links,
+                    smooth_state,
+                    pressed,
+                    just_pressed,
+                    node_id,
+                    0,
+                    0.0,
+                    base_axis,
+                    cache,
+                    stack,
+                )
+                .signum(),
                 FiosNodeKind::Clamp => {
-                    let v = Self::eval_input_of_node(nodes, links, smooth_state, pressed, just_pressed, node_id, 0, 0.0, base_axis, cache, stack);
-                    v.clamp(node.param_a.min(node.param_b), node.param_a.max(node.param_b))
+                    let v = Self::eval_input_of_node(
+                        nodes,
+                        links,
+                        smooth_state,
+                        pressed,
+                        just_pressed,
+                        node_id,
+                        0,
+                        0.0,
+                        base_axis,
+                        cache,
+                        stack,
+                    );
+                    v.clamp(
+                        node.param_a.min(node.param_b),
+                        node.param_a.max(node.param_b),
+                    )
                 }
                 FiosNodeKind::Deadzone => {
-                    let v = Self::eval_input_of_node(nodes, links, smooth_state, pressed, just_pressed, node_id, 0, 0.0, base_axis, cache, stack);
+                    let v = Self::eval_input_of_node(
+                        nodes,
+                        links,
+                        smooth_state,
+                        pressed,
+                        just_pressed,
+                        node_id,
+                        0,
+                        0.0,
+                        base_axis,
+                        cache,
+                        stack,
+                    );
                     let t = node.param_a.abs().clamp(0.0, 1.0);
                     if v.abs() < t { 0.0 } else { v }
                 }
-                FiosNodeKind::Invert => {
-                    -Self::eval_input_of_node(nodes, links, smooth_state, pressed, just_pressed, node_id, 0, 0.0, base_axis, cache, stack)
-                }
+                FiosNodeKind::Invert => -Self::eval_input_of_node(
+                    nodes,
+                    links,
+                    smooth_state,
+                    pressed,
+                    just_pressed,
+                    node_id,
+                    0,
+                    0.0,
+                    base_axis,
+                    cache,
+                    stack,
+                ),
                 FiosNodeKind::Smooth => {
-                    let target = Self::eval_input_of_node(nodes, links, smooth_state, pressed, just_pressed, node_id, 0, 0.0, base_axis, cache, stack);
+                    let target = Self::eval_input_of_node(
+                        nodes,
+                        links,
+                        smooth_state,
+                        pressed,
+                        just_pressed,
+                        node_id,
+                        0,
+                        0.0,
+                        base_axis,
+                        cache,
+                        stack,
+                    );
                     let alpha = node.param_a.clamp(0.0, 1.0);
                     let prev = *smooth_state.get(&key).unwrap_or(&target);
                     let v = prev + (target - prev) * alpha;
@@ -1895,8 +2405,14 @@ impl FiosState {
     }
 
     fn create_link(&mut self, from_node: u32, from_port: u8, to_node: u32, to_port: u8) {
-        self.links.retain(|l| !(l.to_node == to_node && l.to_port == to_port));
-        self.links.push(FiosLink { from_node, from_port, to_node, to_port });
+        self.links
+            .retain(|l| !(l.to_node == to_node && l.to_port == to_port));
+        self.links.push(FiosLink {
+            from_node,
+            from_port,
+            to_node,
+            to_port,
+        });
         let _ = self.save_graph_to_disk();
     }
 
@@ -1986,41 +2502,75 @@ impl FiosState {
         self.nodes.iter().find(|n| n.kind == kind).map(|n| n.id)
     }
 
-    fn add_module_move_basic(&mut self) {
+    fn add_module_move_basic(&mut self) -> Option<u32> {
         let input_id = self
             .first_node_id_of_kind(FiosNodeKind::InputAxis)
-            .unwrap_or_else(|| self.add_node_custom(FiosNodeKind::InputAxis, egui::vec2(60.0, 120.0), 0.0, 0.0, 0.0));
+            .unwrap_or_else(|| {
+                self.add_node_custom(
+                    FiosNodeKind::InputAxis,
+                    egui::vec2(60.0, 120.0),
+                    0.0,
+                    0.0,
+                    0.0,
+                )
+            });
         let output_id = self
             .first_node_id_of_kind(FiosNodeKind::OutputMove)
-            .unwrap_or_else(|| self.add_node_custom(FiosNodeKind::OutputMove, egui::vec2(420.0, 120.0), 0.0, 0.0, 0.0));
+            .unwrap_or_else(|| {
+                self.add_node_custom(
+                    FiosNodeKind::OutputMove,
+                    egui::vec2(420.0, 120.0),
+                    0.0,
+                    0.0,
+                    0.0,
+                )
+            });
         self.create_link(input_id, 0, output_id, 0);
         self.create_link(input_id, 1, output_id, 1);
-        self.create_module_group(
+        let group = self.create_module_group(
             "Modulo Movimento Basico",
             egui::Color32::from_rgb(72, 132, 102),
             vec![input_id, output_id],
         );
         let _ = self.save_graph_to_disk();
+        group
     }
 
-    fn add_module_look_basic(&mut self) {
+    fn add_module_look_basic(&mut self) -> Option<u32> {
         let input_id = self
             .first_node_id_of_kind(FiosNodeKind::InputAxis)
-            .unwrap_or_else(|| self.add_node_custom(FiosNodeKind::InputAxis, egui::vec2(60.0, 240.0), 0.0, 0.0, 0.0));
+            .unwrap_or_else(|| {
+                self.add_node_custom(
+                    FiosNodeKind::InputAxis,
+                    egui::vec2(60.0, 240.0),
+                    0.0,
+                    0.0,
+                    0.0,
+                )
+            });
         let output_id = self
             .first_node_id_of_kind(FiosNodeKind::OutputLook)
-            .unwrap_or_else(|| self.add_node_custom(FiosNodeKind::OutputLook, egui::vec2(420.0, 240.0), 0.0, 0.0, 0.0));
+            .unwrap_or_else(|| {
+                self.add_node_custom(
+                    FiosNodeKind::OutputLook,
+                    egui::vec2(420.0, 240.0),
+                    0.0,
+                    0.0,
+                    0.0,
+                )
+            });
         self.create_link(input_id, 0, output_id, 0);
         self.create_link(input_id, 1, output_id, 1);
-        self.create_module_group(
+        let group = self.create_module_group(
             "Modulo Look Basico",
             egui::Color32::from_rgb(72, 108, 132),
             vec![input_id, output_id],
         );
         let _ = self.save_graph_to_disk();
+        group
     }
 
-    fn add_module_action_basic(&mut self, action_idx: usize) {
+    fn add_module_action_basic(&mut self, action_idx: usize) -> Option<u32> {
         let idx = action_idx.min(ACTION_COUNT.saturating_sub(1));
         let input_id = self.add_node_custom(
             FiosNodeKind::InputAction,
@@ -2031,32 +2581,105 @@ impl FiosState {
         );
         let output_id = self
             .first_node_id_of_kind(FiosNodeKind::OutputAction)
-            .unwrap_or_else(|| self.add_node_custom(FiosNodeKind::OutputAction, egui::vec2(420.0, 360.0), 0.0, 0.0, 0.0));
+            .unwrap_or_else(|| {
+                self.add_node_custom(
+                    FiosNodeKind::OutputAction,
+                    egui::vec2(420.0, 360.0),
+                    0.0,
+                    0.0,
+                    0.0,
+                )
+            });
         self.create_link(input_id, 0, output_id, 0);
-        self.create_module_group(
+        let group = self.create_module_group(
             "Modulo Acao Basico",
             egui::Color32::from_rgb(158, 102, 62),
             vec![input_id, output_id],
         );
         let _ = self.save_graph_to_disk();
+        group
     }
 
-    fn add_module_move_advanced(&mut self) {
+    fn add_module_move_advanced(&mut self) -> Option<u32> {
         let input_id = self
             .first_node_id_of_kind(FiosNodeKind::InputAxis)
-            .unwrap_or_else(|| self.add_node_custom(FiosNodeKind::InputAxis, egui::vec2(40.0, 110.0), 0.0, 0.0, 0.0));
+            .unwrap_or_else(|| {
+                self.add_node_custom(
+                    FiosNodeKind::InputAxis,
+                    egui::vec2(40.0, 110.0),
+                    0.0,
+                    0.0,
+                    0.0,
+                )
+            });
         let output_id = self
             .first_node_id_of_kind(FiosNodeKind::OutputMove)
-            .unwrap_or_else(|| self.add_node_custom(FiosNodeKind::OutputMove, egui::vec2(700.0, 130.0), 0.0, 0.0, 0.0));
+            .unwrap_or_else(|| {
+                self.add_node_custom(
+                    FiosNodeKind::OutputMove,
+                    egui::vec2(700.0, 130.0),
+                    0.0,
+                    0.0,
+                    0.0,
+                )
+            });
 
-        let dz_x = self.add_node_custom(FiosNodeKind::Deadzone, egui::vec2(190.0, 70.0), 0.0, 0.15, 0.0);
-        let dz_y = self.add_node_custom(FiosNodeKind::Deadzone, egui::vec2(190.0, 200.0), 0.0, 0.15, 0.0);
-        let sm_x = self.add_node_custom(FiosNodeKind::Smooth, egui::vec2(340.0, 70.0), 0.0, 0.25, 0.0);
-        let sm_y = self.add_node_custom(FiosNodeKind::Smooth, egui::vec2(340.0, 200.0), 0.0, 0.25, 0.0);
-        let kx = self.add_node_custom(FiosNodeKind::Constant, egui::vec2(480.0, 30.0), 1.0, 0.0, 0.0);
-        let ky = self.add_node_custom(FiosNodeKind::Constant, egui::vec2(480.0, 160.0), 1.0, 0.0, 0.0);
-        let mx = self.add_node_custom(FiosNodeKind::Multiply, egui::vec2(560.0, 70.0), 0.0, 0.0, 0.0);
-        let my = self.add_node_custom(FiosNodeKind::Multiply, egui::vec2(560.0, 200.0), 0.0, 0.0, 0.0);
+        let dz_x = self.add_node_custom(
+            FiosNodeKind::Deadzone,
+            egui::vec2(190.0, 70.0),
+            0.0,
+            0.15,
+            0.0,
+        );
+        let dz_y = self.add_node_custom(
+            FiosNodeKind::Deadzone,
+            egui::vec2(190.0, 200.0),
+            0.0,
+            0.15,
+            0.0,
+        );
+        let sm_x = self.add_node_custom(
+            FiosNodeKind::Smooth,
+            egui::vec2(340.0, 70.0),
+            0.0,
+            0.25,
+            0.0,
+        );
+        let sm_y = self.add_node_custom(
+            FiosNodeKind::Smooth,
+            egui::vec2(340.0, 200.0),
+            0.0,
+            0.25,
+            0.0,
+        );
+        let kx = self.add_node_custom(
+            FiosNodeKind::Constant,
+            egui::vec2(480.0, 30.0),
+            1.0,
+            0.0,
+            0.0,
+        );
+        let ky = self.add_node_custom(
+            FiosNodeKind::Constant,
+            egui::vec2(480.0, 160.0),
+            1.0,
+            0.0,
+            0.0,
+        );
+        let mx = self.add_node_custom(
+            FiosNodeKind::Multiply,
+            egui::vec2(560.0, 70.0),
+            0.0,
+            0.0,
+            0.0,
+        );
+        let my = self.add_node_custom(
+            FiosNodeKind::Multiply,
+            egui::vec2(560.0, 200.0),
+            0.0,
+            0.0,
+            0.0,
+        );
 
         self.create_link(input_id, 0, dz_x, 0);
         self.create_link(input_id, 1, dz_y, 0);
@@ -2068,32 +2691,95 @@ impl FiosState {
         self.create_link(ky, 0, my, 1);
         self.create_link(mx, 0, output_id, 0);
         self.create_link(my, 0, output_id, 1);
-        self.create_module_group(
+        let group = self.create_module_group(
             "Modulo Movimento Avancado",
             egui::Color32::from_rgb(72, 132, 102),
-            vec![
-                input_id, output_id, dz_x, dz_y, sm_x, sm_y, kx, ky, mx, my,
-            ],
+            vec![input_id, output_id, dz_x, dz_y, sm_x, sm_y, kx, ky, mx, my],
         );
         let _ = self.save_graph_to_disk();
+        group
     }
 
-    fn add_module_look_advanced(&mut self) {
+    fn add_module_look_advanced(&mut self) -> Option<u32> {
         let input_id = self
             .first_node_id_of_kind(FiosNodeKind::InputAxis)
-            .unwrap_or_else(|| self.add_node_custom(FiosNodeKind::InputAxis, egui::vec2(40.0, 360.0), 0.0, 0.0, 0.0));
+            .unwrap_or_else(|| {
+                self.add_node_custom(
+                    FiosNodeKind::InputAxis,
+                    egui::vec2(40.0, 360.0),
+                    0.0,
+                    0.0,
+                    0.0,
+                )
+            });
         let output_id = self
             .first_node_id_of_kind(FiosNodeKind::OutputLook)
-            .unwrap_or_else(|| self.add_node_custom(FiosNodeKind::OutputLook, egui::vec2(700.0, 380.0), 0.0, 0.0, 0.0));
+            .unwrap_or_else(|| {
+                self.add_node_custom(
+                    FiosNodeKind::OutputLook,
+                    egui::vec2(700.0, 380.0),
+                    0.0,
+                    0.0,
+                    0.0,
+                )
+            });
 
-        let dz_yaw = self.add_node_custom(FiosNodeKind::Deadzone, egui::vec2(190.0, 320.0), 0.0, 0.08, 0.0);
-        let dz_pitch = self.add_node_custom(FiosNodeKind::Deadzone, egui::vec2(190.0, 450.0), 0.0, 0.08, 0.0);
-        let sm_yaw = self.add_node_custom(FiosNodeKind::Smooth, egui::vec2(340.0, 320.0), 0.0, 0.18, 0.0);
-        let sm_pitch = self.add_node_custom(FiosNodeKind::Smooth, egui::vec2(340.0, 450.0), 0.0, 0.18, 0.0);
-        let kyaw = self.add_node_custom(FiosNodeKind::Constant, egui::vec2(480.0, 280.0), 1.0, 0.0, 0.0);
-        let kpitch = self.add_node_custom(FiosNodeKind::Constant, egui::vec2(480.0, 410.0), 1.0, 0.0, 0.0);
-        let myaw = self.add_node_custom(FiosNodeKind::Multiply, egui::vec2(560.0, 320.0), 0.0, 0.0, 0.0);
-        let mpitch = self.add_node_custom(FiosNodeKind::Multiply, egui::vec2(560.0, 450.0), 0.0, 0.0, 0.0);
+        let dz_yaw = self.add_node_custom(
+            FiosNodeKind::Deadzone,
+            egui::vec2(190.0, 320.0),
+            0.0,
+            0.08,
+            0.0,
+        );
+        let dz_pitch = self.add_node_custom(
+            FiosNodeKind::Deadzone,
+            egui::vec2(190.0, 450.0),
+            0.0,
+            0.08,
+            0.0,
+        );
+        let sm_yaw = self.add_node_custom(
+            FiosNodeKind::Smooth,
+            egui::vec2(340.0, 320.0),
+            0.0,
+            0.18,
+            0.0,
+        );
+        let sm_pitch = self.add_node_custom(
+            FiosNodeKind::Smooth,
+            egui::vec2(340.0, 450.0),
+            0.0,
+            0.18,
+            0.0,
+        );
+        let kyaw = self.add_node_custom(
+            FiosNodeKind::Constant,
+            egui::vec2(480.0, 280.0),
+            1.0,
+            0.0,
+            0.0,
+        );
+        let kpitch = self.add_node_custom(
+            FiosNodeKind::Constant,
+            egui::vec2(480.0, 410.0),
+            1.0,
+            0.0,
+            0.0,
+        );
+        let myaw = self.add_node_custom(
+            FiosNodeKind::Multiply,
+            egui::vec2(560.0, 320.0),
+            0.0,
+            0.0,
+            0.0,
+        );
+        let mpitch = self.add_node_custom(
+            FiosNodeKind::Multiply,
+            egui::vec2(560.0, 450.0),
+            0.0,
+            0.0,
+            0.0,
+        );
 
         self.create_link(input_id, 0, dz_yaw, 0);
         self.create_link(input_id, 1, dz_pitch, 0);
@@ -2105,7 +2791,7 @@ impl FiosState {
         self.create_link(kpitch, 0, mpitch, 1);
         self.create_link(myaw, 0, output_id, 0);
         self.create_link(mpitch, 0, output_id, 1);
-        self.create_module_group(
+        let group = self.create_module_group(
             "Modulo Look Avancado",
             egui::Color32::from_rgb(72, 108, 132),
             vec![
@@ -2113,9 +2799,10 @@ impl FiosState {
             ],
         );
         let _ = self.save_graph_to_disk();
+        group
     }
 
-    fn add_module_animation_controls(&mut self) {
+    fn add_module_animation_controls(&mut self) -> Option<u32> {
         let out_id = self
             .first_node_id_of_kind(FiosNodeKind::OutputAnimCommand)
             .unwrap_or_else(|| {
@@ -2149,14 +2836,52 @@ impl FiosState {
             FiosAction::Action2.index() as f32,
             1.0,
         );
-        let c_play = self.add_node_custom(FiosNodeKind::Constant, egui::vec2(300.0, 220.0), 2.0, 0.0, 0.0);
-        let c_next = self.add_node_custom(FiosNodeKind::Constant, egui::vec2(300.0, 300.0), 1.0, 0.0, 0.0);
-        let c_prev = self.add_node_custom(FiosNodeKind::Constant, egui::vec2(300.0, 380.0), -1.0, 0.0, 0.0);
-        let m_play = self.add_node_custom(FiosNodeKind::Multiply, egui::vec2(430.0, 260.0), 0.0, 0.0, 0.0);
-        let m_next = self.add_node_custom(FiosNodeKind::Multiply, egui::vec2(430.0, 340.0), 0.0, 0.0, 0.0);
-        let m_prev = self.add_node_custom(FiosNodeKind::Multiply, egui::vec2(430.0, 420.0), 0.0, 0.0, 0.0);
-        let add_1 = self.add_node_custom(FiosNodeKind::Add, egui::vec2(590.0, 320.0), 0.0, 0.0, 0.0);
-        let add_2 = self.add_node_custom(FiosNodeKind::Add, egui::vec2(680.0, 360.0), 0.0, 0.0, 0.0);
+        let c_play = self.add_node_custom(
+            FiosNodeKind::Constant,
+            egui::vec2(300.0, 220.0),
+            2.0,
+            0.0,
+            0.0,
+        );
+        let c_next = self.add_node_custom(
+            FiosNodeKind::Constant,
+            egui::vec2(300.0, 300.0),
+            1.0,
+            0.0,
+            0.0,
+        );
+        let c_prev = self.add_node_custom(
+            FiosNodeKind::Constant,
+            egui::vec2(300.0, 380.0),
+            -1.0,
+            0.0,
+            0.0,
+        );
+        let m_play = self.add_node_custom(
+            FiosNodeKind::Multiply,
+            egui::vec2(430.0, 260.0),
+            0.0,
+            0.0,
+            0.0,
+        );
+        let m_next = self.add_node_custom(
+            FiosNodeKind::Multiply,
+            egui::vec2(430.0, 340.0),
+            0.0,
+            0.0,
+            0.0,
+        );
+        let m_prev = self.add_node_custom(
+            FiosNodeKind::Multiply,
+            egui::vec2(430.0, 420.0),
+            0.0,
+            0.0,
+            0.0,
+        );
+        let add_1 =
+            self.add_node_custom(FiosNodeKind::Add, egui::vec2(590.0, 320.0), 0.0, 0.0, 0.0);
+        let add_2 =
+            self.add_node_custom(FiosNodeKind::Add, egui::vec2(680.0, 360.0), 0.0, 0.0, 0.0);
 
         self.create_link(in_play, 0, m_play, 0);
         self.create_link(c_play, 0, m_play, 1);
@@ -2169,28 +2894,54 @@ impl FiosState {
         self.create_link(add_1, 0, add_2, 0);
         self.create_link(m_play, 0, add_2, 1);
         self.create_link(add_2, 0, out_id, 0);
-        self.create_module_group(
+        let group = self.create_module_group(
             "Modulo Animacao",
             egui::Color32::from_rgb(122, 88, 152),
             vec![
-                out_id, in_play, in_next, in_prev, c_play, c_next, c_prev, m_play, m_next, m_prev, add_1, add_2,
+                out_id, in_play, in_next, in_prev, c_play, c_next, c_prev, m_play, m_next, m_prev,
+                add_1, add_2,
             ],
         );
         let _ = self.save_graph_to_disk();
+        group
     }
 
-    fn create_module_group(&mut self, name: &str, color: egui::Color32, node_ids: Vec<u32>) {
+    fn create_module_group(
+        &mut self,
+        name: &str,
+        color: egui::Color32,
+        node_ids: Vec<u32>,
+    ) -> Option<u32> {
         let nodes: HashSet<u32> = node_ids.into_iter().collect();
         if nodes.is_empty() {
-            return;
+            return None;
         }
         let id = self.alloc_group_id();
         self.groups.push(FiosGroup {
             id,
             name: format!("{name} {id}"),
             color,
-            nodes,
+            nodes: nodes.clone(),
         });
+        Some(id)
+    }
+
+    fn remove_module_group(&mut self, group_id: u32) {
+        let mut nodes_to_remove: Option<HashSet<u32>> = None;
+        self.groups.retain(|group| {
+            if group.id == group_id {
+                nodes_to_remove = Some(group.nodes.clone());
+                false
+            } else {
+                true
+            }
+        });
+        if let Some(nodes) = nodes_to_remove {
+            self.nodes.retain(|node| !nodes.contains(&node.id));
+            self.links
+                .retain(|link| !nodes.contains(&link.from_node) && !nodes.contains(&link.to_node));
+            let _ = self.save_graph_to_disk();
+        }
     }
 
     fn remove_selected_nodes(&mut self) -> bool {
@@ -2202,11 +2953,9 @@ impl FiosState {
         if self.selected_nodes.is_empty() {
             return false;
         }
-        self.nodes
-            .retain(|n| !self.selected_nodes.contains(&n.id));
+        self.nodes.retain(|n| !self.selected_nodes.contains(&n.id));
         self.links.retain(|l| {
-            !self.selected_nodes.contains(&l.from_node)
-                && !self.selected_nodes.contains(&l.to_node)
+            !self.selected_nodes.contains(&l.from_node) && !self.selected_nodes.contains(&l.to_node)
         });
         for g in &mut self.groups {
             for id in &self.selected_nodes {
@@ -2428,7 +3177,11 @@ impl FiosState {
 
         ui.group(|ui| {
             ui.horizontal_wrapped(|ui| {
-                ui.label(egui::RichText::new(add_block_txt).strong().color(egui::Color32::from_gray(220)));
+                ui.label(
+                    egui::RichText::new(add_block_txt)
+                        .strong()
+                        .color(egui::Color32::from_gray(220)),
+                );
                 ui.separator();
                 ui.menu_button(
                     egui::RichText::new(add_block_txt)
@@ -2540,9 +3293,11 @@ impl FiosState {
                     selected_count.to_string()
                 };
                 ui.label(
-                    egui::RichText::new(format!("{actions_txt}  |  {selected_txt}: {selected_text}"))
-                        .strong()
-                        .color(egui::Color32::from_gray(220)),
+                    egui::RichText::new(format!(
+                        "{actions_txt}  |  {selected_txt}: {selected_text}"
+                    ))
+                    .strong()
+                    .color(egui::Color32::from_gray(220)),
                 );
                 if ui
                     .add_sized(
@@ -2554,7 +3309,10 @@ impl FiosState {
                 {
                     graph_dirty = true;
                 }
-                if ui.add_sized(egui::vec2(120.0, 26.0), egui::Button::new(rename_txt)).clicked() {
+                if ui
+                    .add_sized(egui::vec2(120.0, 26.0), egui::Button::new(rename_txt))
+                    .clicked()
+                {
                     if let Some(id) = self.selected_nodes.iter().next().copied() {
                         self.rename_node = Some(id);
                         if let Some(i) = self.node_index_by_id(id) {
@@ -2563,8 +3321,14 @@ impl FiosState {
                     }
                 }
                 if self.rename_node.is_some() {
-                    ui.add_sized([190.0, 26.0], egui::TextEdit::singleline(&mut self.rename_buffer));
-                    if ui.add_sized(egui::vec2(130.0, 26.0), egui::Button::new(apply_name_txt)).clicked() {
+                    ui.add_sized(
+                        [190.0, 26.0],
+                        egui::TextEdit::singleline(&mut self.rename_buffer),
+                    );
+                    if ui
+                        .add_sized(egui::vec2(130.0, 26.0), egui::Button::new(apply_name_txt))
+                        .clicked()
+                    {
                         if let Some(id) = self.rename_node {
                             if let Some(i) = self.node_index_by_id(id) {
                                 let nm = self.rename_buffer.trim();
@@ -2584,7 +3348,8 @@ impl FiosState {
         ui.add_space(6.0);
 
         let canvas_size = ui.available_size();
-        let (canvas_rect, canvas_resp) = ui.allocate_exact_size(canvas_size, egui::Sense::click_and_drag());
+        let (canvas_rect, canvas_resp) =
+            ui.allocate_exact_size(canvas_size, egui::Sense::click_and_drag());
         let painter = ui.painter_at(canvas_rect);
         painter.rect_filled(canvas_rect, 6.0, egui::Color32::from_rgb(21, 22, 24));
         painter.rect_stroke(
@@ -2595,7 +3360,10 @@ impl FiosState {
         );
 
         let pointer_pos = ui.ctx().input(|i| i.pointer.interact_pos());
-        if canvas_resp.hovered() {
+        let pointer_inside_canvas = pointer_pos
+            .map(|p| canvas_rect.contains(p))
+            .unwrap_or(false);
+        if canvas_resp.hovered() || pointer_inside_canvas {
             let scroll = ui.ctx().input(|i| i.raw_scroll_delta);
             let ctrl_zoom = ui.ctx().input(|i| i.modifiers.ctrl);
             if ctrl_zoom && scroll.y.abs() > 0.0 {
@@ -2603,8 +3371,7 @@ impl FiosState {
                 let zoom_mul = (1.0 + scroll.y * 0.0008).clamp(0.94, 1.06);
                 self.graph_zoom = (self.graph_zoom * zoom_mul).clamp(0.35, 2.8);
                 if let Some(mouse) = pointer_pos {
-                    let world =
-                        (mouse - canvas_rect.min - self.graph_pan) / old_zoom.max(0.0001);
+                    let world = (mouse - canvas_rect.min - self.graph_pan) / old_zoom.max(0.0001);
                     self.graph_pan = mouse - canvas_rect.min - world * self.graph_zoom;
                 }
             } else if scroll.length_sq() > 0.0 {
@@ -2618,10 +3385,12 @@ impl FiosState {
                 i.modifiers.ctrl
                     && (i.key_pressed(egui::Key::Plus) || i.key_pressed(egui::Key::Equals))
             });
-            let kb_zoom_out =
-                ui.ctx().input(|i| i.modifiers.ctrl && i.key_pressed(egui::Key::Minus));
-            let kb_zoom_reset =
-                ui.ctx().input(|i| i.modifiers.ctrl && i.key_pressed(egui::Key::Num0));
+            let kb_zoom_out = ui
+                .ctx()
+                .input(|i| i.modifiers.ctrl && i.key_pressed(egui::Key::Minus));
+            let kb_zoom_reset = ui
+                .ctx()
+                .input(|i| i.modifiers.ctrl && i.key_pressed(egui::Key::Num0));
             if kb_zoom_in {
                 self.graph_zoom = (self.graph_zoom * 1.12).clamp(0.35, 2.8);
             }
@@ -2640,7 +3409,10 @@ impl FiosState {
         let mut x = canvas_rect.left() + grid_off_x;
         while x < canvas_rect.right() {
             painter.line_segment(
-                [egui::pos2(x, canvas_rect.top()), egui::pos2(x, canvas_rect.bottom())],
+                [
+                    egui::pos2(x, canvas_rect.top()),
+                    egui::pos2(x, canvas_rect.bottom()),
+                ],
                 egui::Stroke::new(0.5, egui::Color32::from_rgb(30, 31, 36)),
             );
             x += grid;
@@ -2648,7 +3420,10 @@ impl FiosState {
         let mut y = canvas_rect.top() + grid_off_y;
         while y < canvas_rect.bottom() {
             painter.line_segment(
-                [egui::pos2(canvas_rect.left(), y), egui::pos2(canvas_rect.right(), y)],
+                [
+                    egui::pos2(canvas_rect.left(), y),
+                    egui::pos2(canvas_rect.right(), y),
+                ],
                 egui::Stroke::new(0.5, egui::Color32::from_rgb(30, 31, 36)),
             );
             y += grid;
@@ -2680,7 +3455,9 @@ impl FiosState {
                     if node.kind.output_count() == 0 {
                         continue;
                     }
-                    let Some(rect) = rect_by_id.get(&node.id) else { continue; };
+                    let Some(rect) = rect_by_id.get(&node.id) else {
+                        continue;
+                    };
                     for out_idx in 0..node.kind.output_count() {
                         let p = Self::output_port_pos(*rect, node.kind, out_idx);
                         let d2 = (p - mouse).length_sq();
@@ -2711,7 +3488,9 @@ impl FiosState {
                 let mut max = egui::pos2(f32::NEG_INFINITY, f32::NEG_INFINITY);
                 let mut any = false;
                 for id in &g.nodes {
-                    let Some(r) = rect_by_id.get(id) else { continue; };
+                    let Some(r) = rect_by_id.get(id) else {
+                        continue;
+                    };
                     any = true;
                     min.x = min.x.min(r.left() - 12.0);
                     min.y = min.y.min(r.top() - 22.0);
@@ -2724,7 +3503,8 @@ impl FiosState {
             }
             None
         });
-        if canvas_resp.clicked() && hovered_node.is_none() && hovered_group_early.is_none() && !ctrl {
+        if canvas_resp.clicked() && hovered_node.is_none() && hovered_group_early.is_none() && !ctrl
+        {
             self.selected_nodes.clear();
             self.selected_node = None;
         }
@@ -2935,9 +3715,19 @@ impl FiosState {
         let mut pending_group_drag_delta: Option<egui::Vec2> = None;
         let mut pending_group_select: Option<u32> = None;
         for gi in 0..self.groups.len() {
-            let (group_id, group_name, group_color, group_nodes): (u32, String, egui::Color32, Vec<u32>) = {
+            let (group_id, group_name, group_color, group_nodes): (
+                u32,
+                String,
+                egui::Color32,
+                Vec<u32>,
+            ) = {
                 let g = &self.groups[gi];
-                (g.id, g.name.clone(), g.color, g.nodes.iter().copied().collect())
+                (
+                    g.id,
+                    g.name.clone(),
+                    g.color,
+                    g.nodes.iter().copied().collect(),
+                )
             };
             let mut min = egui::pos2(f32::INFINITY, f32::INFINITY);
             let mut max = egui::pos2(f32::NEG_INFINITY, f32::NEG_INFINITY);
@@ -3031,10 +3821,18 @@ impl FiosState {
                 .find_map(|(gid, r)| if r.contains(p) { Some(*gid) } else { None })
         });
         for (link_idx, link) in self.links.iter().enumerate() {
-            let Some(fi) = self.node_index_by_id(link.from_node) else { continue; };
-            let Some(ti) = self.node_index_by_id(link.to_node) else { continue; };
-            let Some(fr) = rect_by_id.get(&link.from_node) else { continue; };
-            let Some(tr) = rect_by_id.get(&link.to_node) else { continue; };
+            let Some(fi) = self.node_index_by_id(link.from_node) else {
+                continue;
+            };
+            let Some(ti) = self.node_index_by_id(link.to_node) else {
+                continue;
+            };
+            let Some(fr) = rect_by_id.get(&link.from_node) else {
+                continue;
+            };
+            let Some(tr) = rect_by_id.get(&link.to_node) else {
+                continue;
+            };
             let from = Self::output_port_pos(*fr, self.nodes[fi].kind, link.from_port as usize);
             let to = Self::input_port_pos(*tr, self.nodes[ti].kind, link.to_port as usize);
             let c1 = egui::pos2(from.x + 50.0, from.y);
@@ -3049,7 +3847,10 @@ impl FiosState {
                     + to.to_vec2() * (t * t * t);
                 pts.push(egui::pos2(p.x, p.y));
             }
-            painter.add(egui::Shape::line(pts.clone(), egui::Stroke::new(2.0, egui::Color32::from_rgb(15, 232, 121))));
+            painter.add(egui::Shape::line(
+                pts.clone(),
+                egui::Stroke::new(2.0, egui::Color32::from_rgb(15, 232, 121)),
+            ));
             link_curves.push((link_idx, pts));
         }
 
@@ -3061,7 +3862,9 @@ impl FiosState {
                     if node.kind.output_count() == 0 {
                         continue;
                     }
-                    let Some(rect) = rect_by_id.get(&node.id) else { continue; };
+                    let Some(rect) = rect_by_id.get(&node.id) else {
+                        continue;
+                    };
                     for out_idx in 0..node.kind.output_count() {
                         let p = Self::output_port_pos(*rect, node.kind, out_idx);
                         let d2 = (p - mouse).length_sq();
@@ -3188,7 +3991,8 @@ impl FiosState {
             });
             if drag_resp.dragged() {
                 if self.selected_nodes.contains(&node.id) && self.selected_nodes.len() > 1 {
-                    pending_group_drag_delta = Some(ui.ctx().input(|i| i.pointer.delta()) / self.graph_zoom.max(0.0001));
+                    pending_group_drag_delta =
+                        Some(ui.ctx().input(|i| i.pointer.delta()) / self.graph_zoom.max(0.0001));
                 } else {
                     node.pos += ui.ctx().input(|i| i.pointer.delta()) / self.graph_zoom.max(0.0001);
                     ui.ctx().request_repaint();
@@ -3221,24 +4025,41 @@ impl FiosState {
             );
 
             if node.kind == FiosNodeKind::Constant {
-                let val_rect = egui::Rect::from_min_size(rect.left_top() + egui::vec2(8.0, 32.0), egui::vec2(rect.width() - 16.0, 24.0));
+                let val_rect = egui::Rect::from_min_size(
+                    rect.left_top() + egui::vec2(8.0, 32.0),
+                    egui::vec2(rect.width() - 16.0, 24.0),
+                );
                 ui.scope_builder(egui::UiBuilder::new().max_rect(val_rect), |ui| {
                     ui.horizontal(|ui| {
                         ui.label("V");
-                        if ui.add(egui::DragValue::new(&mut node.value).speed(0.05).range(-1000.0..=1000.0)).changed() {
+                        if ui
+                            .add(
+                                egui::DragValue::new(&mut node.value)
+                                    .speed(0.05)
+                                    .range(-1000.0..=1000.0),
+                            )
+                            .changed()
+                        {
                             graph_dirty = true;
                         }
                     });
                 });
             }
             if node.kind == FiosNodeKind::InputAction {
-                let r1 = egui::Rect::from_min_size(rect.left_top() + egui::vec2(8.0, 32.0), egui::vec2(rect.width() - 16.0, 24.0));
-                let r2 = egui::Rect::from_min_size(rect.left_top() + egui::vec2(8.0, 58.0), egui::vec2(rect.width() - 16.0, 24.0));
+                let r1 = egui::Rect::from_min_size(
+                    rect.left_top() + egui::vec2(8.0, 32.0),
+                    egui::vec2(rect.width() - 16.0, 24.0),
+                );
+                let r2 = egui::Rect::from_min_size(
+                    rect.left_top() + egui::vec2(8.0, 58.0),
+                    egui::vec2(rect.width() - 16.0, 24.0),
+                );
                 ui.scope_builder(egui::UiBuilder::new().max_rect(r1), |ui| {
                     let mut selected_idx = node
                         .param_a
                         .round()
-                        .clamp(0.0, (ACTION_COUNT.saturating_sub(1)) as f32) as usize;
+                        .clamp(0.0, (ACTION_COUNT.saturating_sub(1)) as f32)
+                        as usize;
                     egui::ComboBox::from_id_salt(ui.id().with(("fios_action_idx", node.id)))
                         .selected_text(FiosAction::ALL[selected_idx].label(lang))
                         .show_ui(ui, |ui| {
@@ -3256,11 +4077,7 @@ impl FiosState {
                 });
                 ui.scope_builder(egui::UiBuilder::new().max_rect(r2), |ui| {
                     let mut mode_just = node.param_b.round() >= 1.0;
-                    let mode_txt = if mode_just {
-                        "JustPressed"
-                    } else {
-                        "Pressed"
-                    };
+                    let mode_txt = if mode_just { "JustPressed" } else { "Pressed" };
                     if ui.checkbox(&mut mode_just, mode_txt).changed() {
                         node.param_b = if mode_just { 1.0 } else { 0.0 };
                         graph_dirty = true;
@@ -3268,12 +4085,25 @@ impl FiosState {
                 });
             }
             if node.kind == FiosNodeKind::Clamp {
-                let r1 = egui::Rect::from_min_size(rect.left_top() + egui::vec2(8.0, 32.0), egui::vec2(rect.width() - 16.0, 22.0));
-                let r2 = egui::Rect::from_min_size(rect.left_top() + egui::vec2(8.0, 56.0), egui::vec2(rect.width() - 16.0, 22.0));
+                let r1 = egui::Rect::from_min_size(
+                    rect.left_top() + egui::vec2(8.0, 32.0),
+                    egui::vec2(rect.width() - 16.0, 22.0),
+                );
+                let r2 = egui::Rect::from_min_size(
+                    rect.left_top() + egui::vec2(8.0, 56.0),
+                    egui::vec2(rect.width() - 16.0, 22.0),
+                );
                 ui.scope_builder(egui::UiBuilder::new().max_rect(r1), |ui| {
                     ui.horizontal(|ui| {
                         ui.label("Min");
-                        if ui.add(egui::DragValue::new(&mut node.param_a).speed(0.05).range(-1000.0..=1000.0)).changed() {
+                        if ui
+                            .add(
+                                egui::DragValue::new(&mut node.param_a)
+                                    .speed(0.05)
+                                    .range(-1000.0..=1000.0),
+                            )
+                            .changed()
+                        {
                             graph_dirty = true;
                         }
                     });
@@ -3281,29 +4111,56 @@ impl FiosState {
                 ui.scope_builder(egui::UiBuilder::new().max_rect(r2), |ui| {
                     ui.horizontal(|ui| {
                         ui.label("Max");
-                        if ui.add(egui::DragValue::new(&mut node.param_b).speed(0.05).range(-1000.0..=1000.0)).changed() {
+                        if ui
+                            .add(
+                                egui::DragValue::new(&mut node.param_b)
+                                    .speed(0.05)
+                                    .range(-1000.0..=1000.0),
+                            )
+                            .changed()
+                        {
                             graph_dirty = true;
                         }
                     });
                 });
             }
             if node.kind == FiosNodeKind::Deadzone {
-                let r1 = egui::Rect::from_min_size(rect.left_top() + egui::vec2(8.0, 34.0), egui::vec2(rect.width() - 16.0, 24.0));
+                let r1 = egui::Rect::from_min_size(
+                    rect.left_top() + egui::vec2(8.0, 34.0),
+                    egui::vec2(rect.width() - 16.0, 24.0),
+                );
                 ui.scope_builder(egui::UiBuilder::new().max_rect(r1), |ui| {
                     ui.horizontal(|ui| {
                         ui.label("Dz");
-                        if ui.add(egui::DragValue::new(&mut node.param_a).speed(0.01).range(0.0..=1.0)).changed() {
+                        if ui
+                            .add(
+                                egui::DragValue::new(&mut node.param_a)
+                                    .speed(0.01)
+                                    .range(0.0..=1.0),
+                            )
+                            .changed()
+                        {
                             graph_dirty = true;
                         }
                     });
                 });
             }
             if node.kind == FiosNodeKind::Smooth {
-                let r1 = egui::Rect::from_min_size(rect.left_top() + egui::vec2(8.0, 34.0), egui::vec2(rect.width() - 16.0, 24.0));
+                let r1 = egui::Rect::from_min_size(
+                    rect.left_top() + egui::vec2(8.0, 34.0),
+                    egui::vec2(rect.width() - 16.0, 24.0),
+                );
                 ui.scope_builder(egui::UiBuilder::new().max_rect(r1), |ui| {
                     ui.horizontal(|ui| {
                         ui.label("A");
-                        if ui.add(egui::DragValue::new(&mut node.param_a).speed(0.01).range(0.0..=1.0)).changed() {
+                        if ui
+                            .add(
+                                egui::DragValue::new(&mut node.param_a)
+                                    .speed(0.01)
+                                    .range(0.0..=1.0),
+                            )
+                            .changed()
+                        {
                             graph_dirty = true;
                         }
                     });
@@ -3311,13 +4168,34 @@ impl FiosState {
             }
 
             if node.kind == FiosNodeKind::OutputMove {
-                painter.text(rect.left_top() + egui::vec2(8.0, 36.0), egui::Align2::LEFT_TOP, format!("X: {:.2}  Y: {:.2}", self.last_axis[0], self.last_axis[1]), egui::FontId::monospace(11.0), egui::Color32::from_gray(190));
+                painter.text(
+                    rect.left_top() + egui::vec2(8.0, 36.0),
+                    egui::Align2::LEFT_TOP,
+                    format!("X: {:.2}  Y: {:.2}", self.last_axis[0], self.last_axis[1]),
+                    egui::FontId::monospace(11.0),
+                    egui::Color32::from_gray(190),
+                );
             }
             if node.kind == FiosNodeKind::OutputLook {
-                painter.text(rect.left_top() + egui::vec2(8.0, 36.0), egui::Align2::LEFT_TOP, format!("Yaw: {:.2}  Pitch: {:.2}", self.last_look[0], self.last_look[1]), egui::FontId::monospace(11.0), egui::Color32::from_gray(190));
+                painter.text(
+                    rect.left_top() + egui::vec2(8.0, 36.0),
+                    egui::Align2::LEFT_TOP,
+                    format!(
+                        "Yaw: {:.2}  Pitch: {:.2}",
+                        self.last_look[0], self.last_look[1]
+                    ),
+                    egui::FontId::monospace(11.0),
+                    egui::Color32::from_gray(190),
+                );
             }
             if node.kind == FiosNodeKind::OutputAction {
-                painter.text(rect.left_top() + egui::vec2(8.0, 32.0), egui::Align2::LEFT_TOP, format!("A: {:.2}", self.last_action), egui::FontId::monospace(11.0), egui::Color32::from_gray(190));
+                painter.text(
+                    rect.left_top() + egui::vec2(8.0, 32.0),
+                    egui::Align2::LEFT_TOP,
+                    format!("A: {:.2}", self.last_action),
+                    egui::FontId::monospace(11.0),
+                    egui::Color32::from_gray(190),
+                );
             }
             if node.kind == FiosNodeKind::OutputAnimCommand {
                 painter.text(
@@ -3332,9 +4210,19 @@ impl FiosState {
             for i in 0..node.kind.input_count() {
                 let p = Self::input_port_pos(rect, node.kind, i);
                 painter.circle_filled(p, 4.0, egui::Color32::from_rgb(205, 120, 120));
-                painter.text(p + egui::vec2(8.0, -6.0), egui::Align2::LEFT_TOP, node.kind.input_name(i), egui::FontId::proportional(10.0), egui::Color32::from_gray(170));
+                painter.text(
+                    p + egui::vec2(8.0, -6.0),
+                    egui::Align2::LEFT_TOP,
+                    node.kind.input_name(i),
+                    egui::FontId::proportional(10.0),
+                    egui::Color32::from_gray(170),
+                );
                 let r = egui::Rect::from_center_size(p, egui::vec2(24.0, 24.0));
-                let resp = ui.interact(r, ui.id().with(("fios_in_port", node.id, i)), egui::Sense::click());
+                let resp = ui.interact(
+                    r,
+                    ui.id().with(("fios_in_port", node.id, i)),
+                    egui::Sense::click(),
+                );
                 if resp.clicked() {
                     if let Some((from_n, from_p)) = next_drag_from_output.take() {
                         pending_new_link = Some((from_n, from_p, node.id, i as u8));
@@ -3348,9 +4236,19 @@ impl FiosState {
             for i in 0..node.kind.output_count() {
                 let p = Self::output_port_pos(rect, node.kind, i);
                 painter.circle_filled(p, 4.0, egui::Color32::from_rgb(120, 180, 230));
-                painter.text(p + egui::vec2(-8.0, -6.0), egui::Align2::RIGHT_TOP, node.kind.output_name(i), egui::FontId::proportional(10.0), egui::Color32::from_gray(170));
+                painter.text(
+                    p + egui::vec2(-8.0, -6.0),
+                    egui::Align2::RIGHT_TOP,
+                    node.kind.output_name(i),
+                    egui::FontId::proportional(10.0),
+                    egui::Color32::from_gray(170),
+                );
                 let r = egui::Rect::from_center_size(p, egui::vec2(24.0, 24.0));
-                let resp = ui.interact(r, ui.id().with(("fios_out_port", node.id, i)), egui::Sense::click_and_drag());
+                let resp = ui.interact(
+                    r,
+                    ui.id().with(("fios_out_port", node.id, i)),
+                    egui::Sense::click_and_drag(),
+                );
                 if resp.drag_started() || resp.clicked() {
                     next_drag_from_output = Some((node.id, i as u8));
                     self.wire_drag_path.clear();
@@ -3397,8 +4295,12 @@ impl FiosState {
         if let Some((from_node, from_port)) = self.drag_from_output {
             if let Some(fi) = self.node_index_by_id(from_node) {
                 if let Some(from_rect) = rect_by_id.get(&from_node) {
-                    let from = Self::output_port_pos(*from_rect, self.nodes[fi].kind, from_port as usize);
-                    let mouse = ui.ctx().input(|i| i.pointer.hover_pos()).unwrap_or(from + egui::vec2(80.0, 0.0));
+                    let from =
+                        Self::output_port_pos(*from_rect, self.nodes[fi].kind, from_port as usize);
+                    let mouse = ui
+                        .ctx()
+                        .input(|i| i.pointer.hover_pos())
+                        .unwrap_or(from + egui::vec2(80.0, 0.0));
                     let mut predicted_input: Option<(u32, u8, f32, egui::Pos2)> = None;
                     if let Some(target_node) = hovered_node {
                         if let Some(ti) = self.node_index_by_id(target_node) {
@@ -3406,12 +4308,17 @@ impl FiosState {
                             if target_kind.input_count() > 0 {
                                 if let Some(target_rect) = rect_by_id.get(&target_node) {
                                     for input_idx in 0..target_kind.input_count() {
-                                        let p = Self::input_port_pos(*target_rect, target_kind, input_idx);
+                                        let p = Self::input_port_pos(
+                                            *target_rect,
+                                            target_kind,
+                                            input_idx,
+                                        );
                                         let d2 = (p - mouse).length_sq();
                                         match predicted_input {
                                             Some((_, _, bd2, _)) if d2 >= bd2 => {}
                                             _ => {
-                                                predicted_input = Some((target_node, input_idx as u8, d2, p));
+                                                predicted_input =
+                                                    Some((target_node, input_idx as u8, d2, p));
                                             }
                                         }
                                     }
@@ -3424,7 +4331,9 @@ impl FiosState {
                             if node.kind.input_count() == 0 {
                                 continue;
                             }
-                            let Some(rect) = rect_by_id.get(&node.id) else { continue; };
+                            let Some(rect) = rect_by_id.get(&node.id) else {
+                                continue;
+                            };
                             for input_idx in 0..node.kind.input_count() {
                                 let p = Self::input_port_pos(*rect, node.kind, input_idx);
                                 let d2 = (p - mouse).length_sq();
@@ -3459,7 +4368,10 @@ impl FiosState {
                             egui::Stroke::new(2.0, egui::Color32::from_rgb(15, 232, 121)),
                         ));
                     } else {
-                        painter.line_segment([from, mouse], egui::Stroke::new(2.0, egui::Color32::from_rgb(15, 232, 121)));
+                        painter.line_segment(
+                            [from, mouse],
+                            egui::Stroke::new(2.0, egui::Color32::from_rgb(15, 232, 121)),
+                        );
                     }
                     if let Some((_, _, _, predicted_pos)) = predicted_input {
                         painter.circle_stroke(
@@ -3469,7 +4381,10 @@ impl FiosState {
                         );
                         painter.line_segment(
                             [mouse, predicted_pos],
-                            egui::Stroke::new(1.0, egui::Color32::from_rgba_unmultiplied(15, 232, 121, 130)),
+                            egui::Stroke::new(
+                                1.0,
+                                egui::Color32::from_rgba_unmultiplied(15, 232, 121, 130),
+                            ),
                         );
                     }
                 }
@@ -3478,7 +4393,10 @@ impl FiosState {
                 i.pointer.primary_down() || (i.modifiers.alt && i.pointer.secondary_down())
             });
             if !connect_drag_down {
-                let release_pos = ui.ctx().input(|i| i.pointer.hover_pos()).or_else(|| self.wire_drag_path.last().copied());
+                let release_pos = ui
+                    .ctx()
+                    .input(|i| i.pointer.hover_pos())
+                    .or_else(|| self.wire_drag_path.last().copied());
                 if let Some(release_pos) = release_pos {
                     let mut best: Option<(u32, u8, f32)> = None;
                     if let Some(target_node) = hovered_node {
@@ -3487,7 +4405,11 @@ impl FiosState {
                             if target_kind.input_count() > 0 {
                                 if let Some(target_rect) = rect_by_id.get(&target_node) {
                                     for input_idx in 0..target_kind.input_count() {
-                                        let p = Self::input_port_pos(*target_rect, target_kind, input_idx);
+                                        let p = Self::input_port_pos(
+                                            *target_rect,
+                                            target_kind,
+                                            input_idx,
+                                        );
                                         let d2 = (p - release_pos).length_sq();
                                         match best {
                                             Some((_, _, bd2)) if d2 >= bd2 => {}
@@ -3505,7 +4427,9 @@ impl FiosState {
                             if node.kind.input_count() == 0 {
                                 continue;
                             }
-                            let Some(rect) = rect_by_id.get(&node.id) else { continue; };
+                            let Some(rect) = rect_by_id.get(&node.id) else {
+                                continue;
+                            };
                             for input_idx in 0..node.kind.input_count() {
                                 let p = Self::input_port_pos(*rect, node.kind, input_idx);
                                 let d2 = (p - release_pos).length_sq();
@@ -3530,7 +4454,11 @@ impl FiosState {
 
         if let (Some(a), Some(b)) = (self.marquee_start, self.marquee_end) {
             let r = egui::Rect::from_two_pos(a, b);
-            painter.rect_filled(r, 0.0, egui::Color32::from_rgba_unmultiplied(86, 148, 255, 24));
+            painter.rect_filled(
+                r,
+                0.0,
+                egui::Color32::from_rgba_unmultiplied(86, 148, 255, 24),
+            );
             painter.rect_stroke(
                 r,
                 0.0,
@@ -3548,7 +4476,9 @@ impl FiosState {
             }
         }
 
-        let delete_pressed = ui.ctx().input(|i| i.key_pressed(egui::Key::Delete) || i.key_pressed(egui::Key::Backspace));
+        let delete_pressed = ui
+            .ctx()
+            .input(|i| i.key_pressed(egui::Key::Delete) || i.key_pressed(egui::Key::Backspace));
         if delete_pressed && self.remove_selected_nodes() {
             graph_dirty = true;
         }
@@ -3620,81 +4550,115 @@ impl FiosState {
             EngineLanguage::En => "+ Add Module",
             EngineLanguage::Es => "+ Add Module",
         };
+        let bindings = self.bindings;
         if self.module_chain.is_empty() {
-            ui.vertical_centered(|ui| {
-                ui.horizontal_centered(|ui| {
-                    ui.menu_button(add_module_txt, |ui| {
+            ui.with_layout(
+                egui::Layout::centered_and_justified(egui::Direction::TopDown),
+                |ui| {
+                    let resp = self.module_add_button(ui, add_module_txt);
+                    egui::Popup::menu(&resp).show(|ui| {
                         if self.module_menu_content(ui, lang) {
                             ui.close_kind(UiKind::Menu);
                         }
                     });
-                });
-            });
+                },
+            );
         } else {
             let card_frame = egui::Frame::new()
                 .fill(egui::Color32::from_rgb(28, 30, 34))
                 .stroke(egui::Stroke::new(1.0, egui::Color32::from_gray(80)))
                 .corner_radius(12.0);
-            let mut pending_remove: Option<u32> = None;
-            egui::ScrollArea::horizontal()
+            let mut pending_remove: Option<(u32, Option<u32>)> = None;
+            egui::ScrollArea::vertical()
                 .auto_shrink([false, false])
                 .show(ui, |ui| {
-                    ui.horizontal(|ui| {
-                        for module in &mut self.module_chain {
-                            ui.add_space(6.0);
-                            card_frame.show(ui, |ui| {
-                                ui.set_min_size(egui::vec2(190.0, 120.0));
-                                ui.vertical(|ui| {
-                                    ui.horizontal(|ui| {
-                                        ui.label(
-                                            egui::RichText::new(&module.name)
-                                                .strong()
-                                                .size(13.0),
-                                        );
-                                        ui.with_layout(
-                                            egui::Layout::right_to_left(egui::Align::Center),
-                                            |ui| {
-                                                let close_resp = ui.add(
-                                                    egui::Button::new("✕")
-                                                        .frame(false)
-                                                        .min_size(egui::vec2(20.0, 20.0))
-                                                        .stroke(egui::Stroke::new(1.0, egui::Color32::from_gray(90)))
-                                                        .fill(egui::Color32::TRANSPARENT),
-                                                );
-                                                if close_resp.clicked() {
-                                                    pending_remove = Some(module.id);
-                                                }
-                                                let checkbox = ui.checkbox(&mut module.enabled, "");
-                                                checkbox.on_hover_text(
-                                                    match lang {
-                                                        EngineLanguage::Pt => "Ativar módulo",
-                                                        EngineLanguage::En => "Enable module",
-                                                        EngineLanguage::Es => "Activar módulo",
-                                                    },
-                                                );
-                                            },
-                                        );
-                                    });
-                                    ui.add_space(6.0);
-                                    ui.separator();
-                                    ui.add_space(4.0);
+                    ui.spacing_mut().item_spacing = egui::vec2(8.0, 8.0);
+                    let module_count = self.module_chain.len();
+                    for module_idx in 0..module_count {
+                        ui.add_space(6.0);
+                        card_frame.show(ui, |ui| {
+                            let width = ui.available_width();
+                            if width > 0.0 {
+                                ui.set_min_width(width.max(240.0));
+                            }
+                            ui.vertical(|ui| {
+                                let module = &mut self.module_chain[module_idx];
+                                ui.horizontal(|ui| {
                                     ui.label(
+                                        egui::RichText::new(&module.name)
+                                            .strong()
+                                            .size(13.0),
+                                    );
+                                    ui.with_layout(
+                                        egui::Layout::right_to_left(egui::Align::Center),
+                                        |ui| {
+                                            let close_resp = ui.add(
+                                                egui::Button::new("✕")
+                                                    .frame(false)
+                                                    .min_size(egui::vec2(20.0, 20.0))
+                                                    .stroke(egui::Stroke::new(
+                                                        1.0,
+                                                        egui::Color32::from_gray(90),
+                                                    ))
+                                                    .fill(egui::Color32::TRANSPARENT),
+                                            );
+                                            if close_resp.clicked() {
+                                                pending_remove =
+                                                    Some((module.id, module.group_id));
+                                            }
+                                            let checkbox = ui.checkbox(&mut module.enabled, "");
+                                            checkbox.on_hover_text(match lang {
+                                                EngineLanguage::Pt => "Ativar módulo",
+                                                EngineLanguage::En => "Enable module",
+                                                EngineLanguage::Es => "Activar módulo",
+                                            });
+                                        },
+                                    );
+                                });
+                                ui.add_space(4.0);
+                                ui.separator();
+                                ui.add_space(6.0);
+                                if let Some(desc) = module.description.as_ref() {
+                                    ui.add(
+                                        egui::Label::new(
+                                            egui::RichText::new(desc)
+                                                .small()
+                                                .color(egui::Color32::from_gray(160)),
+                                        )
+                                        .wrap(),
+                                    );
+                                    ui.add_space(4.0);
+                                }
+                                ui.add(
+                                    egui::Label::new(
                                         egui::RichText::new(&module.asset)
                                             .small()
                                             .color(egui::Color32::from_gray(160)),
-                                    );
-                                });
+                                    )
+                                    .wrap(),
+                                );
+                                Self::render_module_extra_info(ui, module);
+                                Self::render_module_card_details(ui, module, lang, &bindings);
                             });
-                        }
-                        ui.add_space(6.0);
-                        ui.menu_button(add_module_txt, |ui| {
-                            if self.module_menu_content(ui, lang) {
-                                ui.close_kind(UiKind::Menu);
-                            }
+                        });
+                        self.apply_module_controls(module_idx);
+                    }
+                    ui.add_space(8.0);
+                    ui.horizontal(|ui| {
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            let resp = self.module_add_button(ui, add_module_txt);
+                            egui::Popup::menu(&resp).show(|ui| {
+                                if self.module_menu_content(ui, lang) {
+                                    ui.close_kind(UiKind::Menu);
+                                }
+                            });
                         });
                     });
                 });
-            if let Some(id) = pending_remove {
+            if let Some((id, group_id)) = pending_remove {
+                if let Some(group_id) = group_id {
+                    self.remove_module_group(group_id);
+                }
                 self.module_chain.retain(|m| m.id != id);
             }
         }
@@ -3739,12 +4703,13 @@ impl FiosState {
                         egui::pos2(rect.right() - 14.0, rect.top() + 12.0),
                         egui::vec2(16.0, 14.0),
                     );
-                    let rm_resp = ui.interact(rm_rect, ui.id().with(("mod_rm", mode as u8)), egui::Sense::click());
-                    ui.painter().rect_filled(
+                    let rm_resp = ui.interact(
                         rm_rect,
-                        3.0,
-                        egui::Color32::from_rgb(148, 74, 74),
+                        ui.id().with(("mod_rm", mode as u8)),
+                        egui::Sense::click(),
                     );
+                    ui.painter()
+                        .rect_filled(rm_rect, 3.0, egui::Color32::from_rgb(148, 74, 74));
                     ui.painter().text(
                         rm_rect.center(),
                         egui::Align2::CENTER_CENTER,
@@ -3920,7 +4885,6 @@ impl FiosState {
                     }
                 });
             });
-
     }
 
     fn draw_controller_tab(&mut self, ui: &mut egui::Ui, lang: EngineLanguage) {
@@ -3931,13 +4895,23 @@ impl FiosState {
             EngineLanguage::Es => "Clips",
         };
         let help_txt = match lang {
-            EngineLanguage::Pt => "Arraste clipes para o canvas. Clique saída e depois entrada para ligar estados.",
-            EngineLanguage::En => "Drag clips to canvas. Click output then input to connect states.",
-            EngineLanguage::Es => "Arrastra clips al canvas. Haz clic en salida y luego entrada para conectar estados.",
+            EngineLanguage::Pt => {
+                "Arraste clipes para o canvas. Clique saída e depois entrada para ligar estados."
+            }
+            EngineLanguage::En => {
+                "Drag clips to canvas. Click output then input to connect states."
+            }
+            EngineLanguage::Es => {
+                "Arrastra clips al canvas. Haz clic en salida y luego entrada para conectar estados."
+            }
         };
 
         ui.horizontal(|ui| {
-            ui.label(egui::RichText::new(help_txt).size(11.0).color(egui::Color32::from_gray(185)));
+            ui.label(
+                egui::RichText::new(help_txt)
+                    .size(11.0)
+                    .color(egui::Color32::from_gray(185)),
+            );
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 if ui.button("Atualizar").clicked() {
                     self.anim_clip_cache_dirty = true;
@@ -3958,12 +4932,14 @@ impl FiosState {
             return;
         }
         let left_w = 260.0_f32.min((area.width() * 0.35).max(190.0));
-        let left_rect = egui::Rect::from_min_max(area.min, egui::pos2(area.left() + left_w, area.bottom()));
+        let left_rect =
+            egui::Rect::from_min_max(area.min, egui::pos2(area.left() + left_w, area.bottom()));
         let canvas_rect =
             egui::Rect::from_min_max(egui::pos2(left_rect.right() + 8.0, area.top()), area.max);
         let canvas_painter = ui.painter().with_clip_rect(canvas_rect);
 
-        ui.painter().rect_filled(left_rect, 6.0, egui::Color32::from_rgb(24, 26, 30));
+        ui.painter()
+            .rect_filled(left_rect, 6.0, egui::Color32::from_rgb(24, 26, 30));
         ui.painter().rect_stroke(
             left_rect,
             6.0,
@@ -4017,7 +4993,10 @@ impl FiosState {
         let mut gx = canvas_rect.left();
         while gx <= canvas_rect.right() {
             canvas_painter.line_segment(
-                [egui::pos2(gx, canvas_rect.top()), egui::pos2(gx, canvas_rect.bottom())],
+                [
+                    egui::pos2(gx, canvas_rect.top()),
+                    egui::pos2(gx, canvas_rect.bottom()),
+                ],
                 egui::Stroke::new(1.0, egui::Color32::from_rgba_unmultiplied(76, 98, 132, 18)),
             );
             gx += grid_step;
@@ -4025,7 +5004,10 @@ impl FiosState {
         let mut gy = canvas_rect.top();
         while gy <= canvas_rect.bottom() {
             canvas_painter.line_segment(
-                [egui::pos2(canvas_rect.left(), gy), egui::pos2(canvas_rect.right(), gy)],
+                [
+                    egui::pos2(canvas_rect.left(), gy),
+                    egui::pos2(canvas_rect.right(), gy),
+                ],
                 egui::Stroke::new(1.0, egui::Color32::from_rgba_unmultiplied(76, 98, 132, 18)),
             );
             gy += grid_step;
@@ -4051,7 +5033,10 @@ impl FiosState {
             local.y = local.y.clamp(4.0, (canvas_rect.height() - 52.0).max(4.0));
             self.anim_nodes[i].pos = local;
 
-            let rect = egui::Rect::from_min_size(canvas_rect.min + local.to_vec2(), egui::vec2(170.0, 48.0));
+            let rect = egui::Rect::from_min_size(
+                canvas_rect.min + local.to_vec2(),
+                egui::vec2(170.0, 48.0),
+            );
             canvas_painter.rect_filled(rect, 5.0, egui::Color32::from_rgb(35, 45, 58));
             canvas_painter.rect_stroke(
                 rect,
@@ -4074,7 +5059,11 @@ impl FiosState {
                 egui::Color32::from_gray(186),
             );
 
-            let body = ui.interact(rect, ui.id().with(("anim_node_body", id)), egui::Sense::click_and_drag());
+            let body = ui.interact(
+                rect,
+                ui.id().with(("anim_node_body", id)),
+                egui::Sense::click_and_drag(),
+            );
             if body.dragged() {
                 self.anim_nodes[i].pos += body.drag_delta();
             }
@@ -4110,7 +5099,8 @@ impl FiosState {
         if let Some(clip) = self.anim_drag_clip.clone() {
             ui.ctx().request_repaint();
             if let Some(p) = pointer_pos {
-                let drag_rect = egui::Rect::from_center_size(p + egui::vec2(8.0, 8.0), egui::vec2(180.0, 22.0));
+                let drag_rect =
+                    egui::Rect::from_center_size(p + egui::vec2(8.0, 8.0), egui::vec2(180.0, 22.0));
                 canvas_painter.rect_filled(
                     drag_rect,
                     4.0,
@@ -4135,13 +5125,10 @@ impl FiosState {
                             );
                             if node_rect.contains(p) {
                                 node.clip_ref = clip.clone();
-                                node.name = clip
-                                    .split("::")
-                                    .last()
-                                    .unwrap_or("State")
-                                    .to_string();
+                                node.name = clip.split("::").last().unwrap_or("State").to_string();
                                 assigned = true;
-                                self.anim_tab_status = Some("Clipe atribuído ao estado".to_string());
+                                self.anim_tab_status =
+                                    Some("Clipe atribuído ao estado".to_string());
                                 break;
                             }
                         }
@@ -4193,37 +5180,31 @@ impl FiosState {
             let g = self.tab == FiosTab::Graph;
             let k = self.tab == FiosTab::Controller;
             if ui
-                .add(
-                    egui::Button::new(controls_txt).fill(if c {
-                        egui::Color32::from_rgb(58, 84, 64)
-                    } else {
-                        egui::Color32::from_rgb(52, 52, 52)
-                    }),
-                )
+                .add(egui::Button::new(controls_txt).fill(if c {
+                    egui::Color32::from_rgb(58, 84, 64)
+                } else {
+                    egui::Color32::from_rgb(52, 52, 52)
+                }))
                 .clicked()
             {
                 self.tab = FiosTab::Controls;
             }
             if ui
-                .add(
-                    egui::Button::new(graph_txt).fill(if g {
-                        egui::Color32::from_rgb(108, 76, 156)
-                    } else {
-                        egui::Color32::from_rgb(52, 52, 52)
-                    }),
-                )
+                .add(egui::Button::new(graph_txt).fill(if g {
+                    egui::Color32::from_rgb(108, 76, 156)
+                } else {
+                    egui::Color32::from_rgb(52, 52, 52)
+                }))
                 .clicked()
             {
                 self.tab = FiosTab::Graph;
             }
             if ui
-                .add(
-                    egui::Button::new(creator_txt).fill(if k {
-                        egui::Color32::from_rgb(76, 96, 156)
-                    } else {
-                        egui::Color32::from_rgb(52, 52, 52)
-                    }),
-                )
+                .add(egui::Button::new(creator_txt).fill(if k {
+                    egui::Color32::from_rgb(76, 96, 156)
+                } else {
+                    egui::Color32::from_rgb(52, 52, 52)
+                }))
                 .clicked()
             {
                 self.tab = FiosTab::Controller;
@@ -4284,5 +5265,4 @@ impl FiosState {
                 );
             });
     }
-
 }

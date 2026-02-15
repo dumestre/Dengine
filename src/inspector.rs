@@ -1,3 +1,4 @@
+use crate::EngineLanguage;
 use eframe::egui::{
     self, Align2, Color32, FontFamily, FontId, Id, Order, Pos2, Rect, Stroke, TextureHandle, Vec2,
 };
@@ -7,7 +8,6 @@ use std::fs;
 use std::path::Path;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
-use crate::EngineLanguage;
 
 const INSPECTOR_MIN_WIDTH: f32 = 260.0;
 const INSPECTOR_MAX_WIDTH: f32 = 520.0;
@@ -174,21 +174,39 @@ impl InspectorWindow {
     pub fn fios_controller_targets(&self) -> Vec<(String, FiosControllerDraft)> {
         self.object_fios_controller
             .iter()
-            .filter_map(|(name, cfg)| if cfg.enabled { Some((name.clone(), *cfg)) } else { None })
+            .filter_map(|(name, cfg)| {
+                if cfg.enabled {
+                    Some((name.clone(), *cfg))
+                } else {
+                    None
+                }
+            })
             .collect()
     }
 
     pub fn rigidbody_targets(&self) -> Vec<(String, RigidbodyDraft)> {
         self.object_rigidbody
             .iter()
-            .filter_map(|(name, cfg)| if cfg.enabled { Some((name.clone(), *cfg)) } else { None })
+            .filter_map(|(name, cfg)| {
+                if cfg.enabled {
+                    Some((name.clone(), *cfg))
+                } else {
+                    None
+                }
+            })
             .collect()
     }
 
     pub fn animator_targets(&self) -> Vec<(String, AnimatorDraft)> {
         self.object_animator
             .iter()
-            .filter_map(|(name, cfg)| if cfg.enabled { Some((name.clone(), cfg.clone())) } else { None })
+            .filter_map(|(name, cfg)| {
+                if cfg.enabled {
+                    Some((name.clone(), cfg.clone()))
+                } else {
+                    None
+                }
+            })
             .collect()
     }
 
@@ -300,8 +318,8 @@ impl InspectorWindow {
         } else {
             (usable_height * 0.85).max(520.0)
         };
-        let max_width = (dock_rect.width() - left_reserved - right_reserved - 40.0)
-            .max(INSPECTOR_MIN_WIDTH);
+        let max_width =
+            (dock_rect.width() - left_reserved - right_reserved - 40.0).max(INSPECTOR_MIN_WIDTH);
         self.window_width = self
             .window_width
             .clamp(INSPECTOR_MIN_WIDTH, max_width.min(INSPECTOR_MAX_WIDTH));
@@ -487,7 +505,7 @@ impl InspectorWindow {
                                             EngineLanguage::En => "Copy component chain",
                                             EngineLanguage::Es => "Copiar cadena de componentes",
                                         })
-                                            .color(Color32::WHITE),
+                                        .color(Color32::WHITE),
                                     )
                                     .fill(Color32::from_rgb(62, 62, 62))
                                     .corner_radius(6),
@@ -507,7 +525,7 @@ impl InspectorWindow {
                                             EngineLanguage::En => "Send chain to...",
                                             EngineLanguage::Es => "Enviar cadena a...",
                                         })
-                                            .color(Color32::WHITE),
+                                        .color(Color32::WHITE),
                                     )
                                     .fill(Color32::from_rgb(62, 62, 62))
                                     .corner_radius(6),
@@ -582,46 +600,50 @@ impl InspectorWindow {
                                     ui.min_rect().min,
                                     egui::vec2(ui.available_width(), header_h),
                                 );
-                                ui.scope_builder(egui::UiBuilder::new().max_rect(header_rect), |ui| {
-                                    let toggle_text = if *enabled { "ON" } else { "OFF" };
-                                    let toggle_fill = if *enabled {
-                                        Color32::from_rgb(58, 118, 84)
-                                    } else {
-                                        Color32::from_rgb(78, 52, 52)
-                                    };
-                                    let toggle_stroke = if *enabled {
-                                        Stroke::new(1.0, Color32::from_rgb(110, 178, 132))
-                                    } else {
-                                        Stroke::new(1.0, Color32::from_rgb(144, 84, 84))
-                                    };
-                                    ui.with_layout(
-                                        egui::Layout::right_to_left(egui::Align::Center),
-                                        |ui| {
-                                            let clicked = ui
-                                                .add_sized(
-                                                    [12.0, 7.0],
-                                                    egui::Button::new(
-                                                        egui::RichText::new(toggle_text).size(7.0),
-                                                    )
+                                ui.scope_builder(
+                                    egui::UiBuilder::new().max_rect(header_rect),
+                                    |ui| {
+                                        let toggle_text = if *enabled { "ON" } else { "OFF" };
+                                        let toggle_fill = if *enabled {
+                                            Color32::from_rgb(58, 118, 84)
+                                        } else {
+                                            Color32::from_rgb(78, 52, 52)
+                                        };
+                                        let toggle_stroke = if *enabled {
+                                            Stroke::new(1.0, Color32::from_rgb(110, 178, 132))
+                                        } else {
+                                            Stroke::new(1.0, Color32::from_rgb(144, 84, 84))
+                                        };
+                                        ui.with_layout(
+                                            egui::Layout::right_to_left(egui::Align::Center),
+                                            |ui| {
+                                                let clicked = ui
+                                                    .add_sized(
+                                                        [12.0, 7.0],
+                                                        egui::Button::new(
+                                                            egui::RichText::new(toggle_text)
+                                                                .size(7.0),
+                                                        )
                                                         .min_size(egui::vec2(12.0, 7.0))
                                                         .fill(toggle_fill)
                                                         .stroke(toggle_stroke)
                                                         .corner_radius(6),
-                                                )
-                                                .clicked();
-                                            if clicked {
-                                                *enabled = !*enabled;
-                                            }
-                                        },
-                                    );
-                                    ui.painter().text(
-                                        header_rect.center(),
-                                        Align2::CENTER_CENTER,
-                                        title,
-                                        FontId::new(13.0, FontFamily::Proportional),
-                                        Color32::from_gray(220),
-                                    );
-                                });
+                                                    )
+                                                    .clicked();
+                                                if clicked {
+                                                    *enabled = !*enabled;
+                                                }
+                                            },
+                                        );
+                                        ui.painter().text(
+                                            header_rect.center(),
+                                            Align2::CENTER_CENTER,
+                                            title,
+                                            FontId::new(13.0, FontFamily::Proportional),
+                                            Color32::from_gray(220),
+                                        );
+                                    },
+                                );
                                 ui.add_space(6.0);
                                 ui.label(
                                     egui::RichText::new(selected_object)
@@ -648,7 +670,8 @@ impl InspectorWindow {
                                             );
                                             let resp = ui.add_sized(
                                                 [field_w - 10.0, 20.0],
-                                                egui::DragValue::new(&mut draft.position[i]).speed(0.1),
+                                                egui::DragValue::new(&mut draft.position[i])
+                                                    .speed(0.1),
                                             );
                                             let changed = resp.changed();
                                             numeric_dragging |= resp.dragged();
@@ -663,7 +686,8 @@ impl InspectorWindow {
                                             );
                                             let resp = ui.add_sized(
                                                 [field_w - 10.0, 20.0],
-                                                egui::DragValue::new(&mut draft.rotation[i]).speed(0.1),
+                                                egui::DragValue::new(&mut draft.rotation[i])
+                                                    .speed(0.1),
                                             );
                                             let changed = resp.changed();
                                             numeric_dragging |= resp.dragged();
@@ -678,7 +702,8 @@ impl InspectorWindow {
                                             );
                                             let resp = ui.add_sized(
                                                 [field_w - 10.0, 20.0],
-                                                egui::DragValue::new(&mut draft.scale[i]).speed(0.05),
+                                                egui::DragValue::new(&mut draft.scale[i])
+                                                    .speed(0.05),
                                             );
                                             let changed = resp.changed();
                                             numeric_dragging |= resp.dragged();
@@ -688,15 +713,13 @@ impl InspectorWindow {
                                 });
                                 if numeric_dragging {
                                     let now = Instant::now();
-                                    let can_wrap = self
-                                        .last_cursor_wrap
-                                        .is_none_or(|t| now.duration_since(t) >= Duration::from_millis(16));
+                                    let can_wrap = self.last_cursor_wrap.is_none_or(|t| {
+                                        now.duration_since(t) >= Duration::from_millis(16)
+                                    });
                                     if can_wrap {
                                         let pointer_pos = ui.ctx().input(|i| i.pointer.hover_pos());
                                         let vp_rect = ui.ctx().input(|i| {
-                                            i.viewport()
-                                                .inner_rect
-                                                .or(i.viewport().outer_rect)
+                                            i.viewport().inner_rect.or(i.viewport().outer_rect)
                                         });
                                         if let (Some(mut p), Some(vr)) = (pointer_pos, vp_rect) {
                                             let margin = 2.0_f32;
@@ -733,11 +756,8 @@ impl InspectorWindow {
                                 let is_loading = self
                                     .apply_loading_until
                                     .is_some_and(|until| Instant::now() < until);
-                                let button_label = if is_loading {
-                                    loading_text
-                                } else {
-                                    apply_text
-                                };
+                                let button_label =
+                                    if is_loading { loading_text } else { apply_text };
                                 let button_resp = ui
                                     .add_enabled_ui(*enabled, |ui| {
                                         ui.add_sized(
@@ -749,7 +769,10 @@ impl InspectorWindow {
                                                     .strong(),
                                             )
                                             .fill(Color32::from_rgb(148, 116, 186))
-                                            .stroke(Stroke::new(1.0, Color32::from_rgb(173, 140, 208)))
+                                            .stroke(Stroke::new(
+                                                1.0,
+                                                Color32::from_rgb(173, 140, 208),
+                                            ))
                                             .corner_radius(6),
                                         )
                                     })
@@ -839,7 +862,10 @@ impl InspectorWindow {
                         let mut remove_component = false;
                         let card_height = 178.0_f32;
                         let card_rect = Rect::from_min_max(
-                            egui::pos2(inner.min.x, (button_rect.min.y - card_height - 10.0).max(sep_y + 220.0)),
+                            egui::pos2(
+                                inner.min.x,
+                                (button_rect.min.y - card_height - 10.0).max(sep_y + 220.0),
+                            ),
                             egui::pos2(inner.max.x, button_rect.min.y - 10.0),
                         );
                         if card_rect.height() > 70.0 {
@@ -862,10 +888,15 @@ impl InspectorWindow {
                                                         .color(Color32::from_gray(220)),
                                                 );
                                                 ui.with_layout(
-                                                    egui::Layout::right_to_left(egui::Align::Center),
+                                                    egui::Layout::right_to_left(
+                                                        egui::Align::Center,
+                                                    ),
                                                     |ui| {
                                                         let rm = ui
-                                                            .add_sized([44.0, 18.0], egui::Button::new("Remover"))
+                                                            .add_sized(
+                                                                [44.0, 18.0],
+                                                                egui::Button::new("Remover"),
+                                                            )
                                                             .clicked();
                                                         if rm {
                                                             remove_component = true;
@@ -885,9 +916,12 @@ impl InspectorWindow {
                                                 if ui
                                                     .add_sized(
                                                         [40.0, 18.0],
-                                                        egui::Button::new(txt)
-                                                            .fill(fill)
-                                                            .stroke(Stroke::new(1.0, Color32::from_gray(90))),
+                                                        egui::Button::new(txt).fill(fill).stroke(
+                                                            Stroke::new(
+                                                                1.0,
+                                                                Color32::from_gray(90),
+                                                            ),
+                                                        ),
                                                     )
                                                     .clicked()
                                                 {
@@ -935,9 +969,11 @@ impl InspectorWindow {
                                                     .color(Color32::from_gray(210)),
                                                 );
                                                 ui.label(
-                                                    egui::RichText::new("MoveAxis, LookAxis, Action")
-                                                        .size(10.0)
-                                                        .color(Color32::from_gray(165)),
+                                                    egui::RichText::new(
+                                                        "MoveAxis, LookAxis, Action",
+                                                    )
+                                                    .size(10.0)
+                                                    .color(Color32::from_gray(165)),
                                                 );
                                             });
                                             ui.horizontal(|ui| {
@@ -969,7 +1005,10 @@ impl InspectorWindow {
                         let mut remove_component = false;
                         let card_height = 138.0_f32;
                         let card_rect = Rect::from_min_max(
-                            egui::pos2(inner.min.x, (button_rect.min.y - card_height - 196.0).max(sep_y + 38.0)),
+                            egui::pos2(
+                                inner.min.x,
+                                (button_rect.min.y - card_height - 196.0).max(sep_y + 38.0),
+                            ),
                             egui::pos2(inner.max.x, button_rect.min.y - 196.0),
                         );
                         if card_rect.height() > 70.0 {
@@ -992,10 +1031,15 @@ impl InspectorWindow {
                                                         .color(Color32::from_gray(220)),
                                                 );
                                                 ui.with_layout(
-                                                    egui::Layout::right_to_left(egui::Align::Center),
+                                                    egui::Layout::right_to_left(
+                                                        egui::Align::Center,
+                                                    ),
                                                     |ui| {
                                                         let rm = ui
-                                                            .add_sized([44.0, 18.0], egui::Button::new("Remover"))
+                                                            .add_sized(
+                                                                [44.0, 18.0],
+                                                                egui::Button::new("Remover"),
+                                                            )
                                                             .clicked();
                                                         if rm {
                                                             remove_component = true;
@@ -1015,9 +1059,12 @@ impl InspectorWindow {
                                                 if ui
                                                     .add_sized(
                                                         [40.0, 18.0],
-                                                        egui::Button::new(txt)
-                                                            .fill(fill)
-                                                            .stroke(Stroke::new(1.0, Color32::from_gray(90))),
+                                                        egui::Button::new(txt).fill(fill).stroke(
+                                                            Stroke::new(
+                                                                1.0,
+                                                                Color32::from_gray(90),
+                                                            ),
+                                                        ),
                                                     )
                                                     .clicked()
                                                 {
@@ -1054,7 +1101,10 @@ impl InspectorWindow {
                         let mut remove_component = false;
                         let card_height = 164.0_f32;
                         let card_rect = Rect::from_min_max(
-                            egui::pos2(inner.min.x, (button_rect.min.y - card_height - 348.0).max(sep_y + 38.0)),
+                            egui::pos2(
+                                inner.min.x,
+                                (button_rect.min.y - card_height - 348.0).max(sep_y + 38.0),
+                            ),
                             egui::pos2(inner.max.x, button_rect.min.y - 348.0),
                         );
                         if card_rect.height() > 70.0 {
@@ -1077,10 +1127,15 @@ impl InspectorWindow {
                                                         .color(Color32::from_gray(220)),
                                                 );
                                                 ui.with_layout(
-                                                    egui::Layout::right_to_left(egui::Align::Center),
+                                                    egui::Layout::right_to_left(
+                                                        egui::Align::Center,
+                                                    ),
                                                     |ui| {
                                                         let rm = ui
-                                                            .add_sized([60.0, 18.0], egui::Button::new("Remover"))
+                                                            .add_sized(
+                                                                [60.0, 18.0],
+                                                                egui::Button::new("Remover"),
+                                                            )
                                                             .clicked();
                                                         if rm {
                                                             remove_component = true;
@@ -1091,7 +1146,8 @@ impl InspectorWindow {
                                             ui.add_space(6.0);
                                             ui.horizontal(|ui| {
                                                 ui.label("Ativo");
-                                                let txt = if animator.enabled { "ON" } else { "OFF" };
+                                                let txt =
+                                                    if animator.enabled { "ON" } else { "OFF" };
                                                 let fill = if animator.enabled {
                                                     Color32::from_rgb(58, 118, 84)
                                                 } else {
@@ -1100,9 +1156,12 @@ impl InspectorWindow {
                                                 if ui
                                                     .add_sized(
                                                         [40.0, 18.0],
-                                                        egui::Button::new(txt)
-                                                            .fill(fill)
-                                                            .stroke(Stroke::new(1.0, Color32::from_gray(90))),
+                                                        egui::Button::new(txt).fill(fill).stroke(
+                                                            Stroke::new(
+                                                                1.0,
+                                                                Color32::from_gray(90),
+                                                            ),
+                                                        ),
                                                     )
                                                     .clicked()
                                                 {
@@ -1112,34 +1171,42 @@ impl InspectorWindow {
                                             ui.add_space(6.0);
                                             ui.horizontal(|ui| {
                                                 ui.label("Módulo");
-                                                egui::ComboBox::from_id_salt(("anim_module_combo", selected_object))
-                                                    .width(180.0)
-                                                    .selected_text(if animator.module_asset.is_empty() {
+                                                egui::ComboBox::from_id_salt((
+                                                    "anim_module_combo",
+                                                    selected_object,
+                                                ))
+                                                .width(180.0)
+                                                .selected_text(
+                                                    if animator.module_asset.is_empty() {
                                                         "Nenhum".to_string()
                                                     } else {
                                                         animator.module_asset.clone()
-                                                    })
-                                                    .show_ui(ui, |ui| {
+                                                    },
+                                                )
+                                                .show_ui(ui, |ui| {
+                                                    ui.selectable_value(
+                                                        &mut animator.module_asset,
+                                                        String::new(),
+                                                        "Nenhum",
+                                                    );
+                                                    for module in animation_modules {
                                                         ui.selectable_value(
                                                             &mut animator.module_asset,
-                                                            String::new(),
-                                                            "Nenhum",
+                                                            module.clone(),
+                                                            module,
                                                         );
-                                                        for module in animation_modules {
-                                                            ui.selectable_value(
-                                                                &mut animator.module_asset,
-                                                                module.clone(),
-                                                                module,
-                                                            );
-                                                        }
-                                                    });
+                                                    }
+                                                });
                                             });
                                             ui.horizontal(|ui| {
                                                 if ui.button("Aplicar módulo").clicked() {
                                                     if let Some(clip) =
                                                         module_default_clip(&animator.module_asset)
                                                     {
-                                                        if fbx_animation_clips.iter().any(|c| c.eq_ignore_ascii_case(&clip)) {
+                                                        if fbx_animation_clips
+                                                            .iter()
+                                                            .any(|c| c.eq_ignore_ascii_case(&clip))
+                                                        {
                                                             animator.clip_ref = clip;
                                                         } else {
                                                             animator.clip_ref = clip;
@@ -1149,51 +1216,59 @@ impl InspectorWindow {
                                             });
                                             ui.horizontal(|ui| {
                                                 ui.label("Controller");
-                                                egui::ComboBox::from_id_salt(("anim_ctrl_combo", selected_object))
-                                                    .width(180.0)
-                                                    .selected_text(if animator.controller_asset.is_empty() {
+                                                egui::ComboBox::from_id_salt((
+                                                    "anim_ctrl_combo",
+                                                    selected_object,
+                                                ))
+                                                .width(180.0)
+                                                .selected_text(
+                                                    if animator.controller_asset.is_empty() {
                                                         "Nenhum".to_string()
                                                     } else {
                                                         animator.controller_asset.clone()
-                                                    })
-                                                    .show_ui(ui, |ui| {
+                                                    },
+                                                )
+                                                .show_ui(ui, |ui| {
+                                                    ui.selectable_value(
+                                                        &mut animator.controller_asset,
+                                                        String::new(),
+                                                        "Nenhum",
+                                                    );
+                                                    for controller in animation_controllers {
                                                         ui.selectable_value(
                                                             &mut animator.controller_asset,
-                                                            String::new(),
-                                                            "Nenhum",
+                                                            controller.clone(),
+                                                            controller,
                                                         );
-                                                        for controller in animation_controllers {
-                                                            ui.selectable_value(
-                                                                &mut animator.controller_asset,
-                                                                controller.clone(),
-                                                                controller,
-                                                            );
-                                                        }
-                                                    });
+                                                    }
+                                                });
                                             });
                                             ui.horizontal(|ui| {
                                                 ui.label("Animação");
-                                                egui::ComboBox::from_id_salt(("anim_clip_combo", selected_object))
-                                                    .width(180.0)
-                                                    .selected_text(if animator.clip_ref.is_empty() {
-                                                        "Nenhuma".to_string()
-                                                    } else {
-                                                        animator.clip_ref.clone()
-                                                    })
-                                                    .show_ui(ui, |ui| {
+                                                egui::ComboBox::from_id_salt((
+                                                    "anim_clip_combo",
+                                                    selected_object,
+                                                ))
+                                                .width(180.0)
+                                                .selected_text(if animator.clip_ref.is_empty() {
+                                                    "Nenhuma".to_string()
+                                                } else {
+                                                    animator.clip_ref.clone()
+                                                })
+                                                .show_ui(ui, |ui| {
+                                                    ui.selectable_value(
+                                                        &mut animator.clip_ref,
+                                                        String::new(),
+                                                        "Nenhuma",
+                                                    );
+                                                    for clip in fbx_animation_clips {
                                                         ui.selectable_value(
                                                             &mut animator.clip_ref,
-                                                            String::new(),
-                                                            "Nenhuma",
+                                                            clip.clone(),
+                                                            clip,
                                                         );
-                                                        for clip in fbx_animation_clips {
-                                                            ui.selectable_value(
-                                                                &mut animator.clip_ref,
-                                                                clip.clone(),
-                                                                clip,
-                                                            );
-                                                        }
-                                                    });
+                                                    }
+                                                });
                                             });
                                         });
                                 },
@@ -1322,5 +1397,4 @@ impl InspectorWindow {
             0.0
         }
     }
-
 }

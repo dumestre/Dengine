@@ -1,21 +1,20 @@
 // src/main.rs
-mod inspector;
+mod fios;
 mod hierarchy;
+mod inspector;
 mod project;
+mod terminai;
 mod viewport;
 mod viewport_gpu;
-mod terminai;
-mod fios;
 
-use eframe::egui::{TextureHandle, TextureOptions};
 use eframe::egui::text::LayoutJob;
+use eframe::egui::{TextureHandle, TextureOptions};
 use eframe::{App, Frame, NativeOptions, egui};
 use epaint::ColorImage;
 use hierarchy::HierarchyWindow;
 use inspector::InspectorWindow;
+use portable_pty::{CommandBuilder, PtySize, native_pty_system};
 use project::ProjectWindow;
-use viewport::ViewportPanel;
-use viewport_gpu::ViewportGpuRenderer;
 use raw_window_handle::{HasWindowHandle, RawWindowHandle};
 use std::collections::{HashMap, HashSet};
 use std::fs::{self, File};
@@ -24,7 +23,8 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::Arc;
 use std::sync::mpsc::{self, Receiver, TryRecvError};
-use portable_pty::{CommandBuilder, PtySize, native_pty_system};
+use viewport::ViewportPanel;
+use viewport_gpu::ViewportGpuRenderer;
 use vt100::Parser;
 #[cfg(target_os = "windows")]
 use windows_sys::Win32::Graphics::Dwm::DwmSetWindowAttribute;
@@ -36,8 +36,7 @@ pub enum EngineLanguage {
     Es,
 }
 
-impl EngineLanguage {
-}
+impl EngineLanguage {}
 
 #[derive(Clone)]
 struct InstalledEngine {
@@ -972,8 +971,10 @@ impl App for EditorApp {
             return;
         }
         let undo_shortcut = egui::KeyboardShortcut::new(egui::Modifiers::CTRL, egui::Key::Z);
-        let redo_shortcut =
-            egui::KeyboardShortcut::new(egui::Modifiers::CTRL | egui::Modifiers::SHIFT, egui::Key::Z);
+        let redo_shortcut = egui::KeyboardShortcut::new(
+            egui::Modifiers::CTRL | egui::Modifiers::SHIFT,
+            egui::Key::Z,
+        );
         let redo_shortcut_alt = egui::KeyboardShortcut::new(egui::Modifiers::CTRL, egui::Key::Y);
         let undo_pressed = ctx.input_mut(|i| i.consume_shortcut(&undo_shortcut));
         let redo_pressed = ctx.input_mut(|i| i.consume_shortcut(&redo_shortcut))
@@ -1103,7 +1104,10 @@ impl App for EditorApp {
                                         egui::Color32::from_rgb(44, 44, 44)
                                     })
                                     .stroke(if self.fios_enabled {
-                                        egui::Stroke::new(1.0, egui::Color32::from_rgb(15, 232, 121))
+                                        egui::Stroke::new(
+                                            1.0,
+                                            egui::Color32::from_rgb(15, 232, 121),
+                                        )
                                     } else {
                                         egui::Stroke::new(1.0, egui::Color32::from_gray(70))
                                     }),
@@ -1123,10 +1127,14 @@ impl App for EditorApp {
                                 if ui.button(self.tr("save")).clicked() {
                                     if let Some(path) = self.current_project.clone() {
                                         let target = Self::resolve_project_file_path(&path, true);
-                                        let _ = self.project.save_project_to_path(&target, self.language);
+                                        let _ = self
+                                            .project
+                                            .save_project_to_path(&target, self.language);
                                         self.current_project = Some(target.clone());
                                         self.register_hub_project(&target);
-                                    } else if let Some(path) = self.project.save_project_dialog(self.language) {
+                                    } else if let Some(path) =
+                                        self.project.save_project_dialog(self.language)
+                                    {
                                         let target = Self::resolve_project_file_path(&path, true);
                                         self.current_project = Some(target.clone());
                                         self.register_hub_project(&target);
@@ -1145,7 +1153,10 @@ impl App for EditorApp {
 
                             ui.menu_button(self.tr("menu_edit"), |ui| {
                                 if ui
-                                    .add_enabled(self.viewport.can_undo(), egui::Button::new("Undo (Ctrl+Z)"))
+                                    .add_enabled(
+                                        self.viewport.can_undo(),
+                                        egui::Button::new("Undo (Ctrl+Z)"),
+                                    )
                                     .clicked()
                                 {
                                     self.viewport.undo();
@@ -1172,12 +1183,10 @@ impl App for EditorApp {
 
                 let mut lang_resp_opt: Option<egui::Response> = None;
                 ui.scope_builder(
-                    egui::UiBuilder::new()
-                        .max_rect(lang_rect)
-                        .layout(
-                            egui::Layout::left_to_right(egui::Align::Center)
-                                .with_main_align(egui::Align::Center),
-                        ),
+                    egui::UiBuilder::new().max_rect(lang_rect).layout(
+                        egui::Layout::left_to_right(egui::Align::Center)
+                            .with_main_align(egui::Align::Center),
+                    ),
                     |ui| {
                         let current_lang = self.language;
                         let current_lang_name = self.language_name(current_lang);
@@ -1211,7 +1220,8 @@ impl App for EditorApp {
                         .id(egui::Id::new("language_menu_popup"))
                         .width(150.0)
                         .show(|ui| {
-                            let languages = [EngineLanguage::Pt, EngineLanguage::En, EngineLanguage::Es];
+                            let languages =
+                                [EngineLanguage::Pt, EngineLanguage::En, EngineLanguage::Es];
                             for lang in languages {
                                 let name = self.language_name(lang);
                                 let selected = self.language == lang;
@@ -1229,7 +1239,10 @@ impl App for EditorApp {
                                             egui::Color32::from_rgb(44, 44, 44)
                                         })
                                         .stroke(if selected {
-                                            egui::Stroke::new(1.0, egui::Color32::from_rgb(15, 232, 121))
+                                            egui::Stroke::new(
+                                                1.0,
+                                                egui::Color32::from_rgb(15, 232, 121),
+                                            )
                                         } else {
                                             egui::Stroke::new(1.0, egui::Color32::from_gray(70))
                                         })
@@ -1272,10 +1285,8 @@ impl App for EditorApp {
                     |ui| {
                         ui.add_space(8.0);
 
-                        let (close_rect, close_resp) = ui.allocate_exact_size(
-                            egui::Vec2::new(30.0, 30.0),
-                            egui::Sense::click(),
-                        );
+                        let (close_rect, close_resp) = ui
+                            .allocate_exact_size(egui::Vec2::new(30.0, 30.0), egui::Sense::click());
                         if close_resp.hovered() {
                             ui.painter().circle_filled(
                                 close_rect.center(),
@@ -1292,10 +1303,8 @@ impl App for EditorApp {
                             ui.ctx().send_viewport_cmd(egui::ViewportCommand::Close);
                         }
 
-                        let (max_rect, max_resp) = ui.allocate_exact_size(
-                            egui::Vec2::new(30.0, 30.0),
-                            egui::Sense::click(),
-                        );
+                        let (max_rect, max_resp) = ui
+                            .allocate_exact_size(egui::Vec2::new(30.0, 30.0), egui::Sense::click());
                         if max_resp.hovered() {
                             ui.painter().circle_filled(
                                 max_rect.center(),
@@ -1310,16 +1319,13 @@ impl App for EditorApp {
                         );
                         if max_resp.clicked() {
                             self.is_window_maximized = !self.is_window_maximized;
-                            ui.ctx()
-                                .send_viewport_cmd(egui::ViewportCommand::Maximized(
-                                    self.is_window_maximized,
-                                ));
+                            ui.ctx().send_viewport_cmd(egui::ViewportCommand::Maximized(
+                                self.is_window_maximized,
+                            ));
                         }
 
-                        let (min_rect, min_resp) = ui.allocate_exact_size(
-                            egui::Vec2::new(30.0, 30.0),
-                            egui::Sense::click(),
-                        );
+                        let (min_rect, min_resp) = ui
+                            .allocate_exact_size(egui::Vec2::new(30.0, 30.0), egui::Sense::click());
                         if min_resp.hovered() {
                             ui.painter().circle_filled(
                                 min_rect.center(),
@@ -1373,11 +1379,13 @@ impl App for EditorApp {
                             } else {
                                 egui::Color32::from_rgb(44, 44, 44)
                             })
-                            .stroke(if self.selected_mode == ToolbarMode::Cena {
-                                egui::Stroke::new(1.0, egui::Color32::from_rgb(15, 232, 121))
-                            } else {
-                                egui::Stroke::new(1.0, egui::Color32::from_gray(70))
-                            });
+                            .stroke(
+                                if self.selected_mode == ToolbarMode::Cena {
+                                    egui::Stroke::new(1.0, egui::Color32::from_rgb(15, 232, 121))
+                                } else {
+                                    egui::Stroke::new(1.0, egui::Color32::from_gray(70))
+                                },
+                            );
                             let cena_clicked = ui.add_sized([88.0, 28.0], cena_button).clicked();
                             if cena_clicked {
                                 self.selected_mode = ToolbarMode::Cena;
@@ -1394,7 +1402,10 @@ impl App for EditorApp {
                                             egui::Color32::from_rgb(44, 44, 44)
                                         })
                                         .stroke(if self.selected_mode == ToolbarMode::Cena {
-                                            egui::Stroke::new(1.0, egui::Color32::from_rgb(15, 232, 121))
+                                            egui::Stroke::new(
+                                                1.0,
+                                                egui::Color32::from_rgb(15, 232, 121),
+                                            )
                                         } else {
                                             egui::Stroke::new(1.0, egui::Color32::from_gray(70))
                                         }),
@@ -1417,11 +1428,13 @@ impl App for EditorApp {
                             } else {
                                 egui::Color32::from_rgb(44, 44, 44)
                             })
-                            .stroke(if self.selected_mode == ToolbarMode::Game {
-                                egui::Stroke::new(1.0, egui::Color32::from_rgb(15, 232, 121))
-                            } else {
-                                egui::Stroke::new(1.0, egui::Color32::from_gray(70))
-                            });
+                            .stroke(
+                                if self.selected_mode == ToolbarMode::Game {
+                                    egui::Stroke::new(1.0, egui::Color32::from_rgb(15, 232, 121))
+                                } else {
+                                    egui::Stroke::new(1.0, egui::Color32::from_gray(70))
+                                },
+                            );
                             let game_clicked = ui.add_sized([88.0, 28.0], game_button).clicked();
                             if game_clicked {
                                 self.selected_mode = ToolbarMode::Game;
@@ -1438,7 +1451,10 @@ impl App for EditorApp {
                                             egui::Color32::from_rgb(44, 44, 44)
                                         })
                                         .stroke(if self.selected_mode == ToolbarMode::Game {
-                                            egui::Stroke::new(1.0, egui::Color32::from_rgb(15, 232, 121))
+                                            egui::Stroke::new(
+                                                1.0,
+                                                egui::Color32::from_rgb(15, 232, 121),
+                                            )
                                         } else {
                                             egui::Stroke::new(1.0, egui::Color32::from_gray(70))
                                         }),
@@ -1457,12 +1473,10 @@ impl App for EditorApp {
                     egui::Vec2::new(controls_width, row_height),
                 );
                 ui.scope_builder(
-                    egui::UiBuilder::new()
-                        .max_rect(controls_rect)
-                        .layout(
-                            egui::Layout::left_to_right(egui::Align::Center)
-                                .with_main_align(egui::Align::Center),
-                        ),
+                    egui::UiBuilder::new().max_rect(controls_rect).layout(
+                        egui::Layout::left_to_right(egui::Align::Center)
+                            .with_main_align(egui::Align::Center),
+                    ),
                     |ui| {
                         let play_pause_texture = if self.is_playing {
                             self.pause_icon.as_ref()
@@ -1517,7 +1531,8 @@ impl App for EditorApp {
         };
         let project_bottom = project_panel_h + dock_bar_h;
         let left_reserved = self.inspector.docked_left_width() + self.hierarchy.docked_left_width();
-        let right_reserved = self.inspector.docked_right_width() + self.hierarchy.docked_right_width();
+        let right_reserved =
+            self.inspector.docked_right_width() + self.hierarchy.docked_right_width();
         let mode_label = if self.selected_mode == ToolbarMode::Cena {
             "Cena"
         } else {
@@ -1528,6 +1543,10 @@ impl App for EditorApp {
         let inspector_transform = self
             .viewport
             .object_transform_components(&hierarchy_selected);
+        let animation_controllers = self.project.list_animation_controller_assets();
+        let animation_modules = self.project.list_animation_modules();
+        self.fios.set_available_modules(animation_modules.clone());
+        let fbx_animation_clips = self.project.list_fbx_animation_clips();
         if self.fios_enabled {
             self.fios.draw_embedded(
                 ctx,
@@ -1538,41 +1557,33 @@ impl App for EditorApp {
             );
         } else {
             self.fios.clear_embedded_rect();
-            self.viewport
-                .show(
-                    ctx,
-                    mode_label,
-                    left_reserved,
-                    right_reserved,
-                    project_bottom,
-                    self.viewport_gpu.as_ref(),
-                );
+            self.viewport.show(
+                ctx,
+                mode_label,
+                left_reserved,
+                right_reserved,
+                project_bottom,
+                self.viewport_gpu.as_ref(),
+            );
             if let Some(selected_in_viewport) = self.viewport.selected_object_name() {
                 self.hierarchy.set_selected_object(selected_in_viewport);
             }
         }
 
         // Janela Inspetor
-        let animation_controllers = self.project.list_animation_controller_assets();
-        let animation_modules = self.project.list_animation_modules();
-        self.fios.set_available_modules(animation_modules.clone());
-        let fbx_animation_clips = self.project.list_fbx_animation_clips();
-        self.fios.set_available_modules(animation_modules.clone());
-        self.inspector
-            .show(
-                ctx,
-                0.0,
-                0.0,
-                project_bottom,
-                self.language,
-                self.hierarchy.selected_object_name(),
-                inspector_transform,
-                &animation_controllers,
-                &animation_modules,
-                &fbx_animation_clips,
-            );
-        if let Some((object_name, pos, rot, scale)) = self.inspector.take_transform_live_request()
-        {
+        self.inspector.show(
+            ctx,
+            0.0,
+            0.0,
+            project_bottom,
+            self.language,
+            self.hierarchy.selected_object_name(),
+            inspector_transform,
+            &animation_controllers,
+            &animation_modules,
+            &fbx_animation_clips,
+        );
+        if let Some((object_name, pos, rot, scale)) = self.inspector.take_transform_live_request() {
             let _ = self
                 .viewport
                 .set_object_transform_components(&object_name, pos, rot, scale);
@@ -1681,7 +1692,9 @@ impl App for EditorApp {
                 if dy.abs() > 1e-6 {
                     let _ = self.viewport.move_object_by(&name, [0.0, dy, 0.0]);
                 }
-                if let Some((mut pos, rot, scale)) = self.viewport.object_transform_components(&name) {
+                if let Some((mut pos, rot, scale)) =
+                    self.viewport.object_transform_components(&name)
+                {
                     if pos[1] < 0.0 {
                         pos[1] = 0.0;
                         if vy < 0.0 {
@@ -1725,326 +1738,317 @@ impl App for EditorApp {
             .order(egui::Order::Foreground)
             .fixed_pos(bar_rect.min)
             .show(ctx, |ui| {
-                    let (rect, _) = ui.allocate_exact_size(bar_rect.size(), egui::Sense::hover());
-                    ui.painter()
-                        .rect_filled(rect, 0.0, egui::Color32::from_rgb(35, 35, 35));
-                    ui.painter().rect_stroke(
-                        rect,
-                        0.0,
-                        egui::Stroke::new(1.0, egui::Color32::from_rgb(58, 58, 58)),
-                        egui::StrokeKind::Outside,
-                    );
+                let (rect, _) = ui.allocate_exact_size(bar_rect.size(), egui::Sense::hover());
+                ui.painter()
+                    .rect_filled(rect, 0.0, egui::Color32::from_rgb(35, 35, 35));
+                ui.painter().rect_stroke(
+                    rect,
+                    0.0,
+                    egui::Stroke::new(1.0, egui::Color32::from_rgb(58, 58, 58)),
+                    egui::StrokeKind::Outside,
+                );
 
-                    let icon_center_y = rect.top() + 15.0;
-                    let button_start_x = 28.0;
-                    let button_spacing = 46.0;
-                    let files_rect = egui::Rect::from_center_size(
-                        egui::pos2(rect.left() + button_start_x, icon_center_y),
-                        egui::vec2(28.0, 22.0),
+                let icon_center_y = rect.top() + 15.0;
+                let button_start_x = 28.0;
+                let button_spacing = 46.0;
+                let files_rect = egui::Rect::from_center_size(
+                    egui::pos2(rect.left() + button_start_x, icon_center_y),
+                    egui::vec2(28.0, 22.0),
+                );
+                let files_resp = ui.interact(
+                    files_rect,
+                    ui.id().with("restore_project_from_dock"),
+                    egui::Sense::click(),
+                );
+                if files_resp.hovered() {
+                    ui.output_mut(|o| o.cursor_icon = egui::CursorIcon::PointingHand);
+                    ui.painter().rect_filled(
+                        files_rect.expand(2.0),
+                        3.0,
+                        egui::Color32::from_rgb(58, 58, 58),
                     );
-                    let files_resp = ui.interact(
+                }
+                if files_resp.clicked() {
+                    self.project_collapsed = !self.project_collapsed;
+                }
+
+                if let Some(files_icon) = &self.files_icon {
+                    let _ = ui.put(
                         files_rect,
-                        ui.id().with("restore_project_from_dock"),
-                        egui::Sense::click(),
+                        egui::Image::new(files_icon).fit_to_exact_size(egui::Vec2::new(20.0, 20.0)),
                     );
-                    if files_resp.hovered() {
-                        ui.output_mut(|o| o.cursor_icon = egui::CursorIcon::PointingHand);
-                        ui.painter().rect_filled(
-                            files_rect.expand(2.0),
-                            3.0,
-                            egui::Color32::from_rgb(58, 58, 58),
-                        );
-                    }
-                    if files_resp.clicked() {
-                        self.project_collapsed = !self.project_collapsed;
-                    }
+                }
 
-                    if let Some(files_icon) = &self.files_icon {
-                        let _ = ui.put(
-                            files_rect,
-                            egui::Image::new(files_icon)
-                                .fit_to_exact_size(egui::Vec2::new(20.0, 20.0)),
-                        );
-                    }
-
-                    let rig_rect = egui::Rect::from_center_size(
-                        egui::pos2(rect.left() + button_start_x + button_spacing, icon_center_y),
-                        egui::vec2(28.0, 22.0),
+                let rig_rect = egui::Rect::from_center_size(
+                    egui::pos2(rect.left() + button_start_x + button_spacing, icon_center_y),
+                    egui::vec2(28.0, 22.0),
+                );
+                let rig_resp = ui.interact(
+                    rig_rect,
+                    ui.id().with("toggle_rig_mode"),
+                    egui::Sense::click(),
+                );
+                if rig_resp.hovered() {
+                    ui.output_mut(|o| o.cursor_icon = egui::CursorIcon::PointingHand);
+                }
+                if rig_resp.hovered() || self.rig_enabled {
+                    ui.painter().rect_filled(
+                        rig_rect.expand(2.0),
+                        3.0,
+                        if self.rig_enabled {
+                            egui::Color32::from_rgb(58, 84, 64)
+                        } else {
+                            egui::Color32::from_rgb(58, 58, 58)
+                        },
                     );
-                    let rig_resp = ui.interact(
+                }
+                if rig_resp.clicked() {
+                    self.rig_enabled = !self.rig_enabled;
+                }
+                if let Some(rig_icon) = &self.rig_icon {
+                    let _ = ui.put(
                         rig_rect,
-                        ui.id().with("toggle_rig_mode"),
-                        egui::Sense::click(),
+                        egui::Image::new(rig_icon).fit_to_exact_size(egui::Vec2::new(20.0, 20.0)),
                     );
-                    if rig_resp.hovered() {
-                        ui.output_mut(|o| o.cursor_icon = egui::CursorIcon::PointingHand);
-                    }
-                    if rig_resp.hovered() || self.rig_enabled {
-                        ui.painter().rect_filled(
-                            rig_rect.expand(2.0),
-                            3.0,
-                            if self.rig_enabled {
-                                egui::Color32::from_rgb(58, 84, 64)
-                            } else {
-                                egui::Color32::from_rgb(58, 58, 58)
-                            },
-                        );
-                    }
-                    if rig_resp.clicked() {
-                        self.rig_enabled = !self.rig_enabled;
-                    }
-                    if let Some(rig_icon) = &self.rig_icon {
-                        let _ = ui.put(
-                            rig_rect,
-                            egui::Image::new(rig_icon)
-                                .fit_to_exact_size(egui::Vec2::new(20.0, 20.0)),
-                        );
-                    }
+                }
 
-                    let animator_rect = egui::Rect::from_center_size(
-                        egui::pos2(
-                            rect.left() + button_start_x + button_spacing * 2.0,
-                            icon_center_y,
-                        ),
-                        egui::vec2(28.0, 22.0),
+                let animator_rect = egui::Rect::from_center_size(
+                    egui::pos2(
+                        rect.left() + button_start_x + button_spacing * 2.0,
+                        icon_center_y,
+                    ),
+                    egui::vec2(28.0, 22.0),
+                );
+                let animator_resp = ui.interact(
+                    animator_rect,
+                    ui.id().with("toggle_animator_mode"),
+                    egui::Sense::click(),
+                );
+                if animator_resp.hovered() {
+                    ui.output_mut(|o| o.cursor_icon = egui::CursorIcon::PointingHand);
+                }
+                if animator_resp.hovered() || self.animator_enabled {
+                    ui.painter().rect_filled(
+                        animator_rect.expand(2.0),
+                        3.0,
+                        if self.animator_enabled {
+                            egui::Color32::from_rgb(58, 84, 64)
+                        } else {
+                            egui::Color32::from_rgb(58, 58, 58)
+                        },
                     );
-                    let animator_resp = ui.interact(
+                }
+                if animator_resp.clicked() {
+                    self.animator_enabled = !self.animator_enabled;
+                }
+                if let Some(animador_icon) = &self.animador_icon {
+                    let _ = ui.put(
                         animator_rect,
-                        ui.id().with("toggle_animator_mode"),
-                        egui::Sense::click(),
+                        egui::Image::new(animador_icon)
+                            .fit_to_exact_size(egui::Vec2::new(20.0, 20.0)),
                     );
-                    if animator_resp.hovered() {
-                        ui.output_mut(|o| o.cursor_icon = egui::CursorIcon::PointingHand);
-                    }
-                    if animator_resp.hovered() || self.animator_enabled {
-                        ui.painter().rect_filled(
-                            animator_rect.expand(2.0),
-                            3.0,
-                            if self.animator_enabled {
-                                egui::Color32::from_rgb(58, 84, 64)
-                            } else {
-                                egui::Color32::from_rgb(58, 58, 58)
-                            },
-                        );
-                    }
-                    if animator_resp.clicked() {
-                        self.animator_enabled = !self.animator_enabled;
-                    }
-                    if let Some(animador_icon) = &self.animador_icon {
-                        let _ = ui.put(
-                            animator_rect,
-                            egui::Image::new(animador_icon)
-                                .fit_to_exact_size(egui::Vec2::new(20.0, 20.0)),
-                        );
-                    }
+                }
 
-                    let fios_rect = egui::Rect::from_center_size(
-                        egui::pos2(
-                            rect.left() + button_start_x + button_spacing * 3.0,
-                            icon_center_y,
-                        ),
-                        egui::vec2(28.0, 22.0),
+                let fios_rect = egui::Rect::from_center_size(
+                    egui::pos2(
+                        rect.left() + button_start_x + button_spacing * 3.0,
+                        icon_center_y,
+                    ),
+                    egui::vec2(28.0, 22.0),
+                );
+                let fios_resp = ui.interact(
+                    fios_rect,
+                    ui.id().with("toggle_fios_mode"),
+                    egui::Sense::click(),
+                );
+                if fios_resp.hovered() {
+                    ui.output_mut(|o| o.cursor_icon = egui::CursorIcon::PointingHand);
+                }
+                if fios_resp.hovered() || self.fios_enabled {
+                    ui.painter().rect_filled(
+                        fios_rect.expand(2.0),
+                        3.0,
+                        if self.fios_enabled {
+                            egui::Color32::from_rgb(58, 84, 64)
+                        } else {
+                            egui::Color32::from_rgb(58, 58, 58)
+                        },
                     );
-                    let fios_resp = ui.interact(
+                }
+                if fios_resp.clicked() {
+                    self.fios_enabled = !self.fios_enabled;
+                }
+                if let Some(fios_icon) = &self.fios_icon {
+                    let _ = ui.put(
                         fios_rect,
-                        ui.id().with("toggle_fios_mode"),
-                        egui::Sense::click(),
+                        egui::Image::new(fios_icon).fit_to_exact_size(egui::Vec2::new(20.0, 20.0)),
                     );
-                    if fios_resp.hovered() {
-                        ui.output_mut(|o| o.cursor_icon = egui::CursorIcon::PointingHand);
-                    }
-                    if fios_resp.hovered() || self.fios_enabled {
-                        ui.painter().rect_filled(
-                            fios_rect.expand(2.0),
-                            3.0,
-                            if self.fios_enabled {
-                                egui::Color32::from_rgb(58, 84, 64)
-                            } else {
-                                egui::Color32::from_rgb(58, 58, 58)
-                            },
-                        );
-                    }
-                    if fios_resp.clicked() {
-                        self.fios_enabled = !self.fios_enabled;
-                    }
-                    if let Some(fios_icon) = &self.fios_icon {
-                        let _ = ui.put(
-                            fios_rect,
-                            egui::Image::new(fios_icon)
-                                .fit_to_exact_size(egui::Vec2::new(20.0, 20.0)),
-                        );
-                    }
+                }
 
-                    let right_padding = 28.0;
-                    let log_rect = egui::Rect::from_center_size(
-                        egui::pos2(
-                            rect.right() - right_padding - button_spacing * 2.0,
-                            icon_center_y,
-                        ),
-                        egui::vec2(28.0, 22.0),
+                let right_padding = 28.0;
+                let log_rect = egui::Rect::from_center_size(
+                    egui::pos2(
+                        rect.right() - right_padding - button_spacing * 2.0,
+                        icon_center_y,
+                    ),
+                    egui::vec2(28.0, 22.0),
+                );
+                let log_resp = ui.interact(
+                    log_rect,
+                    ui.id().with("toggle_log_mode"),
+                    egui::Sense::click(),
+                );
+                if log_resp.hovered() {
+                    ui.output_mut(|o| o.cursor_icon = egui::CursorIcon::PointingHand);
+                }
+                if log_resp.hovered() || self.log_enabled {
+                    ui.painter().rect_filled(
+                        log_rect.expand(2.0),
+                        3.0,
+                        if self.log_enabled {
+                            egui::Color32::from_rgb(58, 84, 64)
+                        } else {
+                            egui::Color32::from_rgb(58, 58, 58)
+                        },
                     );
-                    let log_resp = ui.interact(
+                }
+                if log_resp.clicked() {
+                    self.log_enabled = !self.log_enabled;
+                }
+                if let Some(log_icon) = &self.log_icon {
+                    let _ = ui.put(
                         log_rect,
-                        ui.id().with("toggle_log_mode"),
-                        egui::Sense::click(),
+                        egui::Image::new(log_icon).fit_to_exact_size(egui::Vec2::new(20.0, 20.0)),
                     );
-                    if log_resp.hovered() {
-                        ui.output_mut(|o| o.cursor_icon = egui::CursorIcon::PointingHand);
-                    }
-                    if log_resp.hovered() || self.log_enabled {
-                        ui.painter().rect_filled(
-                            log_rect.expand(2.0),
-                            3.0,
-                            if self.log_enabled {
-                                egui::Color32::from_rgb(58, 84, 64)
-                            } else {
-                                egui::Color32::from_rgb(58, 58, 58)
-                            },
-                        );
-                    }
-                    if log_resp.clicked() {
-                        self.log_enabled = !self.log_enabled;
-                    }
-                    if let Some(log_icon) = &self.log_icon {
-                        let _ = ui.put(
-                            log_rect,
-                            egui::Image::new(log_icon)
-                                .fit_to_exact_size(egui::Vec2::new(20.0, 20.0)),
-                        );
-                    }
+                }
 
-                    let git_rect = egui::Rect::from_center_size(
-                        egui::pos2(rect.right() - right_padding - button_spacing, icon_center_y),
-                        egui::vec2(28.0, 22.0),
+                let git_rect = egui::Rect::from_center_size(
+                    egui::pos2(rect.right() - right_padding - button_spacing, icon_center_y),
+                    egui::vec2(28.0, 22.0),
+                );
+                let git_resp = ui.interact(
+                    git_rect,
+                    ui.id().with("toggle_git_mode"),
+                    egui::Sense::click(),
+                );
+                if git_resp.hovered() {
+                    ui.output_mut(|o| o.cursor_icon = egui::CursorIcon::PointingHand);
+                }
+                if git_resp.hovered() || self.git_enabled {
+                    ui.painter().rect_filled(
+                        git_rect.expand(2.0),
+                        3.0,
+                        if self.git_enabled {
+                            egui::Color32::from_rgb(58, 84, 64)
+                        } else {
+                            egui::Color32::from_rgb(58, 58, 58)
+                        },
                     );
-                    let git_resp = ui.interact(
+                }
+                if git_resp.clicked() {
+                    self.git_enabled = !self.git_enabled;
+                }
+                if let Some(git_icon) = &self.git_icon {
+                    let _ = ui.put(
                         git_rect,
-                        ui.id().with("toggle_git_mode"),
-                        egui::Sense::click(),
+                        egui::Image::new(git_icon).fit_to_exact_size(egui::Vec2::new(20.0, 20.0)),
                     );
-                    if git_resp.hovered() {
-                        ui.output_mut(|o| o.cursor_icon = egui::CursorIcon::PointingHand);
-                    }
-                    if git_resp.hovered() || self.git_enabled {
-                        ui.painter().rect_filled(
-                            git_rect.expand(2.0),
-                            3.0,
-                            if self.git_enabled {
-                                egui::Color32::from_rgb(58, 84, 64)
-                            } else {
-                                egui::Color32::from_rgb(58, 58, 58)
-                            },
-                        );
-                    }
-                    if git_resp.clicked() {
-                        self.git_enabled = !self.git_enabled;
-                    }
-                    if let Some(git_icon) = &self.git_icon {
-                        let _ = ui.put(
-                            git_rect,
-                            egui::Image::new(git_icon)
-                                .fit_to_exact_size(egui::Vec2::new(20.0, 20.0)),
-                        );
-                    }
+                }
 
-                    let terminal_rect = egui::Rect::from_center_size(
-                        egui::pos2(rect.right() - right_padding, icon_center_y),
-                        egui::vec2(28.0, 22.0),
+                let terminal_rect = egui::Rect::from_center_size(
+                    egui::pos2(rect.right() - right_padding, icon_center_y),
+                    egui::vec2(28.0, 22.0),
+                );
+                let terminal_resp = ui.interact(
+                    terminal_rect,
+                    ui.id().with("toggle_terminal_mode"),
+                    egui::Sense::click(),
+                );
+                if terminal_resp.hovered() {
+                    ui.output_mut(|o| o.cursor_icon = egui::CursorIcon::PointingHand);
+                }
+                if terminal_resp.hovered() || self.terminai.terminal_enabled {
+                    ui.painter().rect_filled(
+                        terminal_rect.expand(2.0),
+                        3.0,
+                        if self.terminai.terminal_enabled {
+                            egui::Color32::from_rgb(58, 84, 64)
+                        } else {
+                            egui::Color32::from_rgb(58, 58, 58)
+                        },
                     );
-                    let terminal_resp = ui.interact(
+                }
+                if terminal_resp.clicked() {
+                    self.terminai.terminal_enabled = true;
+                }
+                if let Some(terminal_icon) = &self.terminal_icon {
+                    let _ = ui.put(
                         terminal_rect,
-                        ui.id().with("toggle_terminal_mode"),
-                        egui::Sense::click(),
+                        egui::Image::new(terminal_icon)
+                            .fit_to_exact_size(egui::Vec2::new(20.0, 20.0)),
                     );
-                    if terminal_resp.hovered() {
-                        ui.output_mut(|o| o.cursor_icon = egui::CursorIcon::PointingHand);
-                    }
-                    if terminal_resp.hovered() || self.terminai.terminal_enabled {
-                        ui.painter().rect_filled(
-                            terminal_rect.expand(2.0),
-                            3.0,
-                            if self.terminai.terminal_enabled {
-                                egui::Color32::from_rgb(58, 84, 64)
-                            } else {
-                                egui::Color32::from_rgb(58, 58, 58)
-                            },
-                        );
-                    }
-                    if terminal_resp.clicked() {
-                        self.terminai.terminal_enabled = true;
-                    }
-                    if let Some(terminal_icon) = &self.terminal_icon {
-                        let _ = ui.put(
-                            terminal_rect,
-                            egui::Image::new(terminal_icon)
-                                .fit_to_exact_size(egui::Vec2::new(20.0, 20.0)),
-                        );
-                    }
+                }
 
-                    let label_y = rect.bottom() - 10.0;
-                    let label_font = egui::FontId::proportional(12.0);
-                    let label_color = egui::Color32::from_gray(190);
-                    let letter_spacing = 0.8_f32;
-                    let draw_spaced_label = |center: egui::Pos2, text: &str| {
-                        let mut widths = Vec::new();
-                        let mut total_w = 0.0_f32;
-                        for ch in text.chars() {
-                            let s = ch.to_string();
-                            let w = ui
-                                .painter()
-                                .layout_no_wrap(s, label_font.clone(), label_color)
-                                .size()
-                                .x;
-                            widths.push(w);
-                            total_w += w;
-                        }
-                        if widths.len() > 1 {
-                            total_w += letter_spacing * (widths.len() as f32 - 1.0);
-                        }
-                        let mut x = center.x - total_w * 0.5;
-                        for (idx, ch) in text.chars().enumerate() {
-                            let w = widths[idx];
-                            ui.painter().text(
-                                egui::pos2(x + (w * 0.5), center.y),
-                                egui::Align2::CENTER_CENTER,
-                                ch,
-                                label_font.clone(),
-                                label_color,
+                let label_y = rect.bottom() - 10.0;
+                let label_font = egui::FontId::proportional(12.0);
+                let label_color = egui::Color32::from_gray(190);
+                let letter_spacing = 0.8_f32;
+                let draw_spaced_label = |center: egui::Pos2, text: &str| {
+                    let mut widths = Vec::new();
+                    let mut total_w = 0.0_f32;
+                    for ch in text.chars() {
+                        let s = ch.to_string();
+                        let w = ui
+                            .painter()
+                            .layout_no_wrap(s, label_font.clone(), label_color)
+                            .size()
+                            .x;
+                        widths.push(w);
+                        total_w += w;
+                    }
+                    if widths.len() > 1 {
+                        total_w += letter_spacing * (widths.len() as f32 - 1.0);
+                    }
+                    let mut x = center.x - total_w * 0.5;
+                    for (idx, ch) in text.chars().enumerate() {
+                        let w = widths[idx];
+                        ui.painter().text(
+                            egui::pos2(x + (w * 0.5), center.y),
+                            egui::Align2::CENTER_CENTER,
+                            ch,
+                            label_font.clone(),
+                            label_color,
+                        );
+                        x += w + letter_spacing;
+                    }
+                };
+                draw_spaced_label(egui::pos2(files_rect.center().x, label_y), "Projeto");
+                draw_spaced_label(egui::pos2(rig_rect.center().x, label_y), "Rig");
+                draw_spaced_label(egui::pos2(animator_rect.center().x, label_y), "Animador");
+                draw_spaced_label(egui::pos2(fios_rect.center().x, label_y), "Fios");
+                draw_spaced_label(egui::pos2(log_rect.center().x, label_y), "Log");
+                draw_spaced_label(egui::pos2(git_rect.center().x, label_y), "Git");
+                draw_spaced_label(egui::pos2(terminal_rect.center().x, label_y), "TerminAI");
+
+                if engine_busy {
+                    ui.ctx().request_repaint();
+                    let spinner_rect =
+                        egui::Rect::from_center_size(rect.center(), egui::vec2(20.0, 20.0));
+                    ui.scope_builder(
+                        egui::UiBuilder::new().max_rect(spinner_rect).layout(
+                            egui::Layout::left_to_right(egui::Align::Center)
+                                .with_main_align(egui::Align::Center),
+                        ),
+                        |ui| {
+                            ui.add(
+                                egui::Spinner::new()
+                                    .size(16.0)
+                                    .color(egui::Color32::from_rgb(15, 232, 121)),
                             );
-                            x += w + letter_spacing;
-                        }
-                    };
-                    draw_spaced_label(egui::pos2(files_rect.center().x, label_y), "Projeto");
-                    draw_spaced_label(egui::pos2(rig_rect.center().x, label_y), "Rig");
-                    draw_spaced_label(egui::pos2(animator_rect.center().x, label_y), "Animador");
-                    draw_spaced_label(egui::pos2(fios_rect.center().x, label_y), "Fios");
-                    draw_spaced_label(egui::pos2(log_rect.center().x, label_y), "Log");
-                    draw_spaced_label(egui::pos2(git_rect.center().x, label_y), "Git");
-                    draw_spaced_label(egui::pos2(terminal_rect.center().x, label_y), "TerminAI");
-
-                    if engine_busy {
-                        ui.ctx().request_repaint();
-                        let spinner_rect = egui::Rect::from_center_size(
-                            rect.center(),
-                            egui::vec2(20.0, 20.0),
-                        );
-                        ui.scope_builder(
-                            egui::UiBuilder::new()
-                                .max_rect(spinner_rect)
-                                .layout(
-                                    egui::Layout::left_to_right(egui::Align::Center)
-                                        .with_main_align(egui::Align::Center),
-                                ),
-                            |ui| {
-                                ui.add(
-                                    egui::Spinner::new()
-                                        .size(16.0)
-                                        .color(egui::Color32::from_rgb(15, 232, 121)),
-                                );
-                            },
-                        );
-                    }
-                });
+                        },
+                    );
+                }
+            });
 
         let pointer_pos = ctx.input(|i| i.pointer.hover_pos().or(i.pointer.latest_pos()));
         if pointer_pos.is_some() {
@@ -2060,7 +2064,8 @@ impl App for EditorApp {
                 } else if self.viewport.contains_point(pos) {
                     let object_name = self.hierarchy.on_asset_dropped(asset_name);
                     if let Some(path) = drag_path {
-                        self.viewport.on_asset_file_dropped_named(&path, &object_name);
+                        self.viewport
+                            .on_asset_file_dropped_named(&path, &object_name);
                     } else {
                         self.viewport.on_asset_dropped(&object_name);
                     }
@@ -2090,11 +2095,14 @@ impl App for EditorApp {
                         self.project.import_file_path(path, self.language);
                     }
                     if self.fios_enabled && self.fios.contains_point(pos) {
-                        let _ = self.fios.on_asset_dropped(&asset_name, file.path.as_deref());
+                        let _ = self
+                            .fios
+                            .on_asset_dropped(&asset_name, file.path.as_deref());
                     } else if self.viewport.contains_point(pos) {
                         if let Some(path) = &file.path {
                             let object_name = self.hierarchy.on_asset_dropped(&asset_name);
-                            self.viewport.on_asset_file_dropped_named(path, &object_name);
+                            self.viewport
+                                .on_asset_file_dropped_named(path, &object_name);
                         } else {
                             let object_name = self.hierarchy.on_asset_dropped(&asset_name);
                             self.viewport.on_asset_dropped(&object_name);
@@ -2112,17 +2120,21 @@ impl App for EditorApp {
                             .and_then(|n| n.to_str())
                             .unwrap_or("Imported");
                         let object_name = self.hierarchy.on_asset_dropped(asset_name);
-                        self.viewport.on_asset_file_dropped_named(path, &object_name);
+                        self.viewport
+                            .on_asset_file_dropped_named(path, &object_name);
                     }
                 }
             }
         }
 
         if let (Some(asset_name), Some(pos)) = (self.project.dragging_asset_name(), drop_pos) {
-            let painter =
-                ctx.layer_painter(egui::LayerId::new(egui::Order::Tooltip, egui::Id::new("asset_drag_overlay")));
+            let painter = ctx.layer_painter(egui::LayerId::new(
+                egui::Order::Tooltip,
+                egui::Id::new("asset_drag_overlay"),
+            ));
             let dragging_anim_clip = asset_name.contains("::");
-            let preview_rect = egui::Rect::from_min_size(pos + egui::vec2(14.0, 12.0), egui::vec2(170.0, 24.0));
+            let preview_rect =
+                egui::Rect::from_min_size(pos + egui::vec2(14.0, 12.0), egui::vec2(170.0, 24.0));
             painter.rect_filled(
                 preview_rect,
                 4.0,
@@ -2268,15 +2280,13 @@ fn main() -> eframe::Result<()> {
             .with_decorations(false)
             .with_transparent(true)
             .with_maximized(true)
-            .with_icon(
-                app_icon.unwrap_or_else(|| {
-                    Arc::new(egui::IconData {
-                        rgba: vec![0, 0, 0, 0],
-                        width: 1,
-                        height: 1,
-                    })
-                }),
-            ),
+            .with_icon(app_icon.unwrap_or_else(|| {
+                Arc::new(egui::IconData {
+                    rgba: vec![0, 0, 0, 0],
+                    width: 1,
+                    height: 1,
+                })
+            })),
         depth_buffer: 24,
         stencil_buffer: 0,
         ..Default::default()
@@ -2291,10 +2301,7 @@ fn main() -> eframe::Result<()> {
                 hierarchy: HierarchyWindow::new(),
                 project: ProjectWindow::new(),
                 viewport: ViewportPanel::new(),
-                viewport_gpu: cc
-                    .wgpu_render_state
-                    .clone()
-                    .map(ViewportGpuRenderer::new),
+                viewport_gpu: cc.wgpu_render_state.clone().map(ViewportGpuRenderer::new),
                 app_icon_texture: None,
                 cena_icon: None,
                 game_icon: None,
@@ -2340,4 +2347,3 @@ fn main() -> eframe::Result<()> {
         }),
     )
 }
-

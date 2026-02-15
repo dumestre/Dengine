@@ -3,11 +3,13 @@ use std::fs::{self, File};
 use std::hash::{Hash, Hasher};
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender};
-use std::sync::Arc;
 
-use eframe::egui::{self, Align2, Color32, FontFamily, FontId, Id, Order, Rect, Sense, Stroke, TextureHandle, Vec2};
+use eframe::egui::{
+    self, Align2, Color32, FontFamily, FontId, Id, Order, Rect, Sense, Stroke, TextureHandle, Vec2,
+};
 use epaint::ColorImage;
 
 use crate::EngineLanguage;
@@ -343,7 +345,10 @@ impl ProjectWindow {
 
     fn import_model_path(&mut self, src_path: &Path, language: EngineLanguage) {
         if !src_path.is_file() {
-            self.status_text = format!("{}: selecione um arquivo válido", self.tr(language, "import"));
+            self.status_text = format!(
+                "{}: selecione um arquivo válido",
+                self.tr(language, "import")
+            );
             return;
         }
         let Some(file_name) = src_path.file_name().and_then(|n| n.to_str()) else {
@@ -361,13 +366,19 @@ impl ProjectWindow {
 
         let dest_dir = Path::new("Assets").join(target_folder);
         if let Err(err) = std::fs::create_dir_all(&dest_dir) {
-            self.status_text = format!("{}: erro ao criar pasta ({err})", self.tr(language, "import"));
+            self.status_text = format!(
+                "{}: erro ao criar pasta ({err})",
+                self.tr(language, "import")
+            );
             return;
         }
 
         let dest_path = Self::unique_destination_path(&dest_dir, file_name);
         if let Err(err) = std::fs::copy(src_path, &dest_path) {
-            self.status_text = format!("{}: erro ao copiar arquivo ({err})", self.tr(language, "import"));
+            self.status_text = format!(
+                "{}: erro ao copiar arquivo ({err})",
+                self.tr(language, "import")
+            );
             return;
         }
 
@@ -397,7 +408,8 @@ impl ProjectWindow {
                     );
                 }
                 Ok(None) => {
-                    self.status_text = format!("{}: {}", self.tr(language, "import"), imported_name);
+                    self.status_text =
+                        format!("{}: {}", self.tr(language, "import"), imported_name);
                 }
                 Err(err) => {
                     self.status_text = format!(
@@ -437,15 +449,25 @@ impl ProjectWindow {
     ) {
         let dir = Path::new("Assets").join(target_folder);
         if let Err(err) = fs::create_dir_all(&dir) {
-            self.status_text = format!("{}: erro ao criar pasta ({err})", self.tr(language, "create"));
+            self.status_text = format!(
+                "{}: erro ao criar pasta ({err})",
+                self.tr(language, "create")
+            );
             return;
         }
         let target = Self::unique_named_file_path(&dir, base_stem, ext);
         if let Err(err) = fs::write(&target, content.as_bytes()) {
-            self.status_text = format!("{}: erro ao criar arquivo ({err})", self.tr(language, "create"));
+            self.status_text = format!(
+                "{}: erro ao criar arquivo ({err})",
+                self.tr(language, "create")
+            );
             return;
         }
-        let Some(name) = target.file_name().and_then(|n| n.to_str()).map(|s| s.to_string()) else {
+        let Some(name) = target
+            .file_name()
+            .and_then(|n| n.to_str())
+            .map(|s| s.to_string())
+        else {
             self.status_text = format!("{}: erro ao resolver nome", self.tr(language, "create"));
             return;
         };
@@ -479,12 +501,18 @@ impl ProjectWindow {
             return;
         };
         if let Err(err) = fs::create_dir_all(&parent) {
-            self.status_text = format!("{}: erro ao criar pasta alvo ({err})", self.tr(language, "create"));
+            self.status_text = format!(
+                "{}: erro ao criar pasta alvo ({err})",
+                self.tr(language, "create")
+            );
             return;
         }
         let target = Self::unique_named_folder_path(&parent, "NovaPasta");
         if let Err(err) = fs::create_dir(&target) {
-            self.status_text = format!("{}: erro ao criar pasta ({err})", self.tr(language, "create"));
+            self.status_text = format!(
+                "{}: erro ao criar pasta ({err})",
+                self.tr(language, "create")
+            );
             return;
         }
         let name = target
@@ -528,7 +556,10 @@ impl ProjectWindow {
 
         match self.save_project_file(&path) {
             Ok(()) => {
-                let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("project.deng");
+                let name = path
+                    .file_name()
+                    .and_then(|n| n.to_str())
+                    .unwrap_or("project.deng");
                 self.status_text = format!("{}: {}", self.tr(language, "save"), name);
                 Some(path)
             }
@@ -543,7 +574,10 @@ impl ProjectWindow {
         let path = Self::normalize_project_save_path(path);
         match self.save_project_file(&path) {
             Ok(()) => {
-                let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("project.deng");
+                let name = path
+                    .file_name()
+                    .and_then(|n| n.to_str())
+                    .unwrap_or("project.deng");
                 self.status_text = format!("{}: {}", self.tr(language, "save"), name);
                 true
             }
@@ -556,8 +590,7 @@ impl ProjectWindow {
 
     fn normalize_project_save_path(path: &Path) -> PathBuf {
         let mut p = path.to_path_buf();
-        if p
-            .extension()
+        if p.extension()
             .and_then(|e| e.to_str())
             .map(|e| e.eq_ignore_ascii_case("deng"))
             != Some(true)
@@ -613,7 +646,11 @@ impl ProjectWindow {
             (Color32::from_rgb(154, 72, 167), "AN")
         } else if asset.ends_with(".mat") {
             (Color32::from_rgb(179, 137, 57), "MAT")
-        } else if asset.ends_with(".fbx") || asset.ends_with(".obj") || asset.ends_with(".glb") || asset.ends_with(".gltf") {
+        } else if asset.ends_with(".fbx")
+            || asset.ends_with(".obj")
+            || asset.ends_with(".glb")
+            || asset.ends_with(".gltf")
+        {
             (Color32::from_rgb(86, 132, 176), "MESH")
         } else if asset.ends_with(".json") {
             (Color32::from_rgb(127, 127, 127), "{}")
@@ -772,7 +809,9 @@ impl ProjectWindow {
         let mut hasher = std::collections::hash_map::DefaultHasher::new();
         if bones.is_empty() {
             imported_fbx_name.to_ascii_lowercase().hash(&mut hasher);
-            clips.iter().for_each(|c| c.to_ascii_lowercase().hash(&mut hasher));
+            clips
+                .iter()
+                .for_each(|c| c.to_ascii_lowercase().hash(&mut hasher));
         } else {
             bones.iter().for_each(|b| b.hash(&mut hasher));
         }
@@ -980,7 +1019,10 @@ impl ProjectWindow {
                     {
                         Some(rgba) => ImagePreviewDecoded {
                             key: key_clone,
-                            image: Some(([rgba.width() as usize, rgba.height() as usize], rgba.into_raw())),
+                            image: Some((
+                                [rgba.width() as usize, rgba.height() as usize],
+                                rgba.into_raw(),
+                            )),
                         },
                         None => ImagePreviewDecoded {
                             key: key_clone,
@@ -1001,13 +1043,11 @@ impl ProjectWindow {
                 let workers = Arc::clone(&self.mesh_preview_workers);
                 workers.fetch_add(1, Ordering::Relaxed);
                 std::thread::spawn(move || {
-                    let image = build_mesh_preview(&asset_path)
-                        .ok()
-                        .map(|preview| {
-                            let size = Self::MESH_THUMB_SIZE;
-                            let rgba = rasterize_mesh_preview(&preview, size);
-                            (size, rgba)
-                        });
+                    let image = build_mesh_preview(&asset_path).ok().map(|preview| {
+                        let size = Self::MESH_THUMB_SIZE;
+                        let rgba = rasterize_mesh_preview(&preview, size);
+                        (size, rgba)
+                    });
                     let _ = tx.send(MeshPreviewDecoded {
                         key: key_clone,
                         image,
@@ -1077,7 +1117,11 @@ impl ProjectWindow {
         let max = 98.0;
         let t = ((self.icon_scale - min) / (max - min)).clamp(0.0, 1.0);
 
-        let resp = ui.interact(rect, ui.id().with("project_icon_size_slider"), Sense::click_and_drag());
+        let resp = ui.interact(
+            rect,
+            ui.id().with("project_icon_size_slider"),
+            Sense::click_and_drag(),
+        );
         if resp.clicked() || resp.dragged() {
             if let Some(pos) = ui.ctx().input(|i| i.pointer.interact_pos()) {
                 let k = ((pos.x - rect.left()) / rect.width()).clamp(0.0, 1.0);
@@ -1091,12 +1135,18 @@ impl ProjectWindow {
 
         let fill_rect = Rect::from_min_max(
             track_rect.min,
-            egui::pos2(track_rect.left() + track_rect.width() * t, track_rect.bottom()),
+            egui::pos2(
+                track_rect.left() + track_rect.width() * t,
+                track_rect.bottom(),
+            ),
         );
         ui.painter()
             .rect_filled(fill_rect, 6.0, Color32::from_rgb(15, 232, 121));
 
-        let knob_center = egui::pos2(track_rect.left() + track_rect.width() * t, track_rect.center().y);
+        let knob_center = egui::pos2(
+            track_rect.left() + track_rect.width() * t,
+            track_rect.center().y,
+        );
         ui.painter()
             .circle_filled(knob_center, 5.0, Color32::from_rgb(34, 34, 34));
         ui.painter().circle_stroke(
@@ -1124,8 +1174,13 @@ impl ProjectWindow {
         selected: bool,
         icon: Option<&TextureHandle>,
     ) -> egui::Response {
-        let (rect, _) = ui.allocate_exact_size(egui::vec2(ui.available_width(), 20.0), Sense::click());
-        let resp = ui.interact(rect, ui.id().with(("project_tree_leaf", id)), Sense::click());
+        let (rect, _) =
+            ui.allocate_exact_size(egui::vec2(ui.available_width(), 20.0), Sense::click());
+        let resp = ui.interact(
+            rect,
+            ui.id().with(("project_tree_leaf", id)),
+            Sense::click(),
+        );
         let mut text_x = rect.left() + indent + 6.0;
         if let Some(icon) = icon {
             let icon_rect = Rect::from_center_size(
@@ -1165,8 +1220,13 @@ impl ProjectWindow {
         is_open: &mut bool,
         selected: bool,
     ) -> egui::Response {
-        let (rect, _) = ui.allocate_exact_size(egui::vec2(ui.available_width(), 20.0), Sense::click());
-        let row_resp = ui.interact(rect, ui.id().with(("project_tree_parent", id)), Sense::click());
+        let (rect, _) =
+            ui.allocate_exact_size(egui::vec2(ui.available_width(), 20.0), Sense::click());
+        let row_resp = ui.interact(
+            rect,
+            ui.id().with(("project_tree_parent", id)),
+            Sense::click(),
+        );
 
         let arrow_rect = Rect::from_center_size(
             egui::pos2(rect.left() + indent + 10.0, rect.center().y),
@@ -1182,7 +1242,11 @@ impl ProjectWindow {
         }
 
         if let Some(arrow_tex) = &self.arrow_icon_texture {
-            let angle = if *is_open { std::f32::consts::FRAC_PI_2 } else { 0.0 };
+            let angle = if *is_open {
+                std::f32::consts::FRAC_PI_2
+            } else {
+                0.0
+            };
             let _ = ui.put(
                 arrow_rect,
                 egui::Image::new(arrow_tex)
@@ -1240,7 +1304,10 @@ impl ProjectWindow {
         let dock_rect_full = ctx.available_rect();
         let dock_rect = Rect::from_min_max(
             dock_rect_full.min,
-            egui::pos2(dock_rect_full.max.x, dock_rect_full.max.y - bottom_offset.max(0.0)),
+            egui::pos2(
+                dock_rect_full.max.x,
+                dock_rect_full.max.y - bottom_offset.max(0.0),
+            ),
         );
         let pointer_down = ctx.input(|i| i.pointer.primary_down());
 
@@ -1288,7 +1355,10 @@ impl ProjectWindow {
                 if resize_resp.hovered() || resize_resp.dragged() {
                     ui.output_mut(|o| o.cursor_icon = egui::CursorIcon::ResizeVertical);
                     ui.painter().line_segment(
-                        [egui::pos2(rect.left(), rect.top()), egui::pos2(rect.right(), rect.top())],
+                        [
+                            egui::pos2(rect.left(), rect.top()),
+                            egui::pos2(rect.right(), rect.top()),
+                        ],
                         Stroke::new(2.0, Color32::from_rgb(15, 232, 121)),
                     );
                 }
@@ -1357,16 +1427,20 @@ impl ProjectWindow {
                                 .color(Color32::from_gray(175)),
                         );
                         ui.add_space(6.0);
-                        ui.label(egui::RichText::new("|").size(12.0).color(Color32::from_gray(110)));
+                        ui.label(
+                            egui::RichText::new("|")
+                                .size(12.0)
+                                .color(Color32::from_gray(110)),
+                        );
                         ui.add_space(8.0);
 
                         for (idx, (folder_id, folder_label)) in breadcrumb.iter().enumerate() {
                             let is_current = *folder_id == self.selected_folder;
                             let crumb = ui.add(
                                 egui::Label::new(
-                                    egui::RichText::new(folder_label)
-                                        .size(12.0)
-                                        .color(Color32::from_gray(if is_current { 220 } else { 190 })),
+                                    egui::RichText::new(folder_label).size(12.0).color(
+                                        Color32::from_gray(if is_current { 220 } else { 190 }),
+                                    ),
                                 )
                                 .sense(Sense::click()),
                             );
@@ -1392,7 +1466,9 @@ impl ProjectWindow {
 
                             if idx + 1 < breadcrumb.len() {
                                 ui.label(
-                                    egui::RichText::new(">").size(12.0).color(Color32::from_gray(150)),
+                                    egui::RichText::new(">")
+                                        .size(12.0)
+                                        .color(Color32::from_gray(150)),
                                 );
                             }
                         }
@@ -1400,91 +1476,91 @@ impl ProjectWindow {
                 );
 
                 let splitter_y = header_rect.bottom() + 4.0;
-                    let search_hint = self.tr(language, "search");
-                    let desired_search_w: f32 = 220.0;
-                    let min_search_w: f32 = 80.0;
-                    let import_w = 88.0;
-                    let search_right = collapse_btn_rect.left() - 10.0 - import_w;
-                    let search_min_x = header_rect.left() + 6.0;
-                    let search_space = (search_right - search_min_x).max(0.0);
-                    let search_w = desired_search_w.min(search_space).max(min_search_w.min(search_space));
-                    let search_x = if search_w <= 0.0 {
-                        search_min_x
-                    } else {
-                        let search_max_x = (search_right - search_w).max(search_min_x);
-                        (header_rect.center().x - search_w * 0.5 - 36.0).clamp(search_min_x, search_max_x)
-                    };
-                    let search_rect = Rect::from_min_max(
-                        egui::pos2(search_x, header_rect.top()),
-                        egui::pos2(search_x + search_w, header_rect.bottom()),
-                    );
-                    let import_left = (collapse_btn_rect.left() - 8.0 - import_w).max(search_rect.right() + 6.0);
-                    let import_right = (collapse_btn_rect.left() - 8.0).max(import_left);
-                    let import_rect = Rect::from_min_max(
-                        egui::pos2(import_left, header_rect.top()),
-                        egui::pos2(import_right, header_rect.bottom()),
-                    );
+                let search_hint = self.tr(language, "search");
+                let desired_search_w: f32 = 220.0;
+                let min_search_w: f32 = 80.0;
+                let import_w = 88.0;
+                let search_right = collapse_btn_rect.left() - 10.0 - import_w;
+                let search_min_x = header_rect.left() + 6.0;
+                let search_space = (search_right - search_min_x).max(0.0);
+                let search_w = desired_search_w
+                    .min(search_space)
+                    .max(min_search_w.min(search_space));
+                let search_x = if search_w <= 0.0 {
+                    search_min_x
+                } else {
+                    let search_max_x = (search_right - search_w).max(search_min_x);
+                    (header_rect.center().x - search_w * 0.5 - 36.0)
+                        .clamp(search_min_x, search_max_x)
+                };
+                let search_rect = Rect::from_min_max(
+                    egui::pos2(search_x, header_rect.top()),
+                    egui::pos2(search_x + search_w, header_rect.bottom()),
+                );
+                let import_left =
+                    (collapse_btn_rect.left() - 8.0 - import_w).max(search_rect.right() + 6.0);
+                let import_right = (collapse_btn_rect.left() - 8.0).max(import_left);
+                let import_rect = Rect::from_min_max(
+                    egui::pos2(import_left, header_rect.top()),
+                    egui::pos2(import_right, header_rect.bottom()),
+                );
 
-                    if search_w > 0.0 {
-                        ui.scope_builder(
-                            egui::UiBuilder::new()
-                                .max_rect(search_rect)
-                                .layout(
-                                    egui::Layout::left_to_right(egui::Align::Center)
-                                        .with_main_align(egui::Align::Center),
-                                ),
-                            |ui| {
-                                ui.add(
-                                    egui::TextEdit::singleline(&mut self.search_query)
-                                        .desired_width(search_w)
-                                        .hint_text(search_hint),
-                                );
-                            },
-                        );
-                    }
+                if search_w > 0.0 {
                     ui.scope_builder(
-                        egui::UiBuilder::new()
-                            .max_rect(import_rect)
-                            .layout(
-                                egui::Layout::left_to_right(egui::Align::Center)
-                                    .with_main_align(egui::Align::Center),
-                            ),
+                        egui::UiBuilder::new().max_rect(search_rect).layout(
+                            egui::Layout::left_to_right(egui::Align::Center)
+                                .with_main_align(egui::Align::Center),
+                        ),
                         |ui| {
-                            if ui
-                                .add_sized(
-                                    [import_w, 22.0],
-                                    egui::Button::new(self.tr(language, "import"))
-                                        .corner_radius(6)
-                                        .stroke(Stroke::new(1.0, Color32::from_rgb(15, 232, 121))),
-                                )
-                                .clicked()
-                            {
-                                request_import = true;
-                            }
+                            ui.add(
+                                egui::TextEdit::singleline(&mut self.search_query)
+                                    .desired_width(search_w)
+                                    .hint_text(search_hint),
+                            );
                         },
                     );
+                }
+                ui.scope_builder(
+                    egui::UiBuilder::new().max_rect(import_rect).layout(
+                        egui::Layout::left_to_right(egui::Align::Center)
+                            .with_main_align(egui::Align::Center),
+                    ),
+                    |ui| {
+                        if ui
+                            .add_sized(
+                                [import_w, 22.0],
+                                egui::Button::new(self.tr(language, "import"))
+                                    .corner_radius(6)
+                                    .stroke(Stroke::new(1.0, Color32::from_rgb(15, 232, 121))),
+                            )
+                            .clicked()
+                        {
+                            request_import = true;
+                        }
+                    },
+                );
 
-                    ui.painter().line_segment(
-                        [
-                            egui::pos2(inner.left(), splitter_y),
-                            egui::pos2(inner.right(), splitter_y),
-                        ],
-                        Stroke::new(1.0, Color32::from_rgb(62, 62, 62)),
-                    );
+                ui.painter().line_segment(
+                    [
+                        egui::pos2(inner.left(), splitter_y),
+                        egui::pos2(inner.right(), splitter_y),
+                    ],
+                    Stroke::new(1.0, Color32::from_rgb(62, 62, 62)),
+                );
 
-                    let content_rect = Rect::from_min_max(
-                        egui::pos2(inner.left(), splitter_y + 6.0),
-                        egui::pos2(inner.right(), inner.bottom() - 20.0),
-                    );
-                    let sidebar_w = 212.0;
-                    let sidebar_rect = Rect::from_min_max(
-                        content_rect.min,
-                        egui::pos2(content_rect.left() + sidebar_w, content_rect.bottom()),
-                    );
-                    let grid_rect = Rect::from_min_max(
-                        egui::pos2(sidebar_rect.right() + 8.0, content_rect.top()),
-                        content_rect.max,
-                    );
+                let content_rect = Rect::from_min_max(
+                    egui::pos2(inner.left(), splitter_y + 6.0),
+                    egui::pos2(inner.right(), inner.bottom() - 20.0),
+                );
+                let sidebar_w = 212.0;
+                let sidebar_rect = Rect::from_min_max(
+                    content_rect.min,
+                    egui::pos2(content_rect.left() + sidebar_w, content_rect.bottom()),
+                );
+                let grid_rect = Rect::from_min_max(
+                    egui::pos2(sidebar_rect.right() + 8.0, content_rect.top()),
+                    content_rect.max,
+                );
 
                 ui.painter().line_segment(
                     [
@@ -1494,7 +1570,7 @@ impl ProjectWindow {
                     Stroke::new(1.0, Color32::from_rgb(60, 60, 60)),
                 );
 
-                    ui.scope_builder(
+                ui.scope_builder(
                     egui::UiBuilder::new()
                         .max_rect(sidebar_rect)
                         .layout(egui::Layout::top_down(egui::Align::Min)),
@@ -1520,7 +1596,9 @@ impl ProjectWindow {
                                 }
 
                                 if self.assets_open {
-                                    for folder in ["Animations", "Materials", "Meshes", "Mold", "Scripts"] {
+                                    for folder in
+                                        ["Animations", "Materials", "Meshes", "Mold", "Scripts"]
+                                    {
                                         if !self.should_show_folder(folder) {
                                             continue;
                                         }
@@ -1536,7 +1614,9 @@ impl ProjectWindow {
                                             self.selected_asset = None;
                                         }
                                         if folder == "Meshes" && self.selected_folder == "Meshes" {
-                                            let Some(meshes_dir) = Self::folder_path_from_id("Meshes") else {
+                                            let Some(meshes_dir) =
+                                                Self::folder_path_from_id("Meshes")
+                                            else {
                                                 continue;
                                             };
                                             for fbx_asset in self.fbx_assets_in_meshes_folder() {
@@ -1548,10 +1628,12 @@ impl ProjectWindow {
                                                     &fbx_asset,
                                                     34.0,
                                                     &mut opened,
-                                                    self.selected_asset.as_ref() == Some(&fbx_asset),
+                                                    self.selected_asset.as_ref()
+                                                        == Some(&fbx_asset),
                                                 );
                                                 if opened {
-                                                    self.fbx_expanded_assets.insert(fbx_asset.clone());
+                                                    self.fbx_expanded_assets
+                                                        .insert(fbx_asset.clone());
                                                 } else {
                                                     self.fbx_expanded_assets.remove(&fbx_asset);
                                                 }
@@ -1615,19 +1697,25 @@ impl ProjectWindow {
                                                         self.animador_icon_texture.as_ref(),
                                                     );
                                                     for clip in &meta.animations {
-                                                        let clip_ref = format!("{fbx_asset}::{clip}");
-                                                        let resp = Self::draw_tree_leaf_row_with_icon(
-                                                            ui,
-                                                            &format!("anim_clip_{fbx_asset}_{clip}"),
-                                                            clip,
-                                                            70.0,
-                                                            false,
-                                                            self.animador_icon_texture.as_ref(),
-                                                        );
+                                                        let clip_ref =
+                                                            format!("{fbx_asset}::{clip}");
+                                                        let resp =
+                                                            Self::draw_tree_leaf_row_with_icon(
+                                                                ui,
+                                                                &format!(
+                                                                    "anim_clip_{fbx_asset}_{clip}"
+                                                                ),
+                                                                clip,
+                                                                70.0,
+                                                                false,
+                                                                self.animador_icon_texture.as_ref(),
+                                                            );
                                                         if resp.clicked() {
                                                             self.selected_folder = "Meshes";
-                                                            self.selected_asset = Some(fbx_asset.clone());
-                                                            self.status_text = format!("Clipe: {clip_ref}");
+                                                            self.selected_asset =
+                                                                Some(fbx_asset.clone());
+                                                            self.status_text =
+                                                                format!("Clipe: {clip_ref}");
                                                         }
                                                     }
                                                 }
@@ -1676,17 +1764,17 @@ impl ProjectWindow {
                     },
                 );
 
-                    let assets = self.assets_for_folder();
-                    let filter = self.search_query.to_lowercase();
-                    let filtered_assets: Vec<&String> = assets
-                        .iter()
-                        .filter(|asset| {
-                            !self.deleted_assets.contains(*asset)
-                                && (filter.is_empty() || asset.to_lowercase().contains(&filter))
-                        })
-                        .collect();
+                let assets = self.assets_for_folder();
+                let filter = self.search_query.to_lowercase();
+                let filtered_assets: Vec<&String> = assets
+                    .iter()
+                    .filter(|asset| {
+                        !self.deleted_assets.contains(*asset)
+                            && (filter.is_empty() || asset.to_lowercase().contains(&filter))
+                    })
+                    .collect();
 
-                    ui.scope_builder(
+                ui.scope_builder(
                     egui::UiBuilder::new()
                         .max_rect(grid_rect)
                         .layout(egui::Layout::top_down(egui::Align::Min)),
@@ -1726,8 +1814,10 @@ impl ProjectWindow {
                                 let tile_w = self.icon_scale.clamp(56.0, 98.0);
                                 let tile_name_h = 18.0;
                                 let tile_pad = 6.0;
-                                let tile_size = Vec2::new(tile_w, tile_w + tile_name_h + tile_pad * 2.0);
-                                let cols = (((ui.available_width() + spacing.x) / (tile_size.x + spacing.x))
+                                let tile_size =
+                                    Vec2::new(tile_w, tile_w + tile_name_h + tile_pad * 2.0);
+                                let cols = (((ui.available_width() + spacing.x)
+                                    / (tile_size.x + spacing.x))
                                     .floor() as usize)
                                     .max(1);
                                 let now = ui.ctx().input(|i| i.time);
@@ -1739,151 +1829,241 @@ impl ProjectWindow {
                                     .show(ui, |ui| {
                                         let mut col = 0usize;
                                         for asset in filtered_assets.iter() {
-                                        let asset = *asset;
-                                        let tile_size = Vec2::new(tile_w, tile_w + tile_name_h + tile_pad * 2.0);
-                                        let selected = self.selected_asset.as_ref() == Some(asset);
-                                        let (tile_rect, tile_resp) =
-                                            ui.allocate_exact_size(tile_size, Sense::click_and_drag());
+                                            let asset = *asset;
+                                            let tile_size = Vec2::new(
+                                                tile_w,
+                                                tile_w + tile_name_h + tile_pad * 2.0,
+                                            );
+                                            let selected =
+                                                self.selected_asset.as_ref() == Some(asset);
+                                            let (tile_rect, tile_resp) = ui.allocate_exact_size(
+                                                tile_size,
+                                                Sense::click_and_drag(),
+                                            );
 
-                                        ui.painter().rect_filled(
-                                            tile_rect,
-                                            4.0,
-                                            if selected {
-                                                Color32::from_rgb(64, 64, 64)
-                                            } else {
-                                                Color32::from_rgb(44, 44, 44)
-                                            },
-                                        );
-                                        ui.painter().rect_stroke(
-                                            tile_rect,
-                                            4.0,
-                                            if selected {
-                                                Stroke::new(1.0, Color32::from_rgb(15, 232, 121))
-                                            } else {
-                                                Stroke::new(1.0, Color32::from_rgb(58, 58, 58))
-                                            },
-                                            egui::StrokeKind::Outside,
-                                        );
-
-                                        let preview_rect = Rect::from_min_max(
-                                            tile_rect.min + egui::vec2(tile_pad, tile_pad),
-                                            egui::pos2(
-                                                tile_rect.max.x - tile_pad,
-                                                tile_rect.max.y - tile_name_h - tile_pad,
-                                            ),
-                                        );
-                                        ui.painter().rect_filled(
-                                            preview_rect,
-                                            3.0,
-                                            Color32::from_rgb(38, 40, 42),
-                                        );
-                                        if let Some(tex) = self.asset_preview_texture(ui.ctx(), asset) {
-                                            let image_rect = preview_rect.shrink(1.0);
-                                            let _ = ui.put(
-                                                image_rect,
-                                                egui::Image::new(tex).fit_to_exact_size(image_rect.size()),
+                                            ui.painter().rect_filled(
+                                                tile_rect,
+                                                4.0,
+                                                if selected {
+                                                    Color32::from_rgb(64, 64, 64)
+                                                } else {
+                                                    Color32::from_rgb(44, 44, 44)
+                                                },
                                             );
                                             ui.painter().rect_stroke(
-                                                preview_rect,
-                                                2.0,
-                                                Stroke::new(1.0, Color32::from_rgba_unmultiplied(255, 255, 255, 26)),
+                                                tile_rect,
+                                                4.0,
+                                                if selected {
+                                                    Stroke::new(
+                                                        1.0,
+                                                        Color32::from_rgb(15, 232, 121),
+                                                    )
+                                                } else {
+                                                    Stroke::new(1.0, Color32::from_rgb(58, 58, 58))
+                                                },
                                                 egui::StrokeKind::Outside,
                                             );
-                                        } else {
-                                            let (icon_color, icon_tag) = Self::icon_style(asset);
-                                            ui.painter().rect_filled(preview_rect.shrink(1.0), 2.0, icon_color);
-                                            ui.painter().text(
-                                                preview_rect.center(),
-                                                egui::Align2::CENTER_CENTER,
-                                                icon_tag,
-                                                FontId::proportional(10.0),
-                                                Color32::from_gray(245),
+
+                                            let preview_rect = Rect::from_min_max(
+                                                tile_rect.min + egui::vec2(tile_pad, tile_pad),
+                                                egui::pos2(
+                                                    tile_rect.max.x - tile_pad,
+                                                    tile_rect.max.y - tile_name_h - tile_pad,
+                                                ),
                                             );
-                                        }
-                                        let mut expanded_fbx = false;
-                                        if self.selected_folder == "Meshes"
-                                            && asset.to_ascii_lowercase().ends_with(".fbx")
-                                        {
-                                            let expand_rect = Rect::from_center_size(
-                                                egui::pos2(preview_rect.right() - 8.0, preview_rect.center().y),
-                                                egui::vec2(14.0, 14.0),
+                                            ui.painter().rect_filled(
+                                                preview_rect,
+                                                3.0,
+                                                Color32::from_rgb(38, 40, 42),
                                             );
-                                            let expand_resp = ui.interact(
-                                                expand_rect,
-                                                ui.id().with(("mesh_tile_expand", asset)),
-                                                Sense::click(),
-                                            );
-                                            let expanded = self.fbx_expanded_assets.contains(asset);
-                                            expanded_fbx = expanded;
-                                            if expand_resp.hovered() {
-                                                ui.painter().circle_filled(
-                                                    expand_rect.center(),
-                                                    8.0,
-                                                    Color32::from_rgba_unmultiplied(255, 255, 255, 26),
-                                                );
-                                            }
-                                            if let Some(arrow_tex) = &self.arrow_icon_texture {
-                                                let angle =
-                                                    if expanded { std::f32::consts::FRAC_PI_2 } else { 0.0 };
+                                            if let Some(tex) =
+                                                self.asset_preview_texture(ui.ctx(), asset)
+                                            {
+                                                let image_rect = preview_rect.shrink(1.0);
                                                 let _ = ui.put(
-                                                    expand_rect,
-                                                    egui::Image::new(arrow_tex)
-                                                        .fit_to_exact_size(egui::vec2(10.0, 10.0))
-                                                        .rotate(angle, Vec2::splat(0.5)),
+                                                    image_rect,
+                                                    egui::Image::new(tex)
+                                                        .fit_to_exact_size(image_rect.size()),
+                                                );
+                                                ui.painter().rect_stroke(
+                                                    preview_rect,
+                                                    2.0,
+                                                    Stroke::new(
+                                                        1.0,
+                                                        Color32::from_rgba_unmultiplied(
+                                                            255, 255, 255, 26,
+                                                        ),
+                                                    ),
+                                                    egui::StrokeKind::Outside,
                                                 );
                                             } else {
+                                                let (icon_color, icon_tag) =
+                                                    Self::icon_style(asset);
+                                                ui.painter().rect_filled(
+                                                    preview_rect.shrink(1.0),
+                                                    2.0,
+                                                    icon_color,
+                                                );
                                                 ui.painter().text(
-                                                    expand_rect.center(),
-                                                    Align2::CENTER_CENTER,
-                                                    if expanded { "▾" } else { "▸" },
-                                                    FontId::new(11.0, FontFamily::Proportional),
-                                                    Color32::from_gray(230),
+                                                    preview_rect.center(),
+                                                    egui::Align2::CENTER_CENTER,
+                                                    icon_tag,
+                                                    FontId::proportional(10.0),
+                                                    Color32::from_gray(245),
                                                 );
                                             }
-                                            if expand_resp.clicked() {
-                                                if expanded {
-                                                    self.fbx_expanded_assets.remove(asset);
-                                                    expanded_fbx = false;
+                                            let mut expanded_fbx = false;
+                                            if self.selected_folder == "Meshes"
+                                                && asset.to_ascii_lowercase().ends_with(".fbx")
+                                            {
+                                                let expand_rect = Rect::from_center_size(
+                                                    egui::pos2(
+                                                        preview_rect.right() - 8.0,
+                                                        preview_rect.center().y,
+                                                    ),
+                                                    egui::vec2(14.0, 14.0),
+                                                );
+                                                let expand_resp = ui.interact(
+                                                    expand_rect,
+                                                    ui.id().with(("mesh_tile_expand", asset)),
+                                                    Sense::click(),
+                                                );
+                                                let expanded =
+                                                    self.fbx_expanded_assets.contains(asset);
+                                                expanded_fbx = expanded;
+                                                if expand_resp.hovered() {
+                                                    ui.painter().circle_filled(
+                                                        expand_rect.center(),
+                                                        8.0,
+                                                        Color32::from_rgba_unmultiplied(
+                                                            255, 255, 255, 26,
+                                                        ),
+                                                    );
+                                                }
+                                                if let Some(arrow_tex) = &self.arrow_icon_texture {
+                                                    let angle = if expanded {
+                                                        std::f32::consts::FRAC_PI_2
+                                                    } else {
+                                                        0.0
+                                                    };
+                                                    let _ = ui.put(
+                                                        expand_rect,
+                                                        egui::Image::new(arrow_tex)
+                                                            .fit_to_exact_size(egui::vec2(
+                                                                10.0, 10.0,
+                                                            ))
+                                                            .rotate(angle, Vec2::splat(0.5)),
+                                                    );
                                                 } else {
-                                                    self.fbx_expanded_assets.insert(asset.clone());
-                                                    self.selected_asset = Some(asset.clone());
-                                                    expanded_fbx = true;
+                                                    ui.painter().text(
+                                                        expand_rect.center(),
+                                                        Align2::CENTER_CENTER,
+                                                        if expanded { "▾" } else { "▸" },
+                                                        FontId::new(11.0, FontFamily::Proportional),
+                                                        Color32::from_gray(230),
+                                                    );
+                                                }
+                                                if expand_resp.clicked() {
+                                                    if expanded {
+                                                        self.fbx_expanded_assets.remove(asset);
+                                                        expanded_fbx = false;
+                                                    } else {
+                                                        self.fbx_expanded_assets
+                                                            .insert(asset.clone());
+                                                        self.selected_asset = Some(asset.clone());
+                                                        expanded_fbx = true;
+                                                    }
                                                 }
                                             }
-                                        }
-                                        let name_font = FontId::proportional(11.0);
-                                        let name_color = Color32::from_gray(210);
-                                        let name_rect = Rect::from_min_max(
-                                            egui::pos2(
-                                                tile_rect.left() + tile_pad,
-                                                tile_rect.bottom() - tile_name_h - 2.0,
-                                            ),
-                                            egui::pos2(tile_rect.right() - tile_pad, tile_rect.bottom() - 2.0),
-                                        );
-                                        let clipped_painter = ui.painter().with_clip_rect(name_rect);
-                                        let full_w = ui
-                                            .painter()
-                                            .layout_no_wrap(asset.to_string(), name_font.clone(), name_color)
-                                            .size()
-                                            .x;
-
-                                        if full_w <= name_rect.width() {
-                                            clipped_painter.text(
-                                                name_rect.center(),
-                                                egui::Align2::CENTER_CENTER,
-                                                asset,
-                                                name_font.clone(),
-                                                name_color,
+                                            let name_font = FontId::proportional(11.0);
+                                            let name_color = Color32::from_gray(210);
+                                            let name_rect = Rect::from_min_max(
+                                                egui::pos2(
+                                                    tile_rect.left() + tile_pad,
+                                                    tile_rect.bottom() - tile_name_h - 2.0,
+                                                ),
+                                                egui::pos2(
+                                                    tile_rect.right() - tile_pad,
+                                                    tile_rect.bottom() - 2.0,
+                                                ),
                                             );
-                                        } else if tile_resp.hovered() {
-                                            hovered_any = true;
-                                            if self.hover_roll_asset.as_ref() != Some(asset) {
-                                                self.hover_roll_asset = Some(asset.clone());
-                                                self.hover_still_since = now;
-                                            }
+                                            let clipped_painter =
+                                                ui.painter().with_clip_rect(name_rect);
+                                            let full_w = ui
+                                                .painter()
+                                                .layout_no_wrap(
+                                                    asset.to_string(),
+                                                    name_font.clone(),
+                                                    name_color,
+                                                )
+                                                .size()
+                                                .x;
 
-                                            let hover_elapsed = now - self.hover_still_since;
-                                            if hover_elapsed < 0.18 {
+                                            if full_w <= name_rect.width() {
+                                                clipped_painter.text(
+                                                    name_rect.center(),
+                                                    egui::Align2::CENTER_CENTER,
+                                                    asset,
+                                                    name_font.clone(),
+                                                    name_color,
+                                                );
+                                            } else if tile_resp.hovered() {
+                                                hovered_any = true;
+                                                if self.hover_roll_asset.as_ref() != Some(asset) {
+                                                    self.hover_roll_asset = Some(asset.clone());
+                                                    self.hover_still_since = now;
+                                                }
+
+                                                let hover_elapsed = now - self.hover_still_since;
+                                                if hover_elapsed < 0.18 {
+                                                    let short = Self::truncate_with_ellipsis(
+                                                        ui.painter(),
+                                                        asset,
+                                                        &name_font,
+                                                        name_rect.width(),
+                                                    );
+                                                    clipped_painter.text(
+                                                        name_rect.center(),
+                                                        egui::Align2::CENTER_CENTER,
+                                                        short,
+                                                        name_font.clone(),
+                                                        name_color,
+                                                    );
+                                                } else {
+                                                    ui.ctx().request_repaint();
+                                                    let anim_time = (hover_elapsed - 0.18) as f32;
+                                                    let tail_pad = 8.0;
+                                                    let overflow = (full_w - name_rect.width()
+                                                        + tail_pad)
+                                                        .max(0.0);
+                                                    let speed = 12.0;
+                                                    let start_pause = 0.65;
+                                                    let end_pause = 1.0;
+                                                    let run_time = overflow / speed;
+                                                    let cycle = start_pause + run_time + end_pause;
+                                                    let phase = anim_time % cycle;
+                                                    let scroll_x = if phase < start_pause {
+                                                        0.0
+                                                    } else if phase < start_pause + run_time {
+                                                        (phase - start_pause) * speed
+                                                    } else {
+                                                        overflow
+                                                    };
+                                                    let base_x =
+                                                        name_rect.center().x - full_w * 0.5;
+
+                                                    clipped_painter.text(
+                                                        egui::pos2(
+                                                            base_x - scroll_x,
+                                                            name_rect.center().y,
+                                                        ),
+                                                        egui::Align2::LEFT_CENTER,
+                                                        asset,
+                                                        name_font.clone(),
+                                                        name_color,
+                                                    );
+                                                }
+                                            } else {
                                                 let short = Self::truncate_with_ellipsis(
                                                     ui.painter(),
                                                     asset,
@@ -1897,295 +2077,312 @@ impl ProjectWindow {
                                                     name_font.clone(),
                                                     name_color,
                                                 );
-                                            } else {
-                                                ui.ctx().request_repaint();
-                                                let anim_time = (hover_elapsed - 0.18) as f32;
-                                                let tail_pad = 8.0;
-                                                let overflow = (full_w - name_rect.width() + tail_pad).max(0.0);
-                                                let speed = 12.0;
-                                                let start_pause = 0.65;
-                                                let end_pause = 1.0;
-                                                let run_time = overflow / speed;
-                                                let cycle = start_pause + run_time + end_pause;
-                                                let phase = anim_time % cycle;
-                                                let scroll_x = if phase < start_pause {
-                                                    0.0
-                                                } else if phase < start_pause + run_time {
-                                                    (phase - start_pause) * speed
-                                                } else {
-                                                    overflow
-                                                };
-                                                let base_x = name_rect.center().x - full_w * 0.5;
+                                            }
 
-                                                clipped_painter.text(
-                                                    egui::pos2(base_x - scroll_x, name_rect.center().y),
-                                                    egui::Align2::LEFT_CENTER,
-                                                    asset,
-                                                    name_font.clone(),
-                                                    name_color,
-                                                );
-                                            }
-                                        } else {
-                                            let short = Self::truncate_with_ellipsis(
-                                                ui.painter(),
-                                                asset,
-                                                &name_font,
-                                                name_rect.width(),
-                                            );
-                                            clipped_painter.text(
-                                                name_rect.center(),
-                                                egui::Align2::CENTER_CENTER,
-                                                short,
-                                                name_font.clone(),
-                                                name_color,
-                                            );
-                                        }
-
-                                        let mut open_clicked = false;
-                                        let mut reveal_clicked = false;
-                                        let mut delete_clicked = false;
-                                        tile_resp.context_menu(|ui| {
-                                            if ui.button(self.tr(language, "open")).clicked() {
-                                                open_clicked = true;
-                                                ui.close();
-                                            }
-                                            if ui.button(self.tr(language, "reveal")).clicked() {
-                                                reveal_clicked = true;
-                                                ui.close();
-                                            }
-                                            ui.separator();
-                                            if ui
-                                                .add(
-                                                    egui::Button::new(self.tr(language, "delete"))
+                                            let mut open_clicked = false;
+                                            let mut reveal_clicked = false;
+                                            let mut delete_clicked = false;
+                                            tile_resp.context_menu(|ui| {
+                                                if ui.button(self.tr(language, "open")).clicked() {
+                                                    open_clicked = true;
+                                                    ui.close();
+                                                }
+                                                if ui.button(self.tr(language, "reveal")).clicked()
+                                                {
+                                                    reveal_clicked = true;
+                                                    ui.close();
+                                                }
+                                                ui.separator();
+                                                if ui
+                                                    .add(
+                                                        egui::Button::new(
+                                                            self.tr(language, "delete"),
+                                                        )
                                                         .fill(Color32::from_rgb(74, 38, 38)),
-                                                )
-                                                .clicked()
-                                            {
-                                                delete_clicked = true;
-                                                ui.close();
-                                            }
-                                        });
+                                                    )
+                                                    .clicked()
+                                                {
+                                                    delete_clicked = true;
+                                                    ui.close();
+                                                }
+                                            });
 
-                                        if open_clicked {
-                                            self.selected_asset = Some(asset.clone());
-                                            self.status_text =
-                                                format!("{}: {}", self.tr(language, "open"), asset);
-                                        }
-                                        if reveal_clicked {
-                                            self.status_text =
-                                                format!("{}: {}", self.tr(language, "reveal"), asset);
-                                        }
-                                        if delete_clicked {
-                                            self.deleted_assets.insert(asset.clone());
-                                            if self.selected_asset.as_ref() == Some(asset) {
-                                                self.selected_asset = None;
+                                            if open_clicked {
+                                                self.selected_asset = Some(asset.clone());
+                                                self.status_text = format!(
+                                                    "{}: {}",
+                                                    self.tr(language, "open"),
+                                                    asset
+                                                );
                                             }
-                                            if self
-                                                .selected_sub_asset
-                                                .as_ref()
-                                                .is_some_and(|s| s.starts_with(&format!("{asset}::")))
-                                            {
+                                            if reveal_clicked {
+                                                self.status_text = format!(
+                                                    "{}: {}",
+                                                    self.tr(language, "reveal"),
+                                                    asset
+                                                );
+                                            }
+                                            if delete_clicked {
+                                                self.deleted_assets.insert(asset.clone());
+                                                if self.selected_asset.as_ref() == Some(asset) {
+                                                    self.selected_asset = None;
+                                                }
+                                                if self.selected_sub_asset.as_ref().is_some_and(
+                                                    |s| s.starts_with(&format!("{asset}::")),
+                                                ) {
+                                                    self.selected_sub_asset = None;
+                                                }
+                                                self.status_text = format!(
+                                                    "{}: {}",
+                                                    self.tr(language, "delete"),
+                                                    asset
+                                                );
+                                            }
+
+                                            if tile_resp.clicked() {
+                                                self.selected_asset = Some(asset.clone());
                                                 self.selected_sub_asset = None;
+                                                self.status_text = asset.to_string();
                                             }
-                                            self.status_text =
-                                                format!("{}: {}", self.tr(language, "delete"), asset);
-                                        }
-
-                                        if tile_resp.clicked() {
-                                            self.selected_asset = Some(asset.clone());
-                                            self.selected_sub_asset = None;
-                                            self.status_text = asset.to_string();
-                                        }
-                                        if tile_resp.drag_started() || tile_resp.dragged() {
-                                            if !self
-                                                .dragging_asset
-                                                .as_ref()
-                                                .is_some_and(|v| v.contains("::"))
-                                            {
-                                                self.dragging_asset = Some(asset.clone());
-                                            }
-                                        }
-                                        if tile_resp.hovered()
-                                            && ui.input(|i| i.pointer.primary_down() && i.pointer.delta().length_sq() > 0.0)
-                                        {
-                                            if !self
-                                                .dragging_asset
-                                                .as_ref()
-                                                .is_some_and(|v| v.contains("::"))
-                                            {
-                                                self.dragging_asset = Some(asset.clone());
-                                            }
-                                        }
-                                        col += 1;
-                                        if col % cols == 0 {
-                                            ui.end_row();
-                                        }
-
-                                        if expanded_fbx {
-                                            let Some(meshes_dir) = Self::folder_path_from_id("Meshes") else {
-                                                continue;
-                                            };
-                                            let meta = self.fbx_meta_for_path(&meshes_dir.join(asset));
-                                            let child_tile_w = (tile_w * 0.82).max(48.0);
-                                            let child_tile_name_h = 16.0;
-                                            let child_tile_pad = 5.0;
-                                            let child_visual_size = Vec2::new(
-                                                child_tile_w,
-                                                child_tile_w + child_tile_name_h + child_tile_pad * 2.0,
-                                            );
-                                            let mut children: Vec<(
-                                                String,
-                                                Option<&TextureHandle>,
-                                                Option<String>,
-                                                String,
-                                            )> = Vec::new();
-                                            children.push((
-                                                if meta.has_mesh {
-                                                    "Mesh".to_string()
-                                                } else {
-                                                    "Mesh (indisponível)".to_string()
-                                                },
-                                                None,
-                                                None,
-                                                format!("{asset}::mesh"),
-                                            ));
-                                            children.push((
-                                                if meta.has_skeleton {
-                                                    "Esqueleto".to_string()
-                                                } else {
-                                                    "Esqueleto (não detectado)".to_string()
-                                                },
-                                                self.rig_icon_texture.as_ref(),
-                                                None,
-                                                format!("{asset}::skeleton"),
-                                            ));
-                                            children.push((
-                                                format!("Animações ({})", meta.animations.len()),
-                                                self.animador_icon_texture.as_ref(),
-                                                Some(asset.clone()),
-                                                format!("{asset}::animations"),
-                                            ));
-                                            for clip in &meta.animations {
-                                                let clip_ref = format!("{asset}::{clip}");
-                                                children.push((
-                                                    format!("Anim: {clip}"),
-                                                    self.animador_icon_texture.as_ref(),
-                                                    Some(clip_ref.clone()),
-                                                    clip_ref,
-                                                ));
-                                            }
-
-                                            for (label, icon_opt, drag_payload, child_key) in children {
-                                                let (slot_rect, c_resp) =
-                                                    ui.allocate_exact_size(tile_size, Sense::click_and_drag());
-                                                let c_rect = Rect::from_center_size(
-                                                    slot_rect.center(),
-                                                    child_visual_size,
-                                                );
-                                                let selected_sub = self
-                                                    .selected_sub_asset
+                                            if tile_resp.drag_started() || tile_resp.dragged() {
+                                                if !self
+                                                    .dragging_asset
                                                     .as_ref()
-                                                    .is_some_and(|k| k == &child_key);
-                                                if selected_sub {
-                                                    ui.painter().rect_filled(
-                                                        c_rect.expand(1.0),
-                                                        5.0,
-                                                        Color32::from_rgba_unmultiplied(15, 232, 121, 24),
-                                                    );
+                                                    .is_some_and(|v| v.contains("::"))
+                                                {
+                                                    self.dragging_asset = Some(asset.clone());
                                                 }
-                                                ui.painter().rect_stroke(
-                                                    c_rect,
-                                                    4.0,
-                                                    if selected_sub {
-                                                        Stroke::new(1.2, Color32::from_rgb(15, 232, 121))
+                                            }
+                                            if tile_resp.hovered()
+                                                && ui.input(|i| {
+                                                    i.pointer.primary_down()
+                                                        && i.pointer.delta().length_sq() > 0.0
+                                                })
+                                            {
+                                                if !self
+                                                    .dragging_asset
+                                                    .as_ref()
+                                                    .is_some_and(|v| v.contains("::"))
+                                                {
+                                                    self.dragging_asset = Some(asset.clone());
+                                                }
+                                            }
+                                            col += 1;
+                                            if col % cols == 0 {
+                                                ui.end_row();
+                                            }
+
+                                            if expanded_fbx {
+                                                let Some(meshes_dir) =
+                                                    Self::folder_path_from_id("Meshes")
+                                                else {
+                                                    continue;
+                                                };
+                                                let meta =
+                                                    self.fbx_meta_for_path(&meshes_dir.join(asset));
+                                                let child_tile_w = (tile_w * 0.82).max(48.0);
+                                                let child_tile_name_h = 16.0;
+                                                let child_tile_pad = 5.0;
+                                                let child_visual_size = Vec2::new(
+                                                    child_tile_w,
+                                                    child_tile_w
+                                                        + child_tile_name_h
+                                                        + child_tile_pad * 2.0,
+                                                );
+                                                let mut children: Vec<(
+                                                    String,
+                                                    Option<&TextureHandle>,
+                                                    Option<String>,
+                                                    String,
+                                                )> = Vec::new();
+                                                children.push((
+                                                    if meta.has_mesh {
+                                                        "Mesh".to_string()
                                                     } else {
-                                                        Stroke::new(1.0, Color32::from_rgb(70, 70, 78))
+                                                        "Mesh (indisponível)".to_string()
                                                     },
-                                                    egui::StrokeKind::Outside,
-                                                );
-                                                let c_preview = Rect::from_min_max(
-                                                    c_rect.min + egui::vec2(child_tile_pad, child_tile_pad),
-                                                    egui::pos2(
-                                                        c_rect.max.x - child_tile_pad,
-                                                        c_rect.max.y - child_tile_name_h - child_tile_pad,
+                                                    None,
+                                                    None,
+                                                    format!("{asset}::mesh"),
+                                                ));
+                                                children.push((
+                                                    if meta.has_skeleton {
+                                                        "Esqueleto".to_string()
+                                                    } else {
+                                                        "Esqueleto (não detectado)".to_string()
+                                                    },
+                                                    self.rig_icon_texture.as_ref(),
+                                                    None,
+                                                    format!("{asset}::skeleton"),
+                                                ));
+                                                children.push((
+                                                    format!(
+                                                        "Animações ({})",
+                                                        meta.animations.len()
                                                     ),
-                                                );
-                                                ui.painter().rect_stroke(
-                                                    c_preview,
-                                                    3.0,
-                                                    Stroke::new(1.0, Color32::from_rgb(88, 96, 108)),
-                                                    egui::StrokeKind::Outside,
-                                                );
-                                                if let Some(icon) = icon_opt.or(self.arrow_icon_texture.as_ref()) {
-                                                    let icon_rect = Rect::from_center_size(
-                                                        c_preview.center(),
-                                                        egui::vec2(c_preview.width().min(20.0), c_preview.height().min(20.0)),
-                                                    );
-                                                    let _ = ui.put(
-                                                        icon_rect,
-                                                        egui::Image::new(icon).fit_to_exact_size(icon_rect.size()),
-                                                    );
+                                                    self.animador_icon_texture.as_ref(),
+                                                    Some(asset.clone()),
+                                                    format!("{asset}::animations"),
+                                                ));
+                                                for clip in &meta.animations {
+                                                    let clip_ref = format!("{asset}::{clip}");
+                                                    children.push((
+                                                        format!("Anim: {clip}"),
+                                                        self.animador_icon_texture.as_ref(),
+                                                        Some(clip_ref.clone()),
+                                                        clip_ref,
+                                                    ));
                                                 }
-                                                let c_name_rect = Rect::from_min_max(
-                                                    egui::pos2(
-                                                        c_rect.left() + child_tile_pad,
-                                                        c_rect.bottom() - child_tile_name_h - 2.0,
-                                                    ),
-                                                    egui::pos2(c_rect.right() - child_tile_pad, c_rect.bottom() - 2.0),
-                                                );
-                                                let short = Self::truncate_with_ellipsis(
-                                                    ui.painter(),
-                                                    &label,
-                                                    &FontId::proportional(11.0),
-                                                    c_name_rect.width(),
-                                                );
-                                                ui.painter().text(
-                                                    c_name_rect.center(),
-                                                    Align2::CENTER_CENTER,
-                                                    short,
-                                                    FontId::proportional(11.0),
-                                                    Color32::from_gray(210),
-                                                );
-                                                if c_resp.clicked() {
-                                                    self.selected_asset = Some(asset.clone());
-                                                    self.selected_sub_asset = Some(child_key.clone());
-                                                    self.status_text = format!("{asset} > {label}");
-                                                }
-                                                if let Some(payload) = &drag_payload {
-                                                    if c_resp.drag_started() || c_resp.dragged() {
-                                                        self.dragging_asset = Some(payload.clone());
+
+                                                for (label, icon_opt, drag_payload, child_key) in
+                                                    children
+                                                {
+                                                    let (slot_rect, c_resp) = ui
+                                                        .allocate_exact_size(
+                                                            tile_size,
+                                                            Sense::click_and_drag(),
+                                                        );
+                                                    let c_rect = Rect::from_center_size(
+                                                        slot_rect.center(),
+                                                        child_visual_size,
+                                                    );
+                                                    let selected_sub = self
+                                                        .selected_sub_asset
+                                                        .as_ref()
+                                                        .is_some_and(|k| k == &child_key);
+                                                    if selected_sub {
+                                                        ui.painter().rect_filled(
+                                                            c_rect.expand(1.0),
+                                                            5.0,
+                                                            Color32::from_rgba_unmultiplied(
+                                                                15, 232, 121, 24,
+                                                            ),
+                                                        );
                                                     }
-                                                    if c_resp.hovered()
-                                                        && ui.input(|i| {
-                                                            i.pointer.primary_down()
-                                                                && i.pointer.delta().length_sq() > 0.0
-                                                        })
+                                                    ui.painter().rect_stroke(
+                                                        c_rect,
+                                                        4.0,
+                                                        if selected_sub {
+                                                            Stroke::new(
+                                                                1.2,
+                                                                Color32::from_rgb(15, 232, 121),
+                                                            )
+                                                        } else {
+                                                            Stroke::new(
+                                                                1.0,
+                                                                Color32::from_rgb(70, 70, 78),
+                                                            )
+                                                        },
+                                                        egui::StrokeKind::Outside,
+                                                    );
+                                                    let c_preview = Rect::from_min_max(
+                                                        c_rect.min
+                                                            + egui::vec2(
+                                                                child_tile_pad,
+                                                                child_tile_pad,
+                                                            ),
+                                                        egui::pos2(
+                                                            c_rect.max.x - child_tile_pad,
+                                                            c_rect.max.y
+                                                                - child_tile_name_h
+                                                                - child_tile_pad,
+                                                        ),
+                                                    );
+                                                    ui.painter().rect_stroke(
+                                                        c_preview,
+                                                        3.0,
+                                                        Stroke::new(
+                                                            1.0,
+                                                            Color32::from_rgb(88, 96, 108),
+                                                        ),
+                                                        egui::StrokeKind::Outside,
+                                                    );
+                                                    if let Some(icon) = icon_opt
+                                                        .or(self.arrow_icon_texture.as_ref())
                                                     {
-                                                        self.dragging_asset = Some(payload.clone());
+                                                        let icon_rect = Rect::from_center_size(
+                                                            c_preview.center(),
+                                                            egui::vec2(
+                                                                c_preview.width().min(20.0),
+                                                                c_preview.height().min(20.0),
+                                                            ),
+                                                        );
+                                                        let _ = ui.put(
+                                                            icon_rect,
+                                                            egui::Image::new(icon)
+                                                                .fit_to_exact_size(
+                                                                    icon_rect.size(),
+                                                                ),
+                                                        );
                                                     }
-                                                }
-                                                col += 1;
-                                                if col % cols == 0 {
-                                                    ui.end_row();
+                                                    let c_name_rect = Rect::from_min_max(
+                                                        egui::pos2(
+                                                            c_rect.left() + child_tile_pad,
+                                                            c_rect.bottom()
+                                                                - child_tile_name_h
+                                                                - 2.0,
+                                                        ),
+                                                        egui::pos2(
+                                                            c_rect.right() - child_tile_pad,
+                                                            c_rect.bottom() - 2.0,
+                                                        ),
+                                                    );
+                                                    let short = Self::truncate_with_ellipsis(
+                                                        ui.painter(),
+                                                        &label,
+                                                        &FontId::proportional(11.0),
+                                                        c_name_rect.width(),
+                                                    );
+                                                    ui.painter().text(
+                                                        c_name_rect.center(),
+                                                        Align2::CENTER_CENTER,
+                                                        short,
+                                                        FontId::proportional(11.0),
+                                                        Color32::from_gray(210),
+                                                    );
+                                                    if c_resp.clicked() {
+                                                        self.selected_asset = Some(asset.clone());
+                                                        self.selected_sub_asset =
+                                                            Some(child_key.clone());
+                                                        self.status_text =
+                                                            format!("{asset} > {label}");
+                                                    }
+                                                    if let Some(payload) = &drag_payload {
+                                                        if c_resp.drag_started() || c_resp.dragged()
+                                                        {
+                                                            self.dragging_asset =
+                                                                Some(payload.clone());
+                                                        }
+                                                        if c_resp.hovered()
+                                                            && ui.input(|i| {
+                                                                i.pointer.primary_down()
+                                                                    && i.pointer.delta().length_sq()
+                                                                        > 0.0
+                                                            })
+                                                        {
+                                                            self.dragging_asset =
+                                                                Some(payload.clone());
+                                                        }
+                                                    }
+                                                    col += 1;
+                                                    if col % cols == 0 {
+                                                        ui.end_row();
+                                                    }
                                                 }
                                             }
                                         }
-                                    }
                                     });
 
-                                    if !hovered_any {
-                                        self.hover_roll_asset = None;
-                                    }
-
+                                if !hovered_any {
+                                    self.hover_roll_asset = None;
+                                }
                             });
                     },
                 );
 
-                    let footer_rect = Rect::from_min_max(
-                        egui::pos2(inner.left(), inner.bottom() - 18.0),
-                        inner.max,
-                    );
-                    ui.scope_builder(
+                let footer_rect =
+                    Rect::from_min_max(egui::pos2(inner.left(), inner.bottom() - 18.0), inner.max);
+                ui.scope_builder(
                     egui::UiBuilder::new()
                         .max_rect(footer_rect)
                         .layout(egui::Layout::left_to_right(egui::Align::Center)),
@@ -2194,7 +2391,12 @@ impl ProjectWindow {
                         let status = if self.status_text.is_empty() {
                             format!("{} {}", count, self.tr(language, "count"))
                         } else {
-                            format!("{} {} | {}", count, self.tr(language, "count"), self.status_text)
+                            format!(
+                                "{} {} | {}",
+                                count,
+                                self.tr(language, "count"),
+                                self.status_text
+                            )
                         };
                         ui.label(
                             egui::RichText::new(status)
@@ -2207,7 +2409,7 @@ impl ProjectWindow {
                             self.draw_icon_size_slider(ui, slider_rect);
                         });
                     },
-                    );
+                );
             });
 
         if resize_started {
@@ -2253,11 +2455,7 @@ impl ProjectWindow {
     }
 
     pub fn docked_bottom_height(&self) -> f32 {
-        if self.open {
-            self.panel_height
-        } else {
-            0.0
-        }
+        if self.open { self.panel_height } else { 0.0 }
     }
 }
 
@@ -2321,16 +2519,7 @@ fn rasterize_mesh_preview(preview: &MeshPreview, size: [usize; 2]) -> Vec<u8> {
         let y0 = (cy - a[1] * sy).round() as i32;
         let x1 = (cx + b[0] * sx).round() as i32;
         let y1 = (cy - b[1] * sy).round() as i32;
-        draw_line_rgba(
-            &mut rgba,
-            w,
-            h,
-            x0,
-            y0,
-            x1,
-            y1,
-            [145, 198, 236, 255],
-        );
+        draw_line_rgba(&mut rgba, w, h, x0, y0, x1, y1, [145, 198, 236, 255]);
     }
 
     // Outer border to improve readability on dark tiles.
@@ -2346,14 +2535,7 @@ fn rasterize_mesh_preview(preview: &MeshPreview, size: [usize; 2]) -> Vec<u8> {
     rgba
 }
 
-fn put_pixel_rgba(
-    rgba: &mut [u8],
-    w: usize,
-    h: usize,
-    x: i32,
-    y: i32,
-    color: [u8; 4],
-) {
+fn put_pixel_rgba(rgba: &mut [u8], w: usize, h: usize, x: i32, y: i32, color: [u8; 4]) {
     if x < 0 || y < 0 {
         return;
     }
@@ -2485,21 +2667,28 @@ fn write_dmesh_cache_preview(
     let cache = cache_file_path_preview(source)?;
     let mut f = File::create(cache).map_err(|e| e.to_string())?;
     f.write_all(b"DMSH1").map_err(|e| e.to_string())?;
-    f.write_all(&stamp.0.to_le_bytes()).map_err(|e| e.to_string())?;
-    f.write_all(&stamp.1.to_le_bytes()).map_err(|e| e.to_string())?;
+    f.write_all(&stamp.0.to_le_bytes())
+        .map_err(|e| e.to_string())?;
+    f.write_all(&stamp.1.to_le_bytes())
+        .map_err(|e| e.to_string())?;
     let vcount = mesh.0.len() as u32;
     let tcount = mesh.1.len() as u32;
-    f.write_all(&vcount.to_le_bytes()).map_err(|e| e.to_string())?;
-    f.write_all(&tcount.to_le_bytes()).map_err(|e| e.to_string())?;
+    f.write_all(&vcount.to_le_bytes())
+        .map_err(|e| e.to_string())?;
+    f.write_all(&tcount.to_le_bytes())
+        .map_err(|e| e.to_string())?;
     for v in &mesh.0 {
         f.write_all(&v.x.to_le_bytes()).map_err(|e| e.to_string())?;
         f.write_all(&v.y.to_le_bytes()).map_err(|e| e.to_string())?;
         f.write_all(&v.z.to_le_bytes()).map_err(|e| e.to_string())?;
     }
     for tri in &mesh.1 {
-        f.write_all(&tri[0].to_le_bytes()).map_err(|e| e.to_string())?;
-        f.write_all(&tri[1].to_le_bytes()).map_err(|e| e.to_string())?;
-        f.write_all(&tri[2].to_le_bytes()).map_err(|e| e.to_string())?;
+        f.write_all(&tri[0].to_le_bytes())
+            .map_err(|e| e.to_string())?;
+        f.write_all(&tri[1].to_le_bytes())
+            .map_err(|e| e.to_string())?;
+        f.write_all(&tri[2].to_le_bytes())
+            .map_err(|e| e.to_string())?;
     }
     Ok(())
 }
@@ -2665,7 +2854,10 @@ fn append_gltf_preview_node_meshes(
     }
 }
 
-fn load_gltf_buffers_mesh_only_preview(path: &Path, gltf: &gltf::Gltf) -> Result<Vec<Vec<u8>>, String> {
+fn load_gltf_buffers_mesh_only_preview(
+    path: &Path,
+    gltf: &gltf::Gltf,
+) -> Result<Vec<Vec<u8>>, String> {
     let base_dir = path.parent().unwrap_or_else(|| Path::new("."));
     let mut out = Vec::new();
     for buf in gltf.document.buffers() {
@@ -2727,7 +2919,11 @@ fn load_fbx_ascii_preview_mesh(path: &Path) -> Result<(Vec<glam::Vec3>, Vec<[u32
         let mut poly: Vec<u32> = Vec::new();
         for raw in poly_verts.raw_polygon_vertices() {
             let is_end = *raw < 0;
-            let local_idx = if is_end { (-raw - 1) as u32 } else { *raw as u32 };
+            let local_idx = if is_end {
+                (-raw - 1) as u32
+            } else {
+                *raw as u32
+            };
             if (local_idx as usize) < cps.len() {
                 poly.push(base + local_idx);
             }

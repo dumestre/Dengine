@@ -1,9 +1,9 @@
+use crate::EngineLanguage;
 use eframe::egui::{
     self, Align2, Color32, FontFamily, FontId, Id, Order, Pos2, Rect, Stroke, TextureHandle, Vec2,
 };
 use epaint::ColorImage;
 use std::collections::{HashMap, HashSet};
-use crate::EngineLanguage;
 
 #[derive(Clone, Copy)]
 pub enum Primitive3DKind {
@@ -71,10 +71,7 @@ enum HierarchyContainer {
 
 #[derive(Clone)]
 enum HierarchyDropTarget {
-    Row {
-        target: String,
-        after: bool,
-    },
+    Row { target: String, after: bool },
     Container(HierarchyContainer),
 }
 
@@ -145,10 +142,7 @@ impl HierarchyWindow {
             object_colors: HashMap::new(),
             object_visibility: HashMap::new(),
             deleted_objects: HashSet::new(),
-            top_level_order: vec![
-                "Directional Light".to_string(),
-                "Main Camera".to_string(),
-            ],
+            top_level_order: vec!["Directional Light".to_string(), "Main Camera".to_string()],
             player_order: vec![],
             armature_order: vec![],
             environment_order: vec![],
@@ -397,7 +391,9 @@ impl HierarchyWindow {
     }
 
     fn move_to_target(&mut self, dragged: &str, target: HierarchyDropTarget) {
-        let Some(from_container) = self.container_of(dragged) else { return };
+        let Some(from_container) = self.container_of(dragged) else {
+            return;
+        };
 
         match target {
             HierarchyDropTarget::Container(to_container) => {
@@ -414,14 +410,18 @@ impl HierarchyWindow {
                 }
             }
             HierarchyDropTarget::Row { target, after } => {
-                let Some(to_container) = self.container_of(&target) else { return };
+                let Some(to_container) = self.container_of(&target) else {
+                    return;
+                };
                 if !self.can_move_to_container(dragged, to_container) {
                     return;
                 }
 
                 self.remove_from_container(dragged, from_container);
                 let to_order = self.order_mut(to_container);
-                let Some(target_idx) = to_order.iter().position(|x| x == &target) else { return };
+                let Some(target_idx) = to_order.iter().position(|x| x == &target) else {
+                    return;
+                };
                 let insert_idx = if after { target_idx + 1 } else { target_idx };
                 let idx = insert_idx.min(to_order.len());
                 if !to_order.iter().any(|x| x == dragged) {
@@ -506,7 +506,10 @@ impl HierarchyWindow {
         let controls_w = 56.0;
         let left_rect = Rect::from_min_max(
             row_rect.min,
-            egui::pos2((row_rect.max.x - controls_w).max(row_rect.min.x), row_rect.max.y),
+            egui::pos2(
+                (row_rect.max.x - controls_w).max(row_rect.min.x),
+                row_rect.max.y,
+            ),
         );
         let mut row_resp = ui.allocate_response(egui::vec2(0.0, 0.0), egui::Sense::hover());
         ui.scope_builder(
@@ -593,7 +596,13 @@ impl HierarchyWindow {
         object_id: &str,
         label: String,
     ) {
-        let resp = self.draw_object_row(ui, indent, object_id, &label, self.selected_object == object_id);
+        let resp = self.draw_object_row(
+            ui,
+            indent,
+            object_id,
+            &label,
+            self.selected_object == object_id,
+        );
         self.apply_row_interactions(ui, &resp, object_id, &label);
     }
 
@@ -642,7 +651,9 @@ impl HierarchyWindow {
         }
         if let Some(dragging) = self.dragging_object.as_deref() {
             let hover_pos = ui.ctx().input(|i| i.pointer.hover_pos());
-            let hovering_row = hover_pos.map(|p| full_row_rect.contains(p)).unwrap_or(false);
+            let hovering_row = hover_pos
+                .map(|p| full_row_rect.contains(p))
+                .unwrap_or(false);
             if dragging != object_id && hovering_row {
                 let now = ui.ctx().input(|i| i.time);
                 let hover_y = ui
@@ -845,9 +856,10 @@ impl HierarchyWindow {
             }
         }
 
-        let pos = self
-            .window_pos
-            .unwrap_or(egui::pos2(right_snap_right - self.window_width, dock_rect.top()));
+        let pos = self.window_pos.unwrap_or(egui::pos2(
+            right_snap_right - self.window_width,
+            dock_rect.top(),
+        ));
 
         let mut header_drag_started = false;
         let mut header_drag_stopped = false;
@@ -1213,7 +1225,8 @@ impl HierarchyWindow {
                 });
         }
 
-        let delete_pressed = ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Delete))
+        let delete_pressed = ctx
+            .input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Delete))
             || ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Backspace));
         if delete_pressed && !ctx.wants_keyboard_input() {
             self.request_delete_selected();
@@ -1349,8 +1362,10 @@ impl HierarchyWindow {
             if let Some(pos) = ctx.input(|i| i.pointer.hover_pos()) {
                 let preview_rect =
                     Rect::from_min_size(pos + egui::vec2(12.0, 12.0), egui::vec2(124.0, 22.0));
-                let painter =
-                    ctx.layer_painter(egui::LayerId::new(Order::Tooltip, Id::new("hier_drag_preview")));
+                let painter = ctx.layer_painter(egui::LayerId::new(
+                    Order::Tooltip,
+                    Id::new("hier_drag_preview"),
+                ));
                 painter.rect_filled(
                     preview_rect,
                     4.0,
@@ -1388,5 +1403,4 @@ impl HierarchyWindow {
             0.0
         }
     }
-
 }
