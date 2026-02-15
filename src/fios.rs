@@ -548,7 +548,7 @@ impl FiosState {
             ids.push(output_id);
         }
         let group = self.create_module_group(
-            "Modulo Mapa de Teclas",
+            "Módulo Mapa de Teclas",
             egui::Color32::from_rgb(122, 88, 152),
             ids,
         );
@@ -557,14 +557,19 @@ impl FiosState {
     }
 
     fn render_module_card_details(
+        &mut self,
         ui: &mut egui::Ui,
-        module: &mut ModuleChainItem,
+        module_idx: usize,
         lang: EngineLanguage,
         bindings: &[egui::Key; ACTION_COUNT],
     ) {
-        match module.asset.to_ascii_lowercase().as_str() {
-            "mapa_teclas.animodule" => Self::render_module_key_map(ui, lang, bindings),
-            _ => Self::render_module_controls(ui, module, lang),
+        let asset = {
+            let module = &self.module_chain[module_idx];
+            module.asset.to_ascii_lowercase()
+        };
+        match asset.as_str() {
+            "mapa_teclas.animodule" => self.render_module_key_map(ui, lang, bindings),
+            _ => self.render_module_controls(ui, module_idx, lang),
         }
     }
 
@@ -593,10 +598,12 @@ impl FiosState {
     }
 
     fn render_module_controls(
+        &mut self,
         ui: &mut egui::Ui,
-        module: &mut ModuleChainItem,
+        module_idx: usize,
         lang: EngineLanguage,
     ) {
+        let module = &mut self.module_chain[module_idx];
         if module.controls.is_empty() {
             let empty_txt = match lang {
                 EngineLanguage::Pt => "Nenhum controle disponível para este módulo",
@@ -670,17 +677,26 @@ impl FiosState {
                             ui.add(
                                 egui::DragValue::new(&mut control.value)
                                     .speed(0.05)
-                                    .range(-10.0..=10.0),
+                                    .range(-10.0..=10.0)
+                                    .fixed_decimals(2)
+                                    .max_decimals(3)
+                                    .min_decimals(1),
                             );
                             ui.add(
                                 egui::DragValue::new(&mut control.param_a)
                                     .speed(0.05)
-                                    .range(-10.0..=10.0),
+                                    .range(-10.0..=10.0)
+                                    .fixed_decimals(2)
+                                    .max_decimals(3)
+                                    .min_decimals(1),
                             );
                             ui.add(
                                 egui::DragValue::new(&mut control.param_b)
                                     .speed(0.05)
-                                    .range(-10.0..=10.0),
+                                    .range(-10.0..=10.0)
+                                    .fixed_decimals(2)
+                                    .max_decimals(3)
+                                    .min_decimals(1),
                             );
                             ui.end_row();
                         }
@@ -689,6 +705,7 @@ impl FiosState {
     }
 
     fn render_module_key_map(
+        &mut self,
         ui: &mut egui::Ui,
         lang: EngineLanguage,
         bindings: &[egui::Key; ACTION_COUNT],
@@ -714,6 +731,20 @@ impl FiosState {
                 .color(egui::Color32::from_gray(180)),
         );
         ui.add_space(4.0);
+        
+        // Mostrar instruções detalhadas sobre como editar as teclas
+        let instructions = match lang {
+            EngineLanguage::Pt => "Clique no botão da tecla para editar diretamente:",
+            EngineLanguage::En => "Click the key button to edit directly:",
+            EngineLanguage::Es => "Haga clic en el botón de la tecla para editar directamente:",
+        };
+        ui.label(
+            egui::RichText::new(instructions)
+                .small()
+                .color(egui::Color32::from_rgb(200, 200, 200)),
+        );
+        ui.add_space(4.0);
+        
         let grid_id = ui.id().with("module_key_map_grid");
         egui::Grid::new(grid_id)
             .striped(true)
@@ -724,19 +755,33 @@ impl FiosState {
                     ui.label(egui::RichText::new(key_col).small().strong())
                 });
                 ui.end_row();
-                for action in FiosAction::ALL {
+                
+                for (i, action) in FiosAction::ALL.iter().enumerate() {
                     ui.label(
                         egui::RichText::new(action.label(lang))
                             .small()
                             .color(egui::Color32::from_gray(200)),
                     );
+                    
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        let key_name = Self::key_display_name(bindings[action.index()]);
-                        ui.label(
-                            egui::RichText::new(key_name)
-                                .small()
-                                .color(egui::Color32::from_gray(185)),
+                        let key_name = Self::key_display_name(bindings[i]);
+                        let button_text = key_name;
+                        
+                        let button_response = ui.add_sized(
+                            [120.0, 20.0],
+                            egui::Button::new(button_text)
+                                .stroke(egui::Stroke::new(1.0, egui::Color32::from_rgb(100, 150, 200)))
                         );
+                        
+                        if button_response.clicked() {
+                            // Iniciar captura de tecla diretamente no estado
+                            self.capture_index = Some(i);
+                            self.status = match lang {
+                                EngineLanguage::Pt => Some("Aguardando tecla...".to_string()),
+                                EngineLanguage::En => Some("Waiting for key...".to_string()),
+                                EngineLanguage::Es => Some("Esperando tecla...".to_string()),
+                            };
+                        }
                     });
                     ui.end_row();
                 }
@@ -2528,7 +2573,7 @@ impl FiosState {
         self.create_link(input_id, 0, output_id, 0);
         self.create_link(input_id, 1, output_id, 1);
         let group = self.create_module_group(
-            "Modulo Movimento Basico",
+            "Módulo Movimento Básico",
             egui::Color32::from_rgb(72, 132, 102),
             vec![input_id, output_id],
         );
@@ -2562,7 +2607,7 @@ impl FiosState {
         self.create_link(input_id, 0, output_id, 0);
         self.create_link(input_id, 1, output_id, 1);
         let group = self.create_module_group(
-            "Modulo Look Basico",
+            "Módulo Look Básico",
             egui::Color32::from_rgb(72, 108, 132),
             vec![input_id, output_id],
         );
@@ -2592,7 +2637,7 @@ impl FiosState {
             });
         self.create_link(input_id, 0, output_id, 0);
         let group = self.create_module_group(
-            "Modulo Acao Basico",
+            "Módulo Ação Básica",
             egui::Color32::from_rgb(158, 102, 62),
             vec![input_id, output_id],
         );
@@ -2692,7 +2737,7 @@ impl FiosState {
         self.create_link(mx, 0, output_id, 0);
         self.create_link(my, 0, output_id, 1);
         let group = self.create_module_group(
-            "Modulo Movimento Avancado",
+            "Módulo Movimento Avançado",
             egui::Color32::from_rgb(72, 132, 102),
             vec![input_id, output_id, dz_x, dz_y, sm_x, sm_y, kx, ky, mx, my],
         );
@@ -2792,7 +2837,7 @@ impl FiosState {
         self.create_link(myaw, 0, output_id, 0);
         self.create_link(mpitch, 0, output_id, 1);
         let group = self.create_module_group(
-            "Modulo Look Avancado",
+            "Módulo Look Avançado",
             egui::Color32::from_rgb(72, 108, 132),
             vec![
                 input_id, output_id, dz_yaw, dz_pitch, sm_yaw, sm_pitch, kyaw, kpitch, myaw, mpitch,
@@ -2895,7 +2940,7 @@ impl FiosState {
         self.create_link(m_play, 0, add_2, 1);
         self.create_link(add_2, 0, out_id, 0);
         let group = self.create_module_group(
-            "Modulo Animacao",
+            "Módulo Animação",
             egui::Color32::from_rgb(122, 88, 152),
             vec![
                 out_id, in_play, in_next, in_prev, c_play, c_next, c_prev, m_play, m_next, m_prev,
@@ -3067,38 +3112,38 @@ impl FiosState {
         ) = match lang {
             EngineLanguage::Pt => (
                 "Entrada Eixo",
-                "Entrada Acao",
+                "Entrada Ação",
                 "Constante",
                 "Somar",
                 "Subtrair",
                 "Multiplicar",
                 "Dividir",
-                "Maximo",
-                "Minimo",
-                "Portao",
+                "Máximo",
+                "Mínimo",
+                "Portão",
                 "Absoluto",
                 "Sinal",
                 "Limitar",
                 "Zona Morta",
                 "Inverter",
                 "Suavizar",
-                "Saida Mover",
-                "Saida Olhar",
-                "Saida Acao",
-                "Saida Cmd Anim",
+                "Saída Mover",
+                "Saída Olhar",
+                "Saída Ação",
+                "Saída Cmd Anim",
                 "Selecionado(s)",
                 "Nenhum",
                 "Renomear",
                 "Aplicar Nome",
                 "Add Bloco",
-                "Modulos",
-                "Locomocao Basica",
-                "Locomocao Avancada",
-                "Look Basico",
-                "Look Avancado",
-                "Acao 1 Basica",
-                "Pulo Basico",
-                "Acoes",
+                "Módulos",
+                "Locomoção Básica",
+                "Locomoção Avançada",
+                "Look Básico",
+                "Look Avançado",
+                "Ação 1 Básica",
+                "Pulo Básico",
+                "Ações",
                 "Excluir Selecionado",
             ),
             EngineLanguage::En => (
@@ -4564,86 +4609,118 @@ impl FiosState {
                 },
             );
         } else {
-            let card_frame = egui::Frame::new()
-                .fill(egui::Color32::from_rgb(28, 30, 34))
-                .stroke(egui::Stroke::new(1.0, egui::Color32::from_gray(80)))
-                .corner_radius(12.0);
-            let mut pending_remove: Option<(u32, Option<u32>)> = None;
+            // Layout horizontal com cards responsivos para os módulos
             egui::ScrollArea::vertical()
                 .auto_shrink([false, false])
                 .show(ui, |ui| {
                     ui.spacing_mut().item_spacing = egui::vec2(8.0, 8.0);
-                    let module_count = self.module_chain.len();
-                    for module_idx in 0..module_count {
-                        ui.add_space(6.0);
-                        card_frame.show(ui, |ui| {
-                            let width = ui.available_width();
-                            if width > 0.0 {
-                                ui.set_min_width(width.max(240.0));
-                            }
-                            ui.vertical(|ui| {
-                                let module = &mut self.module_chain[module_idx];
-                                ui.horizontal(|ui| {
-                                    ui.label(
-                                        egui::RichText::new(&module.name)
-                                            .strong()
-                                            .size(13.0),
-                                    );
-                                    ui.with_layout(
-                                        egui::Layout::right_to_left(egui::Align::Center),
-                                        |ui| {
-                                            let close_resp = ui.add(
-                                                egui::Button::new("✕")
-                                                    .frame(false)
-                                                    .min_size(egui::vec2(20.0, 20.0))
-                                                    .stroke(egui::Stroke::new(
-                                                        1.0,
-                                                        egui::Color32::from_gray(90),
-                                                    ))
-                                                    .fill(egui::Color32::TRANSPARENT),
+                    
+                    // Armazenar os IDs dos módulos a serem removidos
+                    let mut modules_to_remove = Vec::new();
+                    
+                    // Renderizar os módulos e coletar cliques de remoção
+                    ui.horizontal_wrapped(|ui| {
+                        ui.spacing_mut().item_spacing = egui::vec2(8.0, 8.0);
+                        
+                        for module_idx in 0..self.module_chain.len() {
+                            // Card para cada módulo
+                            egui::Frame::new()
+                                .fill(egui::Color32::from_rgb(35, 38, 42))
+                                .stroke(egui::Stroke::new(1.0, egui::Color32::from_rgb(60, 66, 70)))
+                                .corner_radius(8.0)
+                                .inner_margin(egui::Margin::same(10))
+                                .show(ui, |ui| {
+                                    ui.set_max_width(280.0); // Largura máxima para responsividade
+                                    {
+                                        // Obter referência mutável para este módulo específico
+                                        let module = &mut self.module_chain[module_idx];
+
+                                        // Cabeçalho do card com nome e checkbox
+                                        ui.horizontal(|ui| {
+                                            ui.label(
+                                                egui::RichText::new(&module.name)
+                                                    .strong()
+                                                    .size(12.0)
+                                                    .color(egui::Color32::from_gray(220)),
                                             );
-                                            if close_resp.clicked() {
-                                                pending_remove =
-                                                    Some((module.id, module.group_id));
-                                            }
-                                            let checkbox = ui.checkbox(&mut module.enabled, "");
-                                            checkbox.on_hover_text(match lang {
-                                                EngineLanguage::Pt => "Ativar módulo",
-                                                EngineLanguage::En => "Enable module",
-                                                EngineLanguage::Es => "Activar módulo",
+
+                                            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                                                let close_resp = ui.add(
+                                                    egui::Button::new("✕")
+                                                        .frame(false)
+                                                        .min_size(egui::vec2(18.0, 18.0))
+                                                        .stroke(egui::Stroke::new(
+                                                            1.0,
+                                                            egui::Color32::from_gray(90),
+                                                        ))
+                                                        .fill(egui::Color32::TRANSPARENT),
+                                                );
+                                                if close_resp.clicked() {
+                                                    // Armazenar o ID do módulo para remoção após a renderização
+                                                    modules_to_remove.push((module.id, module.group_id));
+                                                    return; // Sair desta iteração
+                                                }
+
+                                                let checkbox = ui.checkbox(&mut module.enabled, "");
+                                                checkbox.on_hover_text(match lang {
+                                                    EngineLanguage::Pt => "Ativar módulo",
+                                                    EngineLanguage::En => "Enable module",
+                                                    EngineLanguage::Es => "Activar módulo",
+                                                });
                                             });
-                                        },
-                                    );
-                                });
-                                ui.add_space(4.0);
-                                ui.separator();
-                                ui.add_space(6.0);
-                                if let Some(desc) = module.description.as_ref() {
-                                    ui.add(
-                                        egui::Label::new(
-                                            egui::RichText::new(desc)
+                                        });
+
+                                        ui.add_space(6.0);
+
+                                        // Separador fino
+                                        ui.separator();
+
+                                        ui.add_space(6.0);
+
+                                        // Descrição do módulo
+                                        if let Some(desc) = module.description.as_ref() {
+                                            ui.add(
+                                                egui::Label::new(
+                                                    egui::RichText::new(desc)
+                                                        .small()
+                                                        .color(egui::Color32::from_gray(160))
+                                                )
+                                                .wrap()
+                                            );
+                                            ui.add_space(4.0);
+                                        }
+
+                                        // Nome do asset
+                                        ui.label(
+                                            egui::RichText::new(&module.asset)
                                                 .small()
-                                                .color(egui::Color32::from_gray(160)),
-                                        )
-                                        .wrap(),
-                                    );
-                                    ui.add_space(4.0);
-                                }
-                                ui.add(
-                                    egui::Label::new(
-                                        egui::RichText::new(&module.asset)
-                                            .small()
-                                            .color(egui::Color32::from_gray(160)),
-                                    )
-                                    .wrap(),
-                                );
-                                Self::render_module_extra_info(ui, module);
-                                Self::render_module_card_details(ui, module, lang, &bindings);
-                            });
-                        });
-                        self.apply_module_controls(module_idx);
+                                                .color(egui::Color32::from_gray(140))
+                                        );
+
+                                        // Informações extras
+                                        Self::render_module_extra_info(ui, module);
+                                    }
+
+                                    // Detalhes do módulo (controles específicos)
+                                    ui.add_space(6.0);
+                                    self.render_module_card_details(ui, module_idx, lang, &bindings);
+                                });
+                        }
+                    });
+                    
+                    // Remover os módulos após a renderização
+                    for (id, group_id) in modules_to_remove {
+                        if let Some(group_id) = group_id {
+                            self.remove_module_group(group_id);
+                        }
+                        if let Some(pos) = self.module_chain.iter().position(|m| m.id == id) {
+                            self.module_chain.remove(pos);
+                        }
                     }
+                    
                     ui.add_space(8.0);
+                    
+                    // Botão para adicionar novo módulo
                     ui.horizontal(|ui| {
                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                             let resp = self.module_add_button(ui, add_module_txt);
@@ -4655,12 +4732,6 @@ impl FiosState {
                         });
                     });
                 });
-            if let Some((id, group_id)) = pending_remove {
-                if let Some(group_id) = group_id {
-                    self.remove_module_group(group_id);
-                }
-                self.module_chain.retain(|m| m.id != id);
-            }
         }
         ui.add_space(12.0);
 
