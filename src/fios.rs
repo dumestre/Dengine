@@ -567,34 +567,50 @@ impl FiosState {
             let module = &self.module_chain[module_idx];
             module.asset.to_ascii_lowercase()
         };
-        match asset.as_str() {
-            "mapa_teclas.animodule" => self.render_module_key_map(ui, lang, bindings),
-            _ => self.render_module_controls(ui, module_idx, lang),
-        }
+        let control_count = {
+            let module = &self.module_chain[module_idx];
+            module.controls.len()
+        };
+        let details_label = match lang {
+            EngineLanguage::Pt => format!("▸ Controles ({control_count})"),
+            EngineLanguage::En => format!("▸ Controls ({control_count})"),
+            EngineLanguage::Es => format!("▸ Controles ({control_count})"),
+        };
+        let header_id = ui.id().with(("mod_details_collapse", module_idx));
+        egui::CollapsingHeader::new(
+            egui::RichText::new(details_label)
+                .size(11.0)
+                .color(egui::Color32::from_gray(185)),
+        )
+        .id_salt(header_id)
+        .default_open(false)
+        .show(ui, |ui| {
+            ui.add_space(4.0);
+            match asset.as_str() {
+                "mapa_teclas.animodule" => self.render_module_key_map(ui, lang, bindings),
+                _ => self.render_module_controls(ui, module_idx, lang),
+            }
+        });
     }
 
     fn render_module_extra_info(ui: &mut egui::Ui, module: &ModuleChainItem) {
         if module.extra_info.is_empty() {
             return;
         }
-        ui.vertical(|ui| {
-            for (key, value) in &module.extra_info {
-                ui.horizontal(|ui| {
-                    ui.label(
-                        egui::RichText::new(format!("{key}:"))
-                            .small()
-                            .color(egui::Color32::from_gray(170)),
-                    );
-                    let info_label = egui::Label::new(
-                        egui::RichText::new(value)
-                            .small()
-                            .color(egui::Color32::from_gray(190)),
-                    )
-                    .wrap();
-                    ui.add(info_label);
-                });
-            }
-        });
+        for (key, value) in &module.extra_info {
+            ui.horizontal(|ui| {
+                ui.label(
+                    egui::RichText::new(format!("{key}:"))
+                        .size(10.0)
+                        .color(egui::Color32::from_gray(130)),
+                );
+                ui.label(
+                    egui::RichText::new(value)
+                        .size(10.0)
+                        .color(egui::Color32::from_gray(165)),
+                );
+            });
+        }
     }
 
     fn render_module_controls(
@@ -638,68 +654,75 @@ impl FiosState {
             EngineLanguage::Es => "Parámetro B",
         };
         let grid_id = format!("module_controls_grid_{}", module.id);
-        egui::ScrollArea::vertical()
-            .max_height(160.0)
-            .auto_shrink([false, true])
+        egui::Frame::new()
+            .fill(egui::Color32::from_rgb(22, 24, 28))
+            .stroke(egui::Stroke::new(1.0, egui::Color32::from_rgb(70, 76, 90)))
+            .corner_radius(8.0)
+            .inner_margin(egui::Margin::symmetric(10, 10))
             .show(ui, |ui| {
-                ui.spacing_mut().item_spacing = egui::vec2(10.0, 4.0);
-                egui::Grid::new(grid_id)
-                    .striped(true)
-                    .spacing((12.0, 6.0))
+                egui::ScrollArea::vertical()
+                    .max_height(160.0)
+                    .auto_shrink([false, true])
                     .show(ui, |ui| {
-                        ui.label(
-                            egui::RichText::new(label_txt)
-                                .strong()
-                                .color(egui::Color32::from_gray(220)),
-                        );
-                        ui.label(
-                            egui::RichText::new(value_txt)
-                                .strong()
-                                .color(egui::Color32::from_gray(220)),
-                        );
-                        ui.label(
-                            egui::RichText::new(param_a_txt)
-                                .strong()
-                                .color(egui::Color32::from_gray(220)),
-                        );
-                        ui.label(
-                            egui::RichText::new(param_b_txt)
-                                .strong()
-                                .color(egui::Color32::from_gray(220)),
-                        );
-                        ui.end_row();
-                        for control in &mut module.controls {
-                            ui.label(
-                                egui::RichText::new(&control.name)
-                                    .small()
-                                    .color(egui::Color32::from_gray(210)),
-                            );
-                            ui.add(
-                                egui::DragValue::new(&mut control.value)
-                                    .speed(0.05)
-                                    .range(-10.0..=10.0)
-                                    .fixed_decimals(2)
-                                    .max_decimals(3)
-                                    .min_decimals(1),
-                            );
-                            ui.add(
-                                egui::DragValue::new(&mut control.param_a)
-                                    .speed(0.05)
-                                    .range(-10.0..=10.0)
-                                    .fixed_decimals(2)
-                                    .max_decimals(3)
-                                    .min_decimals(1),
-                            );
-                            ui.add(
-                                egui::DragValue::new(&mut control.param_b)
-                                    .speed(0.05)
-                                    .range(-10.0..=10.0)
-                                    .fixed_decimals(2)
-                                    .max_decimals(3)
-                                    .min_decimals(1),
-                            );
-                            ui.end_row();
-                        }
+                        ui.spacing_mut().item_spacing = egui::vec2(10.0, 4.0);
+                        egui::Grid::new(grid_id)
+                            .striped(true)
+                            .spacing((12.0, 6.0))
+                            .show(ui, |ui| {
+                                ui.label(
+                                    egui::RichText::new(label_txt)
+                                        .strong()
+                                        .color(egui::Color32::from_gray(220)),
+                                );
+                                ui.label(
+                                    egui::RichText::new(value_txt)
+                                        .strong()
+                                        .color(egui::Color32::from_gray(220)),
+                                );
+                                ui.label(
+                                    egui::RichText::new(param_a_txt)
+                                        .strong()
+                                        .color(egui::Color32::from_gray(220)),
+                                );
+                                ui.label(
+                                    egui::RichText::new(param_b_txt)
+                                        .strong()
+                                        .color(egui::Color32::from_gray(220)),
+                                );
+                                ui.end_row();
+                                for control in &mut module.controls {
+                                    ui.label(
+                                        egui::RichText::new(&control.name)
+                                            .small()
+                                            .color(egui::Color32::from_gray(210)),
+                                    );
+                                    ui.add(
+                                        egui::DragValue::new(&mut control.value)
+                                            .speed(0.05)
+                                            .range(-10.0..=10.0)
+                                            .fixed_decimals(2)
+                                            .max_decimals(3)
+                                            .min_decimals(1),
+                                    );
+                                    ui.add(
+                                        egui::DragValue::new(&mut control.param_a)
+                                            .speed(0.05)
+                                            .range(-10.0..=10.0)
+                                            .fixed_decimals(2)
+                                            .max_decimals(3)
+                                            .min_decimals(1),
+                                    );
+                                    ui.add(
+                                        egui::DragValue::new(&mut control.param_b)
+                                            .speed(0.05)
+                                            .range(-10.0..=10.0)
+                                            .fixed_decimals(2)
+                                            .max_decimals(3)
+                                            .min_decimals(1),
+                                    );
+                                    ui.end_row();
+                                }
+                            });
                     });
             });
     }
@@ -725,68 +748,100 @@ impl FiosState {
             EngineLanguage::En => "Key",
             EngineLanguage::Es => "Tecla",
         };
-        ui.label(
-            egui::RichText::new(key_map_title)
-                .small()
-                .color(egui::Color32::from_gray(180)),
-        );
-        ui.add_space(4.0);
-        
-        // Mostrar instruções detalhadas sobre como editar as teclas
-        let instructions = match lang {
-            EngineLanguage::Pt => "Clique no botão da tecla para editar diretamente:",
-            EngineLanguage::En => "Click the key button to edit directly:",
-            EngineLanguage::Es => "Haga clic en el botón de la tecla para editar directamente:",
-        };
-        ui.label(
-            egui::RichText::new(instructions)
-                .small()
-                .color(egui::Color32::from_rgb(200, 200, 200)),
-        );
-        ui.add_space(4.0);
-        
-        let grid_id = ui.id().with("module_key_map_grid");
-        egui::Grid::new(grid_id)
-            .striped(true)
-            .spacing((12.0, 6.0))
+        egui::Frame::new()
+            .fill(egui::Color32::from_rgb(22, 24, 28))
+            .stroke(egui::Stroke::new(1.0, egui::Color32::from_rgb(70, 76, 90)))
+            .corner_radius(8.0)
+            .inner_margin(egui::Margin::same(10))
             .show(ui, |ui| {
-                ui.label(egui::RichText::new(action_col).small().strong());
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    ui.label(egui::RichText::new(key_col).small().strong())
-                });
-                ui.end_row();
-                
-                for (i, action) in FiosAction::ALL.iter().enumerate() {
-                    ui.label(
-                        egui::RichText::new(action.label(lang))
-                            .small()
-                            .color(egui::Color32::from_gray(200)),
-                    );
-                    
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        let key_name = Self::key_display_name(bindings[i]);
-                        let button_text = key_name;
-                        
-                        let button_response = ui.add_sized(
-                            [120.0, 20.0],
-                            egui::Button::new(button_text)
-                                .stroke(egui::Stroke::new(1.0, egui::Color32::from_rgb(100, 150, 200)))
+                ui.label(
+                    egui::RichText::new(key_map_title)
+                        .strong()
+                        .color(egui::Color32::from_gray(210)),
+                );
+                ui.add_space(4.0);
+
+                let instructions = match lang {
+                    EngineLanguage::Pt => "Clique no botão da tecla para editar diretamente:",
+                    EngineLanguage::En => "Click the key button to edit directly:",
+                    EngineLanguage::Es => {
+                        "Haga clic en el botón de la tecla para editar directamente:"
+                    }
+                };
+                ui.label(
+                    egui::RichText::new(instructions)
+                        .small()
+                        .color(egui::Color32::from_rgb(200, 200, 200)),
+                );
+                ui.add_space(6.0);
+
+                let grid_id = ui.id().with("module_key_map_grid");
+                egui::Grid::new(grid_id)
+                    .striped(true)
+                    .spacing((12.0, 6.0))
+                    .show(ui, |ui| {
+                        ui.label(
+                            egui::RichText::new(action_col)
+                                .small()
+                                .strong()
+                                .color(egui::Color32::from_gray(210)),
                         );
-                        
-                        if button_response.clicked() {
-                            // Iniciar captura de tecla diretamente no estado
-                            self.capture_index = Some(i);
-                            self.status = match lang {
-                                EngineLanguage::Pt => Some("Aguardando tecla...".to_string()),
-                                EngineLanguage::En => Some("Waiting for key...".to_string()),
-                                EngineLanguage::Es => Some("Esperando tecla...".to_string()),
-                            };
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            ui.label(
+                                egui::RichText::new(key_col)
+                                    .small()
+                                    .strong()
+                                    .color(egui::Color32::from_gray(210)),
+                            )
+                        });
+                        ui.end_row();
+
+                        for (i, action) in FiosAction::ALL.iter().enumerate() {
+                            ui.label(
+                                egui::RichText::new(action.label(lang))
+                                    .small()
+                                    .color(egui::Color32::from_gray(200)),
+                            );
+
+                            ui.with_layout(
+                                egui::Layout::right_to_left(egui::Align::Center),
+                                |ui| {
+                                    let key_name = Self::key_display_name(bindings[i]);
+                                    let button_text = key_name;
+
+                                    let button_response = ui.add_sized(
+                                        [120.0, 20.0],
+                                        egui::Button::new(button_text)
+                                            .stroke(egui::Stroke::new(
+                                                1.0,
+                                                egui::Color32::from_rgb(100, 150, 200),
+                                            ))
+                                            .fill(egui::Color32::from_rgba_unmultiplied(
+                                                50, 75, 110, 180,
+                                            )),
+                                    );
+
+                                    if button_response.clicked() {
+                                        self.capture_index = Some(i);
+                                        self.status = match lang {
+                                            EngineLanguage::Pt => {
+                                                Some("Aguardando tecla...".to_string())
+                                            }
+                                            EngineLanguage::En => {
+                                                Some("Waiting for key...".to_string())
+                                            }
+                                            EngineLanguage::Es => {
+                                                Some("Esperando tecla...".to_string())
+                                            }
+                                        };
+                                    }
+                                },
+                            );
+                            ui.end_row();
                         }
                     });
-                    ui.end_row();
-                }
             });
-        ui.add_space(4.0);
+        ui.add_space(6.0);
     }
 
     fn key_display_name(key: egui::Key) -> String {
@@ -863,19 +918,23 @@ impl FiosState {
             self.module_add_texture =
                 Self::load_png_texture(ui.ctx(), "src/assets/icons/addmodulo.png");
         }
+        let accent = egui::Color32::from_rgb(15, 232, 121);
         let button = if let Some(texture) = &self.module_add_texture {
-            let icon = egui::Image::new(texture).fit_to_exact_size(egui::vec2(18.0, 18.0));
-            egui::Button::image_and_text(icon, egui::RichText::new(label).strong())
+            let icon = egui::Image::new(texture).fit_to_exact_size(egui::vec2(14.0, 14.0));
+            egui::Button::image_and_text(
+                icon,
+                egui::RichText::new(label).size(11.5).strong().color(accent),
+            )
         } else {
-            egui::Button::new(egui::RichText::new(label).strong())
+            egui::Button::new(egui::RichText::new(label).size(11.5).strong().color(accent))
         }
-        .fill(egui::Color32::from_rgba_unmultiplied(255, 255, 255, 24))
+        .fill(egui::Color32::from_rgba_unmultiplied(15, 232, 121, 18))
         .stroke(egui::Stroke::new(
             1.0,
-            egui::Color32::from_rgba_unmultiplied(255, 255, 255, 72),
+            egui::Color32::from_rgba_unmultiplied(15, 232, 121, 60),
         ))
-        .corner_radius(18.0)
-        .min_size(egui::vec2(142.0, 36.0));
+        .corner_radius(16.0)
+        .min_size(egui::vec2(130.0, 30.0));
         ui.add(button)
     }
 
@@ -4533,28 +4592,44 @@ impl FiosState {
     }
 
     fn draw_controls_tab(&mut self, ui: &mut egui::Ui, lang: EngineLanguage) {
-        let card_fill = egui::Color32::from_rgb(29, 32, 34);
-        let card_stroke = egui::Stroke::new(1.0, egui::Color32::from_rgb(60, 66, 70));
         let accent = egui::Color32::from_rgb(15, 232, 121);
-        let controls_title = match lang {
-            EngineLanguage::Pt => "Módulos",
-            EngineLanguage::En => "Módulos",
-            EngineLanguage::Es => "Módulos",
-        };
+        let surface_0 = egui::Color32::from_rgb(22, 24, 28);
+        let surface_1 = egui::Color32::from_rgb(30, 33, 37);
+        let surface_2 = egui::Color32::from_rgb(38, 42, 48);
+        let border = egui::Color32::from_rgb(52, 58, 66);
+        let text_primary = egui::Color32::from_gray(235);
+        let text_secondary = egui::Color32::from_gray(170);
+        let text_muted = egui::Color32::from_gray(120);
+
         let enabled_txt = match lang {
             EngineLanguage::Pt => "Ativo",
             EngineLanguage::En => "Enabled",
             EngineLanguage::Es => "Activo",
         };
-        let modules_txt = match lang {
-            EngineLanguage::Pt => "Módulos",
-            EngineLanguage::En => "Modules",
-            EngineLanguage::Es => "Módulos",
+        let add_module_txt = match lang {
+            EngineLanguage::Pt => "+ Adicionar módulo",
+            EngineLanguage::En => "+ Add Module",
+            EngineLanguage::Es => "+ Agregar módulo",
+        };
+        let modules_section_txt = match lang {
+            EngineLanguage::Pt => "Módulos Ativos",
+            EngineLanguage::En => "Active Modules",
+            EngineLanguage::Es => "Módulos Activos",
+        };
+        let modes_section_txt = match lang {
+            EngineLanguage::Pt => "Modos de Controle",
+            EngineLanguage::En => "Control Modes",
+            EngineLanguage::Es => "Modos de Control",
+        };
+        let keys_section_txt = match lang {
+            EngineLanguage::Pt => "Mapa de Teclas",
+            EngineLanguage::En => "Key Map",
+            EngineLanguage::Es => "Mapa de Teclas",
         };
         let action_header = match lang {
-            EngineLanguage::Pt => "Acao",
+            EngineLanguage::Pt => "Ação",
             EngineLanguage::En => "Action",
-            EngineLanguage::Es => "Accion",
+            EngineLanguage::Es => "Acción",
         };
         let key_header = match lang {
             EngineLanguage::Pt => "Tecla",
@@ -4572,143 +4647,216 @@ impl FiosState {
             EngineLanguage::Es => "Guardar",
         };
         let restore_txt = match lang {
-            EngineLanguage::Pt => "Restaurar Padrao",
+            EngineLanguage::Pt => "Restaurar Padrão",
             EngineLanguage::En => "Restore Defaults",
             EngineLanguage::Es => "Restaurar Pred.",
         };
+
+        let bindings = self.bindings;
+
+        // ─── Status banner ───
         if let Some(status) = &self.status {
-            ui.label(egui::RichText::new(status).color(egui::Color32::from_gray(185)));
+            egui::Frame::new()
+                .fill(egui::Color32::from_rgba_unmultiplied(15, 232, 121, 12))
+                .corner_radius(6.0)
+                .inner_margin(egui::Margin::symmetric(10, 5))
+                .show(ui, |ui| {
+                    ui.label(egui::RichText::new(status).size(11.0).color(accent));
+                });
             ui.add_space(6.0);
         }
-        ui.horizontal(|ui| {
-            ui.label(
-                egui::RichText::new(controls_title)
-                    .strong()
-                    .color(egui::Color32::from_gray(225)),
-            );
-            ui.add_space(8.0);
-            ui.checkbox(&mut self.controls_enabled, enabled_txt);
-        });
-        ui.add_space(8.0);
-        let add_module_txt = match lang {
-            EngineLanguage::Pt => "+ Add Module",
-            EngineLanguage::En => "+ Add Module",
-            EngineLanguage::Es => "+ Add Module",
-        };
-        let bindings = self.bindings;
-        if self.module_chain.is_empty() {
-            ui.with_layout(
-                egui::Layout::centered_and_justified(egui::Direction::TopDown),
-                |ui| {
-                    let resp = self.module_add_button(ui, add_module_txt);
-                    egui::Popup::menu(&resp).show(|ui| {
-                        if self.module_menu_content(ui, lang) {
-                            ui.close_kind(UiKind::Menu);
-                        }
+
+        egui::ScrollArea::vertical()
+            .auto_shrink([false, false])
+            .show(ui, |ui| {
+                ui.spacing_mut().item_spacing = egui::vec2(0.0, 0.0);
+
+                // ═══════════════════════════════════════════
+                // SEÇÃO 1: Módulos Ativos
+                // ═══════════════════════════════════════════
+                ui.horizontal(|ui| {
+                    ui.label(
+                        egui::RichText::new(modules_section_txt)
+                            .size(13.0)
+                            .strong()
+                            .color(text_primary),
+                    );
+                    ui.add_space(8.0);
+                    ui.label(
+                        egui::RichText::new(format!("({})", self.module_chain.len()))
+                            .size(11.0)
+                            .color(text_muted),
+                    );
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        ui.checkbox(&mut self.controls_enabled, enabled_txt);
+                        ui.add_space(8.0);
+                        let resp = self.module_add_button(ui, add_module_txt);
+                        egui::Popup::menu(&resp).show(|ui| {
+                            if self.module_menu_content(ui, lang) {
+                                ui.close_kind(UiKind::Menu);
+                            }
+                        });
                     });
-                },
-            );
-        } else {
-            // Layout horizontal com cards responsivos para os módulos
-            egui::ScrollArea::vertical()
-                .auto_shrink([false, false])
-                .show(ui, |ui| {
-                    ui.spacing_mut().item_spacing = egui::vec2(8.0, 8.0);
-                    
-                    // Armazenar os IDs dos módulos a serem removidos
+                });
+
+                ui.add_space(8.0);
+
+                if self.module_chain.is_empty() {
+                    // Empty state
+                    egui::Frame::new()
+                        .fill(surface_0)
+                        .stroke(egui::Stroke::new(1.0, border))
+                        .corner_radius(10.0)
+                        .inner_margin(egui::Margin::symmetric(20, 28))
+                        .show(ui, |ui| {
+                            ui.vertical_centered(|ui| {
+                                ui.label(egui::RichText::new("🔌").size(28.0));
+                                ui.add_space(8.0);
+                                let empty_txt = match lang {
+                                    EngineLanguage::Pt => "Nenhum módulo adicionado",
+                                    EngineLanguage::En => "No modules added",
+                                    EngineLanguage::Es => "Ningún módulo agregado",
+                                };
+                                ui.label(
+                                    egui::RichText::new(empty_txt)
+                                        .size(12.0)
+                                        .color(text_secondary),
+                                );
+                                ui.add_space(6.0);
+                                let hint_txt = match lang {
+                                    EngineLanguage::Pt => {
+                                        "Clique em \"+ Adicionar módulo\" para começar"
+                                    }
+                                    EngineLanguage::En => "Click \"+ Add Module\" to get started",
+                                    EngineLanguage::Es => {
+                                        "Haga clic en \"+ Agregar módulo\" para comenzar"
+                                    }
+                                };
+                                ui.label(
+                                    egui::RichText::new(hint_txt).size(10.5).color(text_muted),
+                                );
+                                ui.add_space(12.0);
+                                let resp = self.module_add_button(ui, add_module_txt);
+                                egui::Popup::menu(&resp).show(|ui| {
+                                    if self.module_menu_content(ui, lang) {
+                                        ui.close_kind(UiKind::Menu);
+                                    }
+                                });
+                            });
+                        });
+                } else {
                     let mut modules_to_remove = Vec::new();
-                    
-                    // Renderizar os módulos e coletar cliques de remoção
-                    ui.horizontal_wrapped(|ui| {
-                        ui.spacing_mut().item_spacing = egui::vec2(8.0, 8.0);
-                        
-                        for module_idx in 0..self.module_chain.len() {
-                            // Card para cada módulo
-                            egui::Frame::new()
-                                .fill(egui::Color32::from_rgb(35, 38, 42))
-                                .stroke(egui::Stroke::new(1.0, egui::Color32::from_rgb(60, 66, 70)))
-                                .corner_radius(8.0)
-                                .inner_margin(egui::Margin::same(10))
-                                .show(ui, |ui| {
-                                    ui.set_max_width(280.0); // Largura máxima para responsividade
-                                    {
-                                        // Obter referência mutável para este módulo específico
+                    for module_idx in 0..self.module_chain.len() {
+                        let is_enabled = self.module_chain[module_idx].enabled;
+                        let dot_color = if is_enabled {
+                            accent
+                        } else {
+                            egui::Color32::from_gray(70)
+                        };
+                        let card_bg = if is_enabled { surface_1 } else { surface_0 };
+                        let card_border = if is_enabled {
+                            egui::Color32::from_rgba_unmultiplied(15, 232, 121, 35)
+                        } else {
+                            border
+                        };
+
+                        egui::Frame::new()
+                            .fill(card_bg)
+                            .stroke(egui::Stroke::new(1.0, card_border))
+                            .corner_radius(8.0)
+                            .inner_margin(egui::Margin::symmetric(12, 10))
+                            .show(ui, |ui| {
+                                ui.vertical(|ui| {
+                                    // Card header: dot + name + controls
+                                    ui.horizontal(|ui| {
+                                        // Status dot
+                                        let (dot_rect, _) = ui.allocate_exact_size(
+                                            egui::vec2(8.0, 8.0),
+                                            egui::Sense::hover(),
+                                        );
+                                        ui.painter().circle_filled(
+                                            dot_rect.center(),
+                                            3.5,
+                                            dot_color,
+                                        );
+
                                         let module = &mut self.module_chain[module_idx];
+                                        ui.label(
+                                            egui::RichText::new(&module.name)
+                                                .strong()
+                                                .size(12.5)
+                                                .color(text_primary),
+                                        );
 
-                                        // Cabeçalho do card com nome e checkbox
-                                        ui.horizontal(|ui| {
-                                            ui.label(
-                                                egui::RichText::new(&module.name)
-                                                    .strong()
-                                                    .size(12.0)
-                                                    .color(egui::Color32::from_gray(220)),
-                                            );
-
-                                            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                                        ui.with_layout(
+                                            egui::Layout::right_to_left(egui::Align::Center),
+                                            |ui| {
+                                                // Close button
                                                 let close_resp = ui.add(
-                                                    egui::Button::new("✕")
-                                                        .frame(false)
-                                                        .min_size(egui::vec2(18.0, 18.0))
-                                                        .stroke(egui::Stroke::new(
-                                                            1.0,
-                                                            egui::Color32::from_gray(90),
-                                                        ))
-                                                        .fill(egui::Color32::TRANSPARENT),
+                                                    egui::Button::new(
+                                                        egui::RichText::new("✕")
+                                                            .size(10.0)
+                                                            .color(egui::Color32::from_gray(100)),
+                                                    )
+                                                    .frame(false)
+                                                    .min_size(egui::vec2(20.0, 20.0))
+                                                    .fill(egui::Color32::TRANSPARENT),
                                                 );
                                                 if close_resp.clicked() {
-                                                    // Armazenar o ID do módulo para remoção após a renderização
-                                                    modules_to_remove.push((module.id, module.group_id));
-                                                    return; // Sair desta iteração
+                                                    modules_to_remove
+                                                        .push((module.id, module.group_id));
+                                                    return;
+                                                }
+                                                if close_resp.hovered() {
+                                                    ui.painter().circle_filled(
+                                                        close_resp.rect.center(),
+                                                        10.0,
+                                                        egui::Color32::from_rgba_unmultiplied(
+                                                            200, 60, 60, 40,
+                                                        ),
+                                                    );
                                                 }
 
+                                                // Enable checkbox
                                                 let checkbox = ui.checkbox(&mut module.enabled, "");
                                                 checkbox.on_hover_text(match lang {
                                                     EngineLanguage::Pt => "Ativar módulo",
                                                     EngineLanguage::En => "Enable module",
                                                     EngineLanguage::Es => "Activar módulo",
                                                 });
-                                            });
-                                        });
+                                            },
+                                        );
+                                    });
 
-                                        ui.add_space(6.0);
-
-                                        // Separador fino
-                                        ui.separator();
-
-                                        ui.add_space(6.0);
-
-                                        // Descrição do módulo
+                                    // Description + asset info (compact)
+                                    {
+                                        let module = &self.module_chain[module_idx];
                                         if let Some(desc) = module.description.as_ref() {
-                                            ui.add(
-                                                egui::Label::new(
-                                                    egui::RichText::new(desc)
-                                                        .small()
-                                                        .color(egui::Color32::from_gray(160))
-                                                )
-                                                .wrap()
+                                            ui.add_space(3.0);
+                                            ui.label(
+                                                egui::RichText::new(desc)
+                                                    .size(10.5)
+                                                    .color(text_secondary),
                                             );
-                                            ui.add_space(4.0);
                                         }
-
-                                        // Nome do asset
+                                        ui.add_space(2.0);
                                         ui.label(
                                             egui::RichText::new(&module.asset)
-                                                .small()
-                                                .color(egui::Color32::from_gray(140))
+                                                .size(9.5)
+                                                .color(text_muted),
                                         );
-
-                                        // Informações extras
                                         Self::render_module_extra_info(ui, module);
                                     }
 
-                                    // Detalhes do módulo (controles específicos)
-                                    ui.add_space(6.0);
-                                    self.render_module_card_details(ui, module_idx, lang, &bindings);
+                                    // Collapsible controls
+                                    ui.add_space(4.0);
+                                    self.render_module_card_details(
+                                        ui, module_idx, lang, &bindings,
+                                    );
                                 });
-                        }
-                    });
-                    
-                    // Remover os módulos após a renderização
+                            });
+                        ui.add_space(6.0);
+                    }
                     for (id, group_id) in modules_to_remove {
                         if let Some(group_id) = group_id {
                             self.remove_module_group(group_id);
@@ -4717,244 +4865,289 @@ impl FiosState {
                             self.module_chain.remove(pos);
                         }
                     }
-                    
-                    ui.add_space(8.0);
-                    
-                    // Botão para adicionar novo módulo
-                    ui.horizontal(|ui| {
-                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                            let resp = self.module_add_button(ui, add_module_txt);
-                            egui::Popup::menu(&resp).show(|ui| {
-                                if self.module_menu_content(ui, lang) {
-                                    ui.close_kind(UiKind::Menu);
+                }
+
+                ui.add_space(16.0);
+
+                // ═══════════════════════════════════════════
+                // SEÇÃO 2: Modos de Controle (Pills)
+                // ═══════════════════════════════════════════
+                ui.label(
+                    egui::RichText::new(modes_section_txt)
+                        .size(13.0)
+                        .strong()
+                        .color(text_primary),
+                );
+                ui.add_space(6.0);
+
+                let mut to_remove: Option<FiosControlMode> = None;
+                ui.horizontal_wrapped(|ui| {
+                    ui.spacing_mut().item_spacing = egui::vec2(6.0, 6.0);
+                    for mode in self.control_modes.clone() {
+                        let selected = self.active_control_mode == mode;
+                        let pill_fill = if selected {
+                            egui::Color32::from_rgba_unmultiplied(15, 232, 121, 30)
+                        } else {
+                            surface_2
+                        };
+                        let pill_stroke = if selected {
+                            egui::Stroke::new(1.0, accent)
+                        } else {
+                            egui::Stroke::new(1.0, border)
+                        };
+                        let label_color = if selected { accent } else { text_secondary };
+
+                        let label_txt = Self::control_mode_label(mode, lang);
+                        let btn_label = if self.control_modes.len() > 1 {
+                            format!("{label_txt}  ✕")
+                        } else {
+                            label_txt.to_string()
+                        };
+
+                        let pill = egui::Button::new(
+                            egui::RichText::new(&btn_label)
+                                .size(11.5)
+                                .color(label_color),
+                        )
+                        .fill(pill_fill)
+                        .stroke(pill_stroke)
+                        .corner_radius(14.0)
+                        .min_size(egui::vec2(0.0, 28.0));
+
+                        let resp = ui.add(pill);
+                        if resp.clicked() {
+                            self.active_control_mode = mode;
+                        }
+                        if resp.secondary_clicked() && self.control_modes.len() > 1 {
+                            to_remove = Some(mode);
+                        }
+                    }
+
+                    // Add mode button
+                    let add_btn = egui::Button::new(
+                        egui::RichText::new("+").size(13.0).color(text_secondary),
+                    )
+                    .fill(surface_2)
+                    .stroke(egui::Stroke::new(1.0, border))
+                    .corner_radius(14.0)
+                    .min_size(egui::vec2(28.0, 28.0));
+
+                    let add_resp = ui.add(add_btn);
+                    egui::Popup::menu(&add_resp)
+                        .id(ui.id().with("fios_add_control_mode_popup"))
+                        .show(|ui| {
+                            if !self.control_modes.contains(&FiosControlMode::Animation)
+                                && ui
+                                    .button(Self::control_mode_label(
+                                        FiosControlMode::Animation,
+                                        lang,
+                                    ))
+                                    .clicked()
+                            {
+                                self.control_modes.push(FiosControlMode::Animation);
+                                self.active_control_mode = FiosControlMode::Animation;
+                                ui.close();
+                            }
+                            if !self.control_modes.contains(&FiosControlMode::Movement)
+                                && ui
+                                    .button(Self::control_mode_label(
+                                        FiosControlMode::Movement,
+                                        lang,
+                                    ))
+                                    .clicked()
+                            {
+                                self.control_modes.push(FiosControlMode::Movement);
+                                self.active_control_mode = FiosControlMode::Movement;
+                                ui.close();
+                            }
+                            if ui.button("Controlador de animação").clicked() {
+                                self.refresh_anim_clip_cache(ui.ctx(), true);
+                                let created = self.seed_animation_controller_defaults();
+                                self.tab = FiosTab::Controller;
+                                self.anim_tab_status = Some(if created > 0 {
+                                    format!("Controlador criado com {created} estado(s) base")
+                                } else {
+                                    "Nenhum clipe encontrado para criar controlador base"
+                                        .to_string()
+                                });
+                                if !self.control_modes.contains(&FiosControlMode::Animation) {
+                                    self.control_modes.push(FiosControlMode::Animation);
+                                }
+                                self.active_control_mode = FiosControlMode::Animation;
+                                ui.close();
+                            }
+                        });
+                });
+                if let Some(mode) = to_remove {
+                    self.control_modes.retain(|m| *m != mode);
+                    if self.control_modes.is_empty() {
+                        self.control_modes.push(FiosControlMode::Movement);
+                    }
+                    if self.active_control_mode == mode {
+                        self.active_control_mode = self.control_modes[0];
+                    }
+                }
+
+                ui.add_space(16.0);
+
+                // ═══════════════════════════════════════════
+                // SEÇÃO 3: Mapa de Teclas
+                // ═══════════════════════════════════════════
+                ui.label(
+                    egui::RichText::new(keys_section_txt)
+                        .size(13.0)
+                        .strong()
+                        .color(text_primary),
+                );
+                ui.add_space(6.0);
+
+                egui::Frame::new()
+                    .fill(surface_0)
+                    .stroke(egui::Stroke::new(1.0, border))
+                    .corner_radius(8.0)
+                    .inner_margin(egui::Margin::symmetric(10, 8))
+                    .show(ui, |ui| {
+                        egui::Grid::new("fios_bind_grid")
+                            .num_columns(3)
+                            .spacing([8.0, 5.0])
+                            .striped(true)
+                            .show(ui, |ui| {
+                                ui.label(
+                                    egui::RichText::new(action_header)
+                                        .size(10.5)
+                                        .strong()
+                                        .color(text_secondary),
+                                );
+                                ui.label(
+                                    egui::RichText::new(key_header)
+                                        .size(10.5)
+                                        .strong()
+                                        .color(text_secondary),
+                                );
+                                ui.label(
+                                    egui::RichText::new(state_header)
+                                        .size(10.5)
+                                        .strong()
+                                        .color(text_secondary),
+                                );
+                                ui.end_row();
+
+                                for (i, action) in FiosAction::ALL.iter().enumerate() {
+                                    ui.label(
+                                        egui::RichText::new(
+                                            action.label_for_mode(lang, self.active_control_mode),
+                                        )
+                                        .size(11.0)
+                                        .color(text_primary),
+                                    );
+
+                                    let capture = self.capture_index == Some(i);
+                                    let key_text = if capture {
+                                        match lang {
+                                            EngineLanguage::Pt => "Pressione...",
+                                            EngineLanguage::En => "Press key...",
+                                            EngineLanguage::Es => "Presione...",
+                                        }
+                                    } else {
+                                        Self::key_to_string(self.bindings[i])
+                                    };
+
+                                    let key_btn = egui::Button::new(
+                                        egui::RichText::new(key_text).size(10.5).color(
+                                            if capture {
+                                                accent
+                                            } else {
+                                                egui::Color32::from_gray(200)
+                                            },
+                                        ),
+                                    )
+                                    .fill(if capture {
+                                        egui::Color32::from_rgba_unmultiplied(15, 232, 121, 18)
+                                    } else {
+                                        surface_2
+                                    })
+                                    .stroke(egui::Stroke::new(
+                                        1.0,
+                                        if capture { accent } else { border },
+                                    ))
+                                    .corner_radius(5.0);
+
+                                    if ui.add_sized([110.0, 22.0], key_btn).clicked() {
+                                        self.capture_index = Some(i);
+                                        self.status = Some(
+                                            match lang {
+                                                EngineLanguage::Pt => "Aguardando tecla...",
+                                                EngineLanguage::En => "Waiting for key...",
+                                                EngineLanguage::Es => "Esperando tecla...",
+                                            }
+                                            .to_string(),
+                                        );
+                                    }
+
+                                    let is_on = self.pressed[i];
+                                    let state_txt = if is_on { "●" } else { "○" };
+                                    ui.label(egui::RichText::new(state_txt).size(12.0).color(
+                                        if is_on {
+                                            accent
+                                        } else {
+                                            egui::Color32::from_gray(70)
+                                        },
+                                    ));
+                                    ui.end_row();
                                 }
                             });
-                        });
-                    });
-                });
-        }
-        ui.add_space(12.0);
 
-        let block_size = egui::vec2(172.0, 54.0);
-        let mut to_remove: Option<FiosControlMode> = None;
-        ui.horizontal(|ui| {
-            ui.label(egui::RichText::new(modules_txt).strong());
-            ui.add_space(6.0);
-            for mode in self.control_modes.clone() {
-                let selected = self.active_control_mode == mode;
-                let (rect, resp) = ui.allocate_exact_size(block_size, egui::Sense::click());
-                ui.painter().rect_filled(
-                    rect,
-                    7.0,
-                    if selected {
-                        egui::Color32::from_rgb(40, 66, 52)
-                    } else {
-                        egui::Color32::from_rgb(34, 38, 40)
-                    },
-                );
-                ui.painter().rect_stroke(
-                    rect,
-                    7.0,
-                    if selected {
-                        egui::Stroke::new(1.2, accent)
-                    } else {
-                        card_stroke
-                    },
-                    egui::StrokeKind::Outside,
-                );
-                ui.painter().text(
-                    rect.left_center() + egui::vec2(10.0, 0.0),
-                    egui::Align2::LEFT_CENTER,
-                    Self::control_mode_label(mode, lang),
-                    egui::FontId::proportional(12.0),
-                    egui::Color32::from_gray(230),
-                );
-                if self.control_modes.len() > 1 {
-                    let rm_rect = egui::Rect::from_center_size(
-                        egui::pos2(rect.right() - 14.0, rect.top() + 12.0),
-                        egui::vec2(16.0, 14.0),
-                    );
-                    let rm_resp = ui.interact(
-                        rm_rect,
-                        ui.id().with(("mod_rm", mode as u8)),
-                        egui::Sense::click(),
-                    );
-                    ui.painter()
-                        .rect_filled(rm_rect, 3.0, egui::Color32::from_rgb(148, 74, 74));
-                    ui.painter().text(
-                        rm_rect.center(),
-                        egui::Align2::CENTER_CENTER,
-                        "-",
-                        egui::FontId::proportional(11.0),
-                        egui::Color32::from_gray(245),
-                    );
-                    if rm_resp.clicked() {
-                        to_remove = Some(mode);
-                    }
-                }
-                if resp.clicked() {
-                    self.active_control_mode = mode;
-                }
-                ui.add_space(4.0);
-            }
-
-            // botão add externo, colado ao último bloco à direita
-            let add_btn = if let Some(icon) = &self.add_icon_texture {
-                egui::Button::image(
-                    egui::Image::new(icon).fit_to_exact_size(egui::vec2(12.0, 12.0)),
-                )
-                .fill(egui::Color32::from_rgba_unmultiplied(255, 255, 255, 34))
-                .stroke(egui::Stroke::new(
-                    1.0,
-                    egui::Color32::from_rgba_unmultiplied(255, 255, 255, 72),
-                ))
-                .corner_radius(128)
-                .min_size(egui::vec2(26.0, 26.0))
-            } else {
-                egui::Button::new("+")
-                    .fill(egui::Color32::from_rgba_unmultiplied(255, 255, 255, 34))
-                    .stroke(egui::Stroke::new(
-                        1.0,
-                        egui::Color32::from_rgba_unmultiplied(255, 255, 255, 72),
-                    ))
-                    .corner_radius(128)
-                    .min_size(egui::vec2(26.0, 26.0))
-            };
-            let add_resp = ui.add(add_btn);
-            egui::Popup::menu(&add_resp)
-                .id(ui.id().with("fios_add_control_mode_popup"))
-                .show(|ui| {
-                    if !self.control_modes.contains(&FiosControlMode::Animation)
-                        && ui
-                            .button(Self::control_mode_label(FiosControlMode::Animation, lang))
-                            .clicked()
-                    {
-                        self.control_modes.push(FiosControlMode::Animation);
-                        self.active_control_mode = FiosControlMode::Animation;
-                        ui.close();
-                    }
-                    if !self.control_modes.contains(&FiosControlMode::Movement)
-                        && ui
-                            .button(Self::control_mode_label(FiosControlMode::Movement, lang))
-                            .clicked()
-                    {
-                        self.control_modes.push(FiosControlMode::Movement);
-                        self.active_control_mode = FiosControlMode::Movement;
-                        ui.close();
-                    }
-                    if ui.button("Controlador de animação").clicked() {
-                        self.refresh_anim_clip_cache(ui.ctx(), true);
-                        let created = self.seed_animation_controller_defaults();
-                        self.tab = FiosTab::Controller;
-                        self.anim_tab_status = Some(if created > 0 {
-                            format!("Controlador criado com {created} estado(s) base")
-                        } else {
-                            "Nenhum clipe encontrado para criar controlador base".to_string()
-                        });
-                        if !self.control_modes.contains(&FiosControlMode::Animation) {
-                            self.control_modes.push(FiosControlMode::Animation);
-                        }
-                        self.active_control_mode = FiosControlMode::Animation;
-                        ui.close();
-                    }
-                });
-        });
-        if let Some(mode) = to_remove {
-            self.control_modes.retain(|m| *m != mode);
-            if self.control_modes.is_empty() {
-                self.control_modes.push(FiosControlMode::Movement);
-            }
-            if self.active_control_mode == mode {
-                self.active_control_mode = self.control_modes[0];
-            }
-        }
-
-        ui.add_space(8.0);
-        egui::Frame::new()
-            .fill(card_fill)
-            .stroke(card_stroke)
-            .corner_radius(8)
-            .inner_margin(egui::Margin::same(10))
-            .show(ui, |ui| {
-                egui::Grid::new("fios_bind_grid")
-                    .num_columns(3)
-                    .spacing([10.0, 8.0])
-                    .striped(true)
-                    .show(ui, |ui| {
-                        ui.strong(action_header);
-                        ui.strong(key_header);
-                        ui.strong(state_header);
-                        ui.end_row();
-
-                        for (i, action) in FiosAction::ALL.iter().enumerate() {
-                            ui.label(action.label_for_mode(lang, self.active_control_mode));
-                            let capture = self.capture_index == Some(i);
-                            let key_text = if capture {
-                                match lang {
-                                    EngineLanguage::Pt => "Pressione...",
-                                    EngineLanguage::En => "Press key...",
-                                    EngineLanguage::Es => "Presione...",
-                                }
-                            } else {
-                                Self::key_to_string(self.bindings[i])
-                            };
-                            if ui
-                                .add_sized([140.0, 24.0], egui::Button::new(key_text))
-                                .clicked()
-                            {
-                                self.capture_index = Some(i);
-                                self.status = Some(
-                                    match lang {
-                                        EngineLanguage::Pt => "Aguardando tecla...",
-                                        EngineLanguage::En => "Waiting for key...",
-                                        EngineLanguage::Es => "Esperando tecla...",
-                                    }
-                                    .to_string(),
-                                );
+                        ui.add_space(8.0);
+                        ui.horizontal(|ui| {
+                            let restore_btn = egui::Button::new(
+                                egui::RichText::new(restore_txt)
+                                    .size(10.5)
+                                    .color(text_secondary),
+                            )
+                            .fill(surface_2)
+                            .stroke(egui::Stroke::new(1.0, border))
+                            .corner_radius(6.0);
+                            if ui.add(restore_btn).clicked() {
+                                self.bindings = Self::default_bindings();
+                                self.status = match self.save_to_disk() {
+                                    Ok(()) => Some(
+                                        match lang {
+                                            EngineLanguage::Pt => "Padrão restaurado",
+                                            EngineLanguage::En => "Defaults restored",
+                                            EngineLanguage::Es => "Pred. restaurado",
+                                        }
+                                        .to_string(),
+                                    ),
+                                    Err(err) => Some(format!("Falha ao salvar: {err}")),
+                                };
                             }
-                            let state = if self.pressed[i] { "ON" } else { "OFF" };
-                            ui.colored_label(
-                                if self.pressed[i] {
-                                    accent
-                                } else {
-                                    egui::Color32::from_gray(150)
-                                },
-                                state,
-                            );
-                            ui.end_row();
-                        }
+
+                            let save_btn = egui::Button::new(
+                                egui::RichText::new(save_txt).size(10.5).color(accent),
+                            )
+                            .fill(egui::Color32::from_rgba_unmultiplied(15, 232, 121, 18))
+                            .stroke(egui::Stroke::new(
+                                1.0,
+                                egui::Color32::from_rgba_unmultiplied(15, 232, 121, 60),
+                            ))
+                            .corner_radius(6.0);
+                            if ui.add(save_btn).clicked() {
+                                self.status = match self.save_to_disk() {
+                                    Ok(()) => Some(
+                                        match lang {
+                                            EngineLanguage::Pt => "Controles salvos",
+                                            EngineLanguage::En => "Controls saved",
+                                            EngineLanguage::Es => "Controles guardados",
+                                        }
+                                        .to_string(),
+                                    ),
+                                    Err(err) => Some(format!("Falha ao salvar: {err}")),
+                                };
+                            }
+                        });
                     });
 
-                ui.add_space(8.0);
-                ui.horizontal(|ui| {
-                    if ui.button(restore_txt).clicked() {
-                        self.bindings = Self::default_bindings();
-                        self.status = match self.save_to_disk() {
-                            Ok(()) => Some(
-                                match lang {
-                                    EngineLanguage::Pt => "Padrao restaurado",
-                                    EngineLanguage::En => "Defaults restored",
-                                    EngineLanguage::Es => "Pred. restaurado",
-                                }
-                                .to_string(),
-                            ),
-                            Err(err) => Some(format!("Falha ao salvar: {err}")),
-                        };
-                    }
-                    if ui.button(save_txt).clicked() {
-                        self.status = match self.save_to_disk() {
-                            Ok(()) => Some(
-                                match lang {
-                                    EngineLanguage::Pt => "Controles salvos",
-                                    EngineLanguage::En => "Controls saved",
-                                    EngineLanguage::Es => "Controles guardados",
-                                }
-                                .to_string(),
-                            ),
-                            Err(err) => Some(format!("Falha ao salvar: {err}")),
-                        };
-                    }
-                });
+                ui.add_space(12.0);
             });
     }
 
