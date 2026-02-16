@@ -356,12 +356,22 @@ struct AnimControllerNode {
     name: String,
     clip_ref: String,
     pos: egui::Pos2,
+    speed: f32,
 }
 
 #[derive(Clone, Copy)]
 struct AnimControllerLink {
     from: u32,
     to: u32,
+    blend_time: f32,
+    transition_type: TransitionType,
+}
+
+#[derive(Clone, Copy, PartialEq)]
+enum TransitionType {
+    Immediate,
+    CrossFade,
+    Freeze,
 }
 
 pub struct FiosState {
@@ -414,6 +424,8 @@ pub struct FiosState {
     anim_drag_clip: Option<String>,
     anim_connect_from: Option<u32>,
     anim_tab_status: Option<String>,
+    anim_selected_nodes: HashSet<u32>,
+    anim_selected_link: Option<usize>,
     anim_clip_cache: Vec<String>,
     anim_clip_cache_dirty: bool,
     anim_clip_cache_next_scan: f64,
@@ -1254,7 +1266,12 @@ impl FiosState {
             let from = w[0];
             let to = w[1];
             if !self.anim_links.iter().any(|l| l.from == from && l.to == to) {
-                self.anim_links.push(AnimControllerLink { from, to });
+                self.anim_links.push(AnimControllerLink {
+                    from,
+                    to,
+                    blend_time: 0.3,
+                    transition_type: TransitionType::CrossFade,
+                });
             }
         }
         created_ids.len()
@@ -1269,6 +1286,7 @@ impl FiosState {
             name,
             clip_ref,
             pos,
+            speed: 1.0,
         });
         let clip = self
             .anim_nodes
@@ -1331,6 +1349,8 @@ impl FiosState {
             anim_drag_clip: None,
             anim_connect_from: None,
             anim_tab_status: None,
+            anim_selected_nodes: HashSet::new(),
+            anim_selected_link: None,
             anim_clip_cache: Vec::new(),
             anim_clip_cache_dirty: true,
             anim_clip_cache_next_scan: 0.0,
@@ -5210,14 +5230,21 @@ impl FiosState {
         ui.add_space(6.0);
 
         let area = ui.available_rect_before_wrap();
-        if area.width() < 160.0 || area.height() < 120.0 {
+        if area.width() < 300.0 || area.height() < 120.0 {
             return;
         }
-        let left_w = 260.0_f32.min((area.width() * 0.35).max(190.0));
+
+        let left_w = 220.0_f32.min((area.width() * 0.22).max(180.0));
+        let right_w = 200.0_f32.min((area.width() * 0.2).max(160.0));
+        let canvas_rect = egui::Rect::from_min_size(
+            egui::pos2(area.left() + left_w + 6.0, area.top()),
+            egui::vec2(area.width() - left_w - right_w - 12.0, area.height()),
+        );
         let left_rect =
             egui::Rect::from_min_max(area.min, egui::pos2(area.left() + left_w, area.bottom()));
-        let canvas_rect =
-            egui::Rect::from_min_max(egui::pos2(left_rect.right() + 8.0, area.top()), area.max);
+        let right_rect =
+            egui::Rect::from_min_max(egui::pos2(canvas_rect.right() + 6.0, area.top()), area.max);
+
         let canvas_painter = ui.painter().with_clip_rect(canvas_rect);
 
         ui.painter()
@@ -5228,6 +5255,16 @@ impl FiosState {
             egui::Stroke::new(1.0, egui::Color32::from_rgb(58, 64, 72)),
             egui::StrokeKind::Outside,
         );
+
+        ui.painter()
+            .rect_filled(right_rect, 6.0, egui::Color32::from_rgb(24, 26, 30));
+        ui.painter().rect_stroke(
+            right_rect,
+            6.0,
+            egui::Stroke::new(1.0, egui::Color32::from_rgb(58, 64, 72)),
+            egui::StrokeKind::Outside,
+        );
+
         canvas_painter.rect_filled(canvas_rect, 6.0, egui::Color32::from_rgb(19, 21, 25));
         canvas_painter.rect_stroke(
             canvas_rect,
@@ -5249,25 +5286,51 @@ impl FiosState {
                             .size(11.0)
                             .color(egui::Color32::from_gray(170)),
                     );
+                    ui.add_space(4.0);
+                    if ui.button("Atualizar").clicked() {
+                        self.anim_clip_cache_dirty = true;
+                        self.refresh_anim_clip_cache(ui.ctx(), true);
+                    }
                 }
                 let clip_list = self.anim_clip_cache.clone();
                 egui::ScrollArea::vertical()
                     .id_salt("clip_library_scroll")
+                    .max_height(150.0)
                     .show(ui, |ui| {
                         for clip in &clip_list {
-                            let resp = ui
-                                .add_sized(
-                                    [ui.available_width(), 22.0],
-                                    egui::Button::new(egui::RichText::new(clip).size(11.0))
-                                        .fill(egui::Color32::from_rgb(36, 40, 46)),
-                                )
-                                .on_hover_text("Arraste para o canvas");
-                            if resp.drag_started() {
-                                self.anim_drag_clip = Some(clip.clone());
-                            }
-                            if resp.double_clicked() {
-                                self.add_anim_controller_node(clip.clone(), egui::pos2(24.0, 24.0));
-                            }
+                            ui.push_id(clip.as_str(), |ui| {
+                                let resp = ui
+                                    .add_sized(
+                                        [ui.available_width(), 22.0],
+                                        egui::Button::new(
+                                            egui::RichText::new(
+                                                clip.split("::").last().unwrap_or(clip.as_str()),
+                                            )
+                                            .size(10.5),
+                                        )
+                                        .fill(egui::Color32::from_rgb(36, 40, 46))
+                                        .stroke(
+                                            egui::Stroke::new(
+                                                1.0,
+                                                egui::Color32::from_rgb(52, 58, 66),
+                                            ),
+                                        ),
+                                    )
+                                    .on_hover_text(clip.as_str());
+                                if resp.drag_started() {
+                                    self.anim_drag_clip = Some(clip.clone());
+                                }
+                                if resp.double_clicked() {
+                                    let pos = egui::pos2(
+                                        20.0 + (self.anim_nodes.len() as f32 * 30.0)
+                                            % (canvas_rect.width() - 180.0),
+                                        20.0 + (self.anim_nodes.len() as f32 * 20.0)
+                                            % (canvas_rect.height() - 60.0),
+                                    );
+                                    self.add_anim_controller_node(clip.clone(), pos);
+                                    self.anim_tab_status = Some("Estado criado".to_string());
+                                }
+                            });
                         }
                     });
             },
@@ -5297,16 +5360,33 @@ impl FiosState {
             gy += grid_step;
         }
 
-        for link in &self.anim_links {
+        for (link_idx, link) in self.anim_links.iter().enumerate() {
             let from = self.anim_nodes.iter().find(|n| n.id == link.from);
             let to = self.anim_nodes.iter().find(|n| n.id == link.to);
             if let (Some(a), Some(b)) = (from, to) {
                 let p0 = canvas_rect.min + a.pos.to_vec2() + egui::vec2(170.0, 24.0);
                 let p1 = canvas_rect.min + b.pos.to_vec2() + egui::vec2(0.0, 24.0);
-                canvas_painter.line_segment(
-                    [p0, p1],
-                    egui::Stroke::new(2.0, egui::Color32::from_rgb(110, 182, 232)),
+
+                let is_selected = self.anim_selected_link == Some(link_idx);
+                let link_color = if is_selected {
+                    egui::Color32::from_rgb(15, 232, 121)
+                } else {
+                    egui::Color32::from_rgb(110, 182, 232)
+                };
+
+                canvas_painter.line_segment([p0, p1], egui::Stroke::new(2.5, link_color));
+
+                let mid = egui::pos2((p0.x + p1.x) / 2.0, (p0.y + p1.y) / 2.0);
+                let hitbox = egui::Rect::from_center_size(mid, egui::vec2(20.0, 20.0));
+                let link_hit = ui.interact(
+                    hitbox,
+                    ui.id().with(("anim_link", link_idx)),
+                    egui::Sense::click(),
                 );
+                if link_hit.clicked() {
+                    self.anim_selected_nodes.clear();
+                    self.anim_selected_link = Some(link_idx);
+                }
             }
         }
 
@@ -5351,6 +5431,19 @@ impl FiosState {
             if body.dragged() {
                 self.anim_nodes[i].pos += body.drag_delta();
             }
+            if body.clicked() {
+                if ui.input(|i| i.modifiers.shift) {
+                    if self.anim_selected_nodes.contains(&id) {
+                        self.anim_selected_nodes.remove(&id);
+                    } else {
+                        self.anim_selected_nodes.insert(id);
+                    }
+                } else {
+                    self.anim_selected_nodes.clear();
+                    self.anim_selected_nodes.insert(id);
+                    self.anim_selected_link = None;
+                }
+            }
 
             let in_p = rect.left_center();
             let out_p = rect.right_center();
@@ -5372,7 +5465,12 @@ impl FiosState {
             if in_r.clicked() {
                 if let Some(from) = self.anim_connect_from.take() {
                     if from != id && !self.anim_links.iter().any(|l| l.from == from && l.to == id) {
-                        self.anim_links.push(AnimControllerLink { from, to: id });
+                        self.anim_links.push(AnimControllerLink {
+                            from,
+                            to: id,
+                            blend_time: 0.3,
+                            transition_type: TransitionType::CrossFade,
+                        });
                     }
                 }
             }
@@ -5437,6 +5535,152 @@ impl FiosState {
                 egui::Color32::from_gray(172),
             );
         }
+
+        ui.scope_builder(
+            egui::UiBuilder::new()
+                .max_rect(right_rect.shrink(10.0))
+                .layout(egui::Layout::top_down(egui::Align::Min)),
+            |ui| {
+                let props_txt = match lang {
+                    EngineLanguage::Pt => "Propriedades",
+                    EngineLanguage::En => "Properties",
+                    EngineLanguage::Es => "Propiedades",
+                };
+                ui.label(egui::RichText::new(props_txt).strong().size(12.0));
+                ui.add_space(8.0);
+
+                let selected_count = self.anim_selected_nodes.len();
+                let selected_link = self.anim_selected_link;
+
+                if selected_count == 0 && selected_link.is_none() {
+                    ui.label(
+                        egui::RichText::new("Selecione um nó ou conexão")
+                            .size(11.0)
+                            .color(egui::Color32::from_gray(120)),
+                    );
+                } else if selected_count == 1 {
+                    if let Some(&node_id) = self.anim_selected_nodes.iter().next() {
+                        if let Some(node_idx) = self.anim_nodes.iter().position(|n| n.id == node_id)
+                        {
+                            let node = &mut self.anim_nodes[node_idx];
+
+                            let name_txt = match lang {
+                                EngineLanguage::Pt => "Nome",
+                                EngineLanguage::En => "Name",
+                                EngineLanguage::Es => "Nombre",
+                            };
+                            ui.label(
+                                egui::RichText::new(name_txt)
+                                    .size(10.0)
+                                    .color(egui::Color32::from_gray(170)),
+                            );
+                            ui.text_edit_singleline(&mut node.name);
+
+                            ui.add_space(6.0);
+                            let clip_txt = match lang {
+                                EngineLanguage::Pt => "Clipe",
+                                EngineLanguage::En => "Clip",
+                                EngineLanguage::Es => "Clip",
+                            };
+                            ui.label(
+                                egui::RichText::new(clip_txt)
+                                    .size(10.0)
+                                    .color(egui::Color32::from_gray(170)),
+                            );
+                            ui.text_edit_singleline(&mut node.clip_ref);
+
+                            ui.add_space(6.0);
+                            let speed_txt = match lang {
+                                EngineLanguage::Pt => "Velocidade",
+                                EngineLanguage::En => "Speed",
+                                EngineLanguage::Es => "Velocidad",
+                            };
+                            ui.label(
+                                egui::RichText::new(speed_txt)
+                                    .size(10.0)
+                                    .color(egui::Color32::from_gray(170)),
+                            );
+                            ui.add(egui::Slider::new(&mut node.speed, 0.1..=3.0).text("Speed"));
+
+                            ui.add_space(10.0);
+                            let delete_txt = match lang {
+                                EngineLanguage::Pt => "Deletar",
+                                EngineLanguage::En => "Delete",
+                                EngineLanguage::Es => "Eliminar",
+                            };
+                            if ui.button(delete_txt).clicked() {
+                                self.anim_links
+                                    .retain(|l| l.from != node_id && l.to != node_id);
+                                self.anim_nodes.retain(|n| n.id != node_id);
+                                self.anim_selected_nodes.clear();
+                                self.anim_tab_status = Some("Estado deletado".to_string());
+                            }
+                        }
+                    }
+                } else if selected_count > 1 {
+                    ui.label(
+                        egui::RichText::new(format!("{} nós selecionados", selected_count))
+                            .size(11.0)
+                            .color(egui::Color32::from_gray(170)),
+                    );
+                } else if let Some(link_idx) = selected_link {
+                    if let Some(_link) = self.anim_links.get(link_idx) {
+                        let trans_txt = match lang {
+                            EngineLanguage::Pt => "Tipo de Transição",
+                            EngineLanguage::En => "Transition Type",
+                            EngineLanguage::Es => "Tipo de Transición",
+                        };
+                        ui.label(
+                            egui::RichText::new(trans_txt)
+                                .size(10.0)
+                                .color(egui::Color32::from_gray(170)),
+                        );
+
+                        let link_mut = &mut self.anim_links[link_idx];
+                        let trans_options = ["CrossFade", "Immediate", "Freeze"];
+                        let current_idx = match link_mut.transition_type {
+                            TransitionType::CrossFade => 0,
+                            TransitionType::Immediate => 1,
+                            TransitionType::Freeze => 2,
+                        };
+
+                        egui::ComboBox::from_id_salt("trans_type_combo")
+                            .selected_text(trans_options[current_idx])
+                            .show_ui(ui, |ui| {
+                                for (i, opt) in trans_options.iter().enumerate() {
+                                    if ui.selectable_label(current_idx == i, *opt).clicked() {
+                                        link_mut.transition_type = match i {
+                                            0 => TransitionType::CrossFade,
+                                            1 => TransitionType::Immediate,
+                                            _ => TransitionType::Freeze,
+                                        };
+                                    }
+                                }
+                            });
+
+                        ui.add_space(6.0);
+                        let blend_txt = match lang {
+                            EngineLanguage::Pt => "Tempo de Blend",
+                            EngineLanguage::En => "Blend Time",
+                            EngineLanguage::Es => "Tiempo de Blend",
+                        };
+                        ui.label(
+                            egui::RichText::new(blend_txt)
+                                .size(10.0)
+                                .color(egui::Color32::from_gray(170)),
+                        );
+                        ui.add(egui::Slider::new(&mut link_mut.blend_time, 0.0..=2.0).text("s"));
+
+                        ui.add_space(10.0);
+                        if ui.button("Remover Conexão").clicked() {
+                            self.anim_links.remove(link_idx);
+                            self.anim_selected_link = None;
+                            self.anim_tab_status = Some("Conexão removida".to_string());
+                        }
+                    }
+                }
+            },
+        );
     }
 
     fn draw_tabs_content(&mut self, ui: &mut egui::Ui, ctx: &egui::Context, lang: EngineLanguage) {
