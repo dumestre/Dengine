@@ -1,5 +1,5 @@
-use std::collections::HashSet;
 use std::collections::hash_map::DefaultHasher;
+use std::collections::HashSet;
 use std::fs::{self, File};
 use std::hash::{Hash, Hasher};
 use std::io::{Read, Write};
@@ -1781,7 +1781,7 @@ fn read_vmesh_cache(source: &Path, stamp: (u64, u64)) -> Result<Option<ViewportM
 
 fn load_fbx_ascii_mesh(path: &Path) -> Result<MeshData, String> {
     use fbxcel_dom::any::AnyDocument;
-    use fbxcel_dom::v7400::object::{TypedObjectHandle, geometry::TypedGeometryHandle};
+    use fbxcel_dom::v7400::object::{geometry::TypedGeometryHandle, TypedObjectHandle};
     use std::io::BufReader;
 
     let file = std::fs::File::open(path).map_err(|e| e.to_string())?;

@@ -3,9 +3,9 @@ use std::fs::{self, File};
 use std::hash::{Hash, Hasher};
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender};
+use std::sync::Arc;
 
 use eframe::egui::{
     self, Align2, Color32, FontFamily, FontId, Id, Order, Rect, Sense, Stroke, TextureHandle, Vec2,
@@ -960,6 +960,8 @@ impl ProjectWindow {
         let Some(meshes_dir) = Self::folder_path_from_id("Meshes") else {
             return out;
         };
+
+        // Get clips from FBX files in Meshes folder
         for asset in self.fbx_assets_in_meshes_folder() {
             let path = meshes_dir.join(&asset);
             if !path.is_file() {
@@ -970,6 +972,25 @@ impl ProjectWindow {
                 out.push(format!("{asset}::{clip}"));
             }
         }
+
+        // Also get clips from .anim files in Assets/Animations folder
+        if let Some(anim_dir) = Self::folder_path_from_id("Animations") {
+            if let Ok(entries) = fs::read_dir(anim_dir) {
+                for entry in entries.flatten() {
+                    let path = entry.path();
+                    if !path.is_file() {
+                        continue;
+                    }
+                    let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
+                    if ext.eq_ignore_ascii_case("anim") {
+                        if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
+                            out.push(name.to_string());
+                        }
+                    }
+                }
+            }
+        }
+
         out.sort_by_key(|s| s.to_ascii_lowercase());
         out.dedup_by(|a, b| a.eq_ignore_ascii_case(b));
         out
@@ -2450,7 +2471,11 @@ impl ProjectWindow {
     }
 
     pub fn docked_bottom_height(&self) -> f32 {
-        if self.open { self.panel_height } else { 0.0 }
+        if self.open {
+            self.panel_height
+        } else {
+            0.0
+        }
     }
 }
 
@@ -2880,7 +2905,7 @@ fn load_gltf_buffers_mesh_only_preview(
 
 fn load_fbx_ascii_preview_mesh(path: &Path) -> Result<(Vec<glam::Vec3>, Vec<[u32; 3]>), String> {
     use fbxcel_dom::any::AnyDocument;
-    use fbxcel_dom::v7400::object::{TypedObjectHandle, geometry::TypedGeometryHandle};
+    use fbxcel_dom::v7400::object::{geometry::TypedGeometryHandle, TypedObjectHandle};
     use std::io::BufReader;
 
     let file = std::fs::File::open(path).map_err(|e| e.to_string())?;

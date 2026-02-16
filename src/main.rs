@@ -9,11 +9,11 @@ mod viewport_gpu;
 
 use eframe::egui::text::LayoutJob;
 use eframe::egui::{TextureHandle, TextureOptions};
-use eframe::{App, Frame, NativeOptions, egui};
+use eframe::{egui, App, Frame, NativeOptions};
 use epaint::ColorImage;
 use hierarchy::HierarchyWindow;
 use inspector::InspectorWindow;
-use portable_pty::{CommandBuilder, PtySize, native_pty_system};
+use portable_pty::{native_pty_system, CommandBuilder, PtySize};
 use project::ProjectWindow;
 use raw_window_handle::{HasWindowHandle, RawWindowHandle};
 use std::collections::{HashMap, HashSet};
@@ -21,8 +21,8 @@ use std::fs::{self, File};
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use std::sync::Arc;
 use std::sync::mpsc::{self, Receiver, TryRecvError};
+use std::sync::Arc;
 use viewport::ViewportPanel;
 use viewport_gpu::ViewportGpuRenderer;
 use vt100::Parser;
@@ -1547,6 +1547,7 @@ impl App for EditorApp {
         let animation_modules = self.project.list_animation_modules();
         self.fios.set_available_modules(animation_modules.clone());
         let fbx_animation_clips = self.project.list_fbx_animation_clips();
+        self.fios.set_animation_clips(fbx_animation_clips.clone());
         if self.fios_enabled {
             self.fios.draw_embedded(
                 ctx,
@@ -1728,10 +1729,11 @@ impl App for EditorApp {
         if !self.project_collapsed && self.project.show(ctx, self.language, dock_bar_h) {
             self.project_collapsed = true;
         }
-        let dock_rect = ctx.available_rect();
+
+        let full_rect = ctx.available_rect();
         let bar_rect = egui::Rect::from_min_max(
-            egui::pos2(dock_rect.left(), dock_rect.bottom() - dock_bar_h),
-            egui::pos2(dock_rect.right(), dock_rect.bottom()),
+            egui::pos2(full_rect.left(), full_rect.bottom() - dock_bar_h),
+            egui::pos2(full_rect.right(), full_rect.bottom()),
         );
 
         egui::Area::new(egui::Id::new("bottom_multi_dock_bar"))

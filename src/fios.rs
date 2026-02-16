@@ -449,6 +449,11 @@ impl FiosState {
         self.available_modules = group_modules_by_category(defs);
     }
 
+    pub fn set_animation_clips(&mut self, clips: Vec<String>) {
+        self.anim_clip_cache = clips;
+        self.anim_clip_cache_dirty = false;
+    }
+
     fn instantiate_module_from_asset(&mut self, asset: &str) -> Option<u32> {
         let key = asset.to_ascii_lowercase();
         match key.as_str() {
@@ -5392,88 +5397,92 @@ impl FiosState {
 
         for i in 0..self.anim_nodes.len() {
             let id = self.anim_nodes[i].id;
-            let mut local = self.anim_nodes[i].pos;
-            local.x = local.x.clamp(4.0, (canvas_rect.width() - 174.0).max(4.0));
-            local.y = local.y.clamp(4.0, (canvas_rect.height() - 52.0).max(4.0));
-            self.anim_nodes[i].pos = local;
+            ui.push_id(id, |ui| {
+                let mut local = self.anim_nodes[i].pos;
+                local.x = local.x.clamp(4.0, (canvas_rect.width() - 174.0).max(4.0));
+                local.y = local.y.clamp(4.0, (canvas_rect.height() - 52.0).max(4.0));
+                self.anim_nodes[i].pos = local;
 
-            let rect = egui::Rect::from_min_size(
-                canvas_rect.min + local.to_vec2(),
-                egui::vec2(170.0, 48.0),
-            );
-            canvas_painter.rect_filled(rect, 5.0, egui::Color32::from_rgb(35, 45, 58));
-            canvas_painter.rect_stroke(
-                rect,
-                5.0,
-                egui::Stroke::new(1.0, egui::Color32::from_rgb(80, 124, 174)),
-                egui::StrokeKind::Outside,
-            );
-            canvas_painter.text(
-                rect.left_top() + egui::vec2(8.0, 7.0),
-                egui::Align2::LEFT_TOP,
-                &self.anim_nodes[i].name,
-                egui::FontId::proportional(11.0),
-                egui::Color32::from_gray(232),
-            );
-            canvas_painter.text(
-                rect.left_bottom() + egui::vec2(8.0, -7.0),
-                egui::Align2::LEFT_BOTTOM,
-                &self.anim_nodes[i].clip_ref,
-                egui::FontId::proportional(9.0),
-                egui::Color32::from_gray(186),
-            );
+                let rect = egui::Rect::from_min_size(
+                    canvas_rect.min + local.to_vec2(),
+                    egui::vec2(170.0, 48.0),
+                );
+                canvas_painter.rect_filled(rect, 5.0, egui::Color32::from_rgb(35, 45, 58));
+                canvas_painter.rect_stroke(
+                    rect,
+                    5.0,
+                    egui::Stroke::new(1.0, egui::Color32::from_rgb(80, 124, 174)),
+                    egui::StrokeKind::Outside,
+                );
+                canvas_painter.text(
+                    rect.left_top() + egui::vec2(8.0, 7.0),
+                    egui::Align2::LEFT_TOP,
+                    &self.anim_nodes[i].name,
+                    egui::FontId::proportional(11.0),
+                    egui::Color32::from_gray(232),
+                );
+                canvas_painter.text(
+                    rect.left_bottom() + egui::vec2(8.0, -7.0),
+                    egui::Align2::LEFT_BOTTOM,
+                    &self.anim_nodes[i].clip_ref,
+                    egui::FontId::proportional(9.0),
+                    egui::Color32::from_gray(186),
+                );
 
-            let body = ui.interact(
-                rect,
-                ui.id().with(("anim_node_body", id)),
-                egui::Sense::click_and_drag(),
-            );
-            if body.dragged() {
-                self.anim_nodes[i].pos += body.drag_delta();
-            }
-            if body.clicked() {
-                if ui.input(|i| i.modifiers.shift) {
-                    if self.anim_selected_nodes.contains(&id) {
-                        self.anim_selected_nodes.remove(&id);
+                let body = ui.interact(
+                    rect,
+                    ui.id().with(("anim_node_body", id)),
+                    egui::Sense::click_and_drag(),
+                );
+                if body.dragged() {
+                    self.anim_nodes[i].pos += body.drag_delta();
+                }
+                if body.clicked() {
+                    if ui.input(|i| i.modifiers.shift) {
+                        if self.anim_selected_nodes.contains(&id) {
+                            self.anim_selected_nodes.remove(&id);
+                        } else {
+                            self.anim_selected_nodes.insert(id);
+                        }
                     } else {
+                        self.anim_selected_nodes.clear();
                         self.anim_selected_nodes.insert(id);
+                        self.anim_selected_link = None;
                     }
-                } else {
-                    self.anim_selected_nodes.clear();
-                    self.anim_selected_nodes.insert(id);
-                    self.anim_selected_link = None;
                 }
-            }
 
-            let in_p = rect.left_center();
-            let out_p = rect.right_center();
-            canvas_painter.circle_filled(in_p, 4.0, egui::Color32::from_rgb(220, 116, 116));
-            canvas_painter.circle_filled(out_p, 4.0, egui::Color32::from_rgb(112, 194, 238));
-            let in_r = ui.interact(
-                egui::Rect::from_center_size(in_p, egui::vec2(12.0, 12.0)),
-                ui.id().with(("anim_node_in", id)),
-                egui::Sense::click(),
-            );
-            let out_r = ui.interact(
-                egui::Rect::from_center_size(out_p, egui::vec2(12.0, 12.0)),
-                ui.id().with(("anim_node_out", id)),
-                egui::Sense::click(),
-            );
-            if out_r.clicked() {
-                self.anim_connect_from = Some(id);
-            }
-            if in_r.clicked() {
-                if let Some(from) = self.anim_connect_from.take() {
-                    if from != id && !self.anim_links.iter().any(|l| l.from == from && l.to == id) {
-                        self.anim_links.push(AnimControllerLink {
-                            from,
-                            to: id,
-                            blend_time: 0.3,
-                            transition_type: TransitionType::CrossFade,
-                        });
+                let in_p = rect.left_center();
+                let out_p = rect.right_center();
+                canvas_painter.circle_filled(in_p, 4.0, egui::Color32::from_rgb(220, 116, 116));
+                canvas_painter.circle_filled(out_p, 4.0, egui::Color32::from_rgb(112, 194, 238));
+                let in_r = ui.interact(
+                    egui::Rect::from_center_size(in_p, egui::vec2(12.0, 12.0)),
+                    ui.id().with(("anim_node_in", id)),
+                    egui::Sense::click(),
+                );
+                let out_r = ui.interact(
+                    egui::Rect::from_center_size(out_p, egui::vec2(12.0, 12.0)),
+                    ui.id().with(("anim_node_out", id)),
+                    egui::Sense::click(),
+                );
+                if out_r.clicked() {
+                    self.anim_connect_from = Some(id);
+                }
+                if in_r.clicked() {
+                    if let Some(from) = self.anim_connect_from.take() {
+                        if from != id
+                            && !self.anim_links.iter().any(|l| l.from == from && l.to == id)
+                        {
+                            self.anim_links.push(AnimControllerLink {
+                                from,
+                                to: id,
+                                blend_time: 0.3,
+                                transition_type: TransitionType::CrossFade,
+                            });
+                        }
                     }
                 }
-            }
+            });
         }
 
         let pointer_pos = ui.ctx().input(|i| i.pointer.hover_pos());
