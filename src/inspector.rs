@@ -102,6 +102,7 @@ pub struct InspectorWindow {
     last_selected_object: String,
     pending_live_request: Option<(String, TransformDraft)>,
     pending_apply_request: Option<(String, TransformDraft)>,
+    pending_animator_request: Option<String>,
     object_fios_controller: HashMap<String, FiosControllerDraft>,
     object_rigidbody: HashMap<String, RigidbodyDraft>,
     object_animator: HashMap<String, AnimatorDraft>,
@@ -163,6 +164,7 @@ impl InspectorWindow {
             last_selected_object: String::new(),
             pending_live_request: None,
             pending_apply_request: None,
+            pending_animator_request: None,
             object_fios_controller: HashMap::new(),
             object_rigidbody: HashMap::new(),
             object_animator: HashMap::new(),
@@ -829,7 +831,14 @@ impl InspectorWindow {
                         let add_resp = ui.add(button);
                         if !selected_object.is_empty() {
                             add_resp.context_menu(|ui| {
-                                if ui.button("Fios Controller").clicked() {
+                                ui.label(
+                                    egui::RichText::new("Movimento")
+                                        .strong()
+                                        .size(11.0)
+                                        .color(egui::Color32::from_gray(150)),
+                                );
+                                ui.separator();
+                                if ui.button("Character Controller").clicked() {
                                     self.object_fios_controller
                                         .entry(selected_object.to_string())
                                         .or_default();
@@ -841,6 +850,14 @@ impl InspectorWindow {
                                         .or_default();
                                     ui.close();
                                 }
+                                ui.add_space(8.0);
+                                ui.label(
+                                    egui::RichText::new("Animação")
+                                        .strong()
+                                        .size(11.0)
+                                        .color(egui::Color32::from_gray(150)),
+                                );
+                                ui.separator();
                                 if ui.button("Animator").clicked() {
                                     self.object_animator
                                         .entry(selected_object.to_string())
@@ -1171,11 +1188,12 @@ impl InspectorWindow {
                                             ui.add_space(6.0);
                                             ui.horizontal(|ui| {
                                                 ui.label("Módulo");
+                                                let combo_width = (inner.width() - 20.0).max(120.0);
                                                 egui::ComboBox::from_id_salt((
                                                     "anim_module_combo",
                                                     selected_object,
                                                 ))
-                                                .width(180.0)
+                                                .width(combo_width)
                                                 .selected_text(
                                                     if animator.module_asset.is_empty() {
                                                         "Nenhum".to_string()
@@ -1216,11 +1234,12 @@ impl InspectorWindow {
                                             });
                                             ui.horizontal(|ui| {
                                                 ui.label("Controller");
+                                                let combo_width = (inner.width() - 20.0).max(120.0);
                                                 egui::ComboBox::from_id_salt((
                                                     "anim_ctrl_combo",
                                                     selected_object,
                                                 ))
-                                                .width(180.0)
+                                                .width(combo_width)
                                                 .selected_text(
                                                     if animator.controller_asset.is_empty() {
                                                         "Nenhum".to_string()
@@ -1245,11 +1264,12 @@ impl InspectorWindow {
                                             });
                                             ui.horizontal(|ui| {
                                                 ui.label("Animação");
+                                                let combo_width = (inner.width() - 20.0).max(120.0);
                                                 egui::ComboBox::from_id_salt((
                                                     "anim_clip_combo",
                                                     selected_object,
                                                 ))
-                                                .width(180.0)
+                                                .width(combo_width)
                                                 .selected_text(if animator.clip_ref.is_empty() {
                                                     "Nenhuma".to_string()
                                                 } else {

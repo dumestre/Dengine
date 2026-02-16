@@ -103,6 +103,7 @@ struct EditorApp {
 enum ToolbarMode {
     Cena,
     Game,
+    Animator,
 }
 
 fn load_png_as_texture(ctx: &egui::Context, png_path: &str) -> Option<TextureHandle> {
@@ -871,6 +872,10 @@ impl EditorApp {
             (EngineLanguage::En, "menu_help") => "Help",
             (EngineLanguage::Es, "menu_help") => "Ayuda",
 
+            (EngineLanguage::Pt, "animator_panel") => "Animador",
+            (EngineLanguage::En, "animator_panel") => "Animator",
+            (EngineLanguage::Es, "animator_panel") => "Animador",
+
             (EngineLanguage::Pt, "new") => "Novo",
             (EngineLanguage::En, "new") => "New",
             (EngineLanguage::Es, "new") => "Nuevo",
@@ -1464,6 +1469,31 @@ impl App for EditorApp {
                                 self.selected_mode = ToolbarMode::Game;
                             }
                         }
+
+                        let animator_txt = self.tr("animator_panel");
+                        let animator_clicked = ui
+                            .add_sized(
+                                [88.0, 28.0],
+                                egui::Button::new(animator_txt)
+                                    .corner_radius(8)
+                                    .fill(if self.selected_mode == ToolbarMode::Animator {
+                                        egui::Color32::from_rgb(62, 62, 62)
+                                    } else {
+                                        egui::Color32::from_rgb(44, 44, 44)
+                                    })
+                                    .stroke(if self.selected_mode == ToolbarMode::Animator {
+                                        egui::Stroke::new(
+                                            1.0,
+                                            egui::Color32::from_rgb(15, 232, 121),
+                                        )
+                                    } else {
+                                        egui::Stroke::new(1.0, egui::Color32::from_gray(70))
+                                    }),
+                            )
+                            .clicked();
+                        if animator_clicked {
+                            self.selected_mode = ToolbarMode::Animator;
+                        }
                     },
                 );
 
@@ -1533,10 +1563,10 @@ impl App for EditorApp {
         let left_reserved = self.inspector.docked_left_width() + self.hierarchy.docked_left_width();
         let right_reserved =
             self.inspector.docked_right_width() + self.hierarchy.docked_right_width();
-        let mode_label = if self.selected_mode == ToolbarMode::Cena {
-            "Cena"
-        } else {
-            "Game"
+        let mode_label = match self.selected_mode {
+            ToolbarMode::Cena => "Cena",
+            ToolbarMode::Game => "Game",
+            ToolbarMode::Animator => "Animator",
         };
         let hierarchy_selected = self.hierarchy.selected_object_name().to_string();
         self.viewport.set_selected_object(&hierarchy_selected);
@@ -1548,6 +1578,14 @@ impl App for EditorApp {
         self.fios.set_available_modules(animation_modules.clone());
         let fbx_animation_clips = self.project.list_fbx_animation_clips();
         self.fios.set_animation_clips(fbx_animation_clips.clone());
+
+        if self.selected_mode == ToolbarMode::Animator {
+            self.fios_enabled = true;
+            self.fios.set_animator_tab();
+        }
+
+        let selected_hierarchy = self.hierarchy.selected_object_name().to_string();
+
         if self.fios_enabled {
             self.fios.draw_embedded(
                 ctx,
@@ -1663,9 +1701,9 @@ impl App for EditorApp {
                     let r_step = ctrl.rotate_speed * dt;
                     let _ = self
                         .viewport
-                        .rotate_object_by(&name, [-look[1] * r_step, look[0] * r_step, 0.0]);
+                        .rotate_object_by(&name, [look[1] * r_step, -look[0] * r_step, 0.0]);
                 }
-                if action.abs() > 1e-4 && !self.rigidbody_vertical_vel.contains_key(&name) {
+                if action.abs() > 0.01 && !self.rigidbody_vertical_vel.contains_key(&name) {
                     let a_step = ctrl.action_speed * dt;
                     let _ = self
                         .viewport
@@ -2207,7 +2245,6 @@ impl App for EditorApp {
         self.draw_terminal_window(ctx);
     }
 }
-
 fn enable_windows_backdrop_blur(frame: &Frame) -> bool {
     #[cfg(target_os = "windows")]
     {

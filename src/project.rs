@@ -783,6 +783,166 @@ impl ProjectWindow {
         out
     }
 
+    fn parse_fbx_binary_animation_names(bytes: &[u8]) -> Vec<String> {
+        let mut out = Vec::<String>::new();
+
+        // FBX binary header is 27 bytes, then nodes start
+        if bytes.len() < 27 {
+            return out;
+        }
+
+        // Check for FBX binary magic
+        let header = String::from_utf8_lossy(&bytes[0..20]);
+        if !header.contains("Kaydara FBX Binary") {
+            return out;
+        }
+
+        // Scan for AnimationStack nodes in binary format
+        // In binary FBX, nodes have format:
+        // - 4 bytes: end offset
+        // - 4 bytes: num properties
+        // - 4 bytes: property list length
+        // - 1 byte: name length
+        // - name bytes
+        // - padding to 4-byte align
+        // - property data
+
+        let mut pos = 27; // Skip header
+
+        while pos + 4 < bytes.len() {
+            let record_len =
+                u32::from_le_bytes([bytes[pos], bytes[pos + 1], bytes[pos + 2], bytes[pos + 3]])
+                    as usize;
+
+            if record_len == 0 || record_len > bytes.len().saturating_sub(pos) {
+                break;
+            }
+
+            let end_pos = pos + record_len;
+            pos += 4;
+
+            if pos + 4 >= bytes.len() {
+                break;
+            }
+
+            // Skip num properties and property list length
+            let _num_props =
+                u32::from_le_bytes([bytes[pos], bytes[pos + 1], bytes[pos + 2], bytes[pos + 3]]);
+            pos += 4;
+
+            if pos + 4 >= bytes.len() {
+                break;
+            }
+
+            let _prop_list_len =
+                u32::from_le_bytes([bytes[pos], bytes[pos + 1], bytes[pos + 2], bytes[pos + 3]]);
+            pos += 4;
+
+            if pos >= bytes.len() {
+                break;
+            }
+
+            // Get name length
+            let name_len = bytes[pos] as usize;
+            pos += 1;
+
+            // Align to 4 bytes
+            if pos % 4 != 0 {
+                pos += 4 - (pos % 4);
+            }
+
+            if pos + name_len > bytes.len() {
+                break;
+            }
+
+            // Get node name
+            let node_name = String::from_utf8_lossy(&bytes[pos..pos + name_len]);
+            pos += name_len;
+
+            // Align after name
+            while pos % 4 != 0 && pos < bytes.len() {
+                pos += 1;
+            }
+
+            // Check if this is an AnimationStack node
+            if node_name.contains("AnimationStack") || node_name.contains("AnimStack") {
+                // Try to find the name property (usually first string property)
+                // Skip the properties and look for the name
+                let mut search_pos = pos;
+
+                // Search for string properties that contain animation names
+                // Look for common animation patterns
+                while search_pos + 10 < end_pos && search_pos + 100 < bytes.len() {
+                    // Look for string length marker followed by text
+                    if bytes[search_pos] == 0
+                        && bytes[search_pos + 1] == 0
+                        && bytes[search_pos + 2] == 0
+                    {
+                        // Could be a string, try to parse
+                        let remaining = &bytes[search_pos + 4..];
+                        if let Ok(s) = String::from_utf8(
+                            remaining
+                                .iter()
+                                .take_while(|b| **b != 0)
+                                .cloned()
+                                .collect::<Vec<_>>(),
+                        ) {
+                            if !s.is_empty() && s.len() > 1 && s.len() < 100 {
+                                // Check if it looks like an animation name
+                                if s.chars().all(|c| {
+                                    c.is_alphanumeric() || c == '_' || c == '-' || c == ' '
+                                }) {
+                                    if !out.iter().any(|x| x.eq_ignore_ascii_case(&s)) {
+                                        out.push(s);
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    search_pos += 1;
+                }
+            }
+
+            pos = end_pos;
+        }
+
+        // Also look for "Take" nodes in binary
+        let bytes_str = String::from_utf8_lossy(bytes);
+        let mut search_offset = 0;
+        while let Some(start) = bytes_str[search_offset..].find("Take") {
+            let ctx_start = search_offset.saturating_add(start).saturating_sub(20);
+            let ctx = &bytes_str[ctx_start
+                ..search_offset
+                    .saturating_add(start + 50)
+                    .min(bytes_str.len())];
+
+            // Look for "Take" followed by a name in quotes or as length-prefixed
+            if ctx.contains("Take") {
+                // Extract what comes after "Take"
+                if let Some(after_take) = ctx.split("Take").last() {
+                    // Try to extract the name
+                    let name: String = after_take
+                        .chars()
+                        .skip_while(|c| !c.is_alphanumeric())
+                        .take_while(|c| c.is_alphanumeric() || *c == '_' || *c == '-')
+                        .collect();
+                    if !name.is_empty() && name.len() > 1 {
+                        if !out.iter().any(|x| x.eq_ignore_ascii_case(&name)) {
+                            out.push(name);
+                        }
+                    }
+                }
+            }
+            search_offset += start + 4;
+            if search_offset >= bytes_str.len() {
+                break;
+            }
+        }
+
+        out.dedup_by(|a, b| a.eq_ignore_ascii_case(b));
+        out
+    }
+
     fn infer_default_animation_state(clips: &[String], keys: &[&str]) -> Option<String> {
         clips
             .iter()
@@ -858,7 +1018,17 @@ impl ProjectWindow {
     fn parse_fbx_meta(path: &Path) -> FbxAssetMeta {
         let bytes = fs::read(path).unwrap_or_default();
         let raw = String::from_utf8_lossy(&bytes);
-        let animations = Self::parse_fbx_animation_names(&raw);
+
+        // Check if binary FBX
+        let is_binary = bytes.len() > 20
+            && String::from_utf8_lossy(&bytes[0..20]).contains("Kaydara FBX Binary");
+
+        let animations = if is_binary {
+            Self::parse_fbx_binary_animation_names(&bytes)
+        } else {
+            Self::parse_fbx_animation_names(&raw)
+        };
+
         let has_skeleton = raw.contains("LimbNode")
             || raw.contains("Skeleton::")
             || raw.contains("Deformer::")
@@ -962,11 +1132,14 @@ impl ProjectWindow {
         };
 
         // Get clips from FBX files in Meshes folder
-        for asset in self.fbx_assets_in_meshes_folder() {
+        let fbx_assets = self.fbx_assets_in_meshes_folder();
+
+        for asset in fbx_assets {
             let path = meshes_dir.join(&asset);
             if !path.is_file() {
                 continue;
             }
+
             let meta = self.fbx_meta_for_path(&path);
             for clip in meta.animations {
                 out.push(format!("{asset}::{clip}"));

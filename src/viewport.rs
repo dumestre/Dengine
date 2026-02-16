@@ -542,7 +542,8 @@ impl ViewportPanel {
         let spacing = 1.9_f32;
         let tx = (col - 1.5) * spacing;
         let tz = row * spacing;
-        let transform = Mat4::from_translation(Vec3::new(tx, 0.0, tz));
+        let rotation = Mat4::from_rotation_y(std::f32::consts::PI);
+        let transform = rotation * Mat4::from_translation(Vec3::new(tx, 0.0, tz));
         let name = object_name.to_string();
         self.scene_entries.push(SceneEntry {
             name: name.clone(),
@@ -658,7 +659,9 @@ impl ViewportPanel {
                             let spacing = 1.9_f32;
                             let tx = (col - 1.5) * spacing;
                             let tz = row * spacing;
-                            let transform = Mat4::from_translation(Vec3::new(tx, 0.0, tz));
+                            let rotation = Mat4::from_rotation_y(std::f32::consts::PI);
+                            let transform =
+                                rotation * Mat4::from_translation(Vec3::new(tx, 0.0, tz));
                             self.scene_entries.push(SceneEntry {
                                 name: name.clone(),
                                 transform,

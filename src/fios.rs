@@ -18,6 +18,7 @@ enum FiosTab {
     Controls,
     Graph,
     Controller,
+    Animator,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -430,6 +431,11 @@ pub struct FiosState {
     anim_clip_cache_dirty: bool,
     anim_clip_cache_next_scan: f64,
     embedded_panel_rect: Option<egui::Rect>,
+    anim_is_playing: bool,
+    anim_current_time: f64,
+    anim_total_duration: f64,
+    anim_is_recording: bool,
+    anim_selected_track: Option<usize>,
 }
 
 impl FiosState {
@@ -452,6 +458,10 @@ impl FiosState {
     pub fn set_animation_clips(&mut self, clips: Vec<String>) {
         self.anim_clip_cache = clips;
         self.anim_clip_cache_dirty = false;
+    }
+
+    pub fn set_animator_tab(&mut self) {
+        self.tab = FiosTab::Animator;
     }
 
     fn instantiate_module_from_asset(&mut self, asset: &str) -> Option<u32> {
@@ -1360,6 +1370,11 @@ impl FiosState {
             anim_clip_cache_dirty: true,
             anim_clip_cache_next_scan: 0.0,
             embedded_panel_rect: None,
+            anim_is_playing: false,
+            anim_current_time: 0.0,
+            anim_total_duration: 5.0,
+            anim_is_recording: false,
+            anim_selected_track: None,
         };
         out.load_from_disk();
         out.load_lua_script_from_disk();
@@ -5194,6 +5209,323 @@ impl FiosState {
             });
     }
 
+    fn draw_animator_tab(&mut self, ui: &mut egui::Ui, lang: EngineLanguage) {
+        if self.anim_is_playing {
+            self.anim_current_time += ui.ctx().input(|i| i.stable_dt as f64).max(1.0 / 60.0);
+            if self.anim_current_time >= self.anim_total_duration {
+                self.anim_current_time = 0.0;
+            }
+        }
+
+        egui::Frame::default()
+            .fill(egui::Color32::from_rgb(32, 32, 36))
+            .show(ui, |ui| {
+                ui.add_space(8.0);
+
+                ui.horizontal(|ui| {
+                    let icon_size = egui::vec2(32.0, 32.0);
+                    
+                    let play_icon = egui::RichText::new("▶").size(16.0).color(egui::Color32::WHITE);
+                    let play_btn = egui::Button::new(play_icon)
+                        .fill(if self.anim_is_playing { egui::Color32::from_rgb(60, 100, 60) } else { egui::Color32::from_rgb(40, 80, 50) })
+                        .frame(true)
+                        .min_size(icon_size);
+                    if ui.add(play_btn).clicked() {
+                        self.anim_is_playing = !self.anim_is_playing;
+                        self.anim_tab_status = Some(if self.anim_is_playing { "Playing".to_string() } else { "Paused".to_string() });
+                    }
+
+                    ui.add_space(4.0);
+
+                    let stop_icon = egui::RichText::new("◼").size(14.0).color(egui::Color32::WHITE);
+                    let stop_btn = egui::Button::new(stop_icon)
+                        .fill(egui::Color32::from_rgb(90, 50, 50))
+                        .frame(true)
+                        .min_size(icon_size);
+                    if ui.add(stop_btn).clicked() {
+                        self.anim_is_playing = false;
+                        self.anim_current_time = 0.0;
+                        self.anim_tab_status = Some("Stopped".to_string());
+                    }
+
+                    ui.add_space(12.0);
+
+                    let record_icon = egui::RichText::new("●").size(12.0).color(if self.anim_is_recording { egui::Color32::RED } else { egui::Color32::from_gray(150) });
+                    let record_btn = egui::Button::new(record_icon)
+                        .fill(if self.anim_is_recording { egui::Color32::from_rgb(100, 30, 30) } else { egui::Color32::from_rgb(60, 40, 40) })
+                        .frame(true)
+                        .min_size(icon_size);
+                    if ui.add(record_btn).clicked() {
+                        self.anim_is_recording = !self.anim_is_recording;
+                        self.anim_tab_status = Some(if self.anim_is_recording { "Recording" } else { "Recording stopped" }.to_string());
+                    }
+
+                    ui.add_space(16.0);
+
+                    let skip_start_icon = egui::RichText::new("⏮").size(14.0);
+                    let skip_start_btn = egui::Button::new(skip_start_icon)
+                        .fill(egui::Color32::from_rgb(45, 45, 55))
+                        .frame(true)
+                        .min_size(icon_size);
+                    if ui.add(skip_start_btn).clicked() {
+                        self.anim_current_time = 0.0;
+                    }
+
+                    ui.add_space(4.0);
+
+                    let prev_key_icon = egui::RichText::new("⏪").size(14.0);
+                    let prev_key_btn = egui::Button::new(prev_key_icon)
+                        .fill(egui::Color32::from_rgb(45, 45, 55))
+                        .frame(true)
+                        .min_size(icon_size);
+                    if ui.add(prev_key_btn).clicked() {
+                        self.anim_current_time = (self.anim_current_time - 0.1).max(0.0);
+                    }
+
+                    ui.add_space(4.0);
+
+                    let next_key_icon = egui::RichText::new("⏩").size(14.0);
+                    let next_key_btn = egui::Button::new(next_key_icon)
+                        .fill(egui::Color32::from_rgb(45, 45, 55))
+                        .frame(true)
+                        .min_size(icon_size);
+                    if ui.add(next_key_btn).clicked() {
+                        self.anim_current_time = (self.anim_current_time + 0.1).min(self.anim_total_duration);
+                    }
+
+                    ui.add_space(4.0);
+
+                    let skip_end_icon = egui::RichText::new("⏭").size(14.0);
+                    let skip_end_btn = egui::Button::new(skip_end_icon)
+                        .fill(egui::Color32::from_rgb(45, 45, 55))
+                        .frame(true)
+                        .min_size(icon_size);
+                    if ui.add(skip_end_btn).clicked() {
+                        self.anim_current_time = self.anim_total_duration;
+                    }
+
+                    ui.add_space(16.0);
+
+                    let keyframe_icon = egui::RichText::new("◆").size(12.0).color(egui::Color32::from_rgb(100, 180, 255));
+                    let keyframe_btn = egui::Button::new(keyframe_icon)
+                        .fill(egui::Color32::from_rgb(50, 70, 100))
+                        .frame(true)
+                        .min_size(icon_size);
+                    if ui.add(keyframe_btn).clicked() {
+                        self.anim_tab_status = Some(format!("Keyframe added at {:.2}s", self.anim_current_time));
+                    }
+
+                    ui.add_space(4.0);
+
+                    let delete_key_icon = egui::RichText::new("◇").size(12.0).color(egui::Color32::from_gray(150));
+                    let delete_key_btn = egui::Button::new(delete_key_icon)
+                        .fill(egui::Color32::from_rgb(80, 50, 50))
+                        .frame(true)
+                        .min_size(icon_size);
+                    if ui.add(delete_key_btn).clicked() {
+                        self.anim_tab_status = Some("Delete Keyframe".to_string());
+                    }
+
+                    ui.add_space(16.0);
+
+                    let loop_icon = egui::RichText::new("🔁").size(14.0);
+                    let loop_btn = egui::Button::new(loop_icon)
+                        .fill(egui::Color32::from_rgb(45, 45, 55))
+                        .frame(true)
+                        .min_size(icon_size);
+                    if ui.add(loop_btn).clicked() {
+                        self.anim_tab_status = Some("Loop toggled".to_string());
+                    }
+                });
+
+                ui.add_space(12.0);
+
+                ui.separator();
+
+                ui.add_space(8.0);
+
+                ui.horizontal(|ui| {
+                    ui.label(egui::RichText::new("Time:").size(12.0).color(egui::Color32::from_gray(180)));
+                    ui.add_space(4.0);
+                    
+                    let current_str = format!("{:.2}", self.anim_current_time);
+                    let duration_str = format!("{:.2}", self.anim_total_duration);
+                    ui.label(egui::RichText::new(format!("{}/{}", current_str, duration_str)).size(13.0).strong().color(egui::Color32::from_rgb(255, 200, 100)));
+
+                    ui.add_space(20.0);
+
+                    ui.label(egui::RichText::new("Duration:").size(12.0).color(egui::Color32::from_gray(180)));
+                    ui.add_space(4.0);
+                    
+                    let mut duration = self.anim_total_duration;
+                    ui.add(egui::DragValue::new(&mut duration).range(0.1..=60.0).speed(0.1));
+                    self.anim_total_duration = duration;
+
+                    ui.add_space(20.0);
+
+                    let fps = 30;
+                    ui.label(egui::RichText::new(format!("FPS: {}", fps)).size(12.0).color(egui::Color32::from_gray(150)));
+                });
+
+                ui.add_space(12.0);
+
+                let timeline_rect = ui.available_rect_before_wrap();
+                let timeline_height = 140.0;
+                let track_area = egui::Rect::from_min_size(
+                    egui::pos2(timeline_rect.left(), timeline_rect.top()),
+                    egui::vec2(timeline_rect.width(), timeline_height),
+                );
+
+                let painter = ui.painter();
+                painter.rect_filled(track_area, 4.0, egui::Color32::from_rgb(28, 28, 32));
+                painter.rect_stroke(track_area, 4.0, egui::Stroke::new(1.0, egui::Color32::from_rgb(60, 60, 70)), egui::StrokeKind::Outside);
+
+                let time_to_x = |t: f64| -> f32 {
+                    track_area.left() + (t / self.anim_total_duration * track_area.width() as f64) as f32
+                };
+
+                let tick_count = (self.anim_total_duration / 0.5).ceil() as usize;
+                for i in 0..=tick_count {
+                    let t = i as f64 * 0.5;
+                    let x = time_to_x(t);
+                    let is_major = i % 2 == 0;
+                    let tick_height = if is_major { 16.0 } else { 8.0 };
+                    
+                    painter.line_segment(
+                        [
+                            egui::pos2(x, track_area.bottom() - tick_height),
+                            egui::pos2(x, track_area.bottom()),
+                        ],
+                        egui::Stroke::new(1.0, egui::Color32::from_rgba_unmultiplied(100, 100, 120, 150)),
+                    );
+                    
+                    if is_major {
+                        painter.text(
+                            egui::pos2(x, track_area.bottom() - tick_height - 14.0),
+                            egui::Align2::CENTER_TOP,
+                            format!("{:.1}s", t),
+                            egui::FontId::proportional(10.0),
+                            egui::Color32::from_gray(140),
+                        );
+                    }
+                }
+
+                for i in 0..6 {
+                    let track_y = track_area.top() + 8.0 + (i as f32) * 22.0;
+                    painter.line_segment(
+                        [
+                            egui::pos2(track_area.left(), track_y),
+                            egui::pos2(track_area.right(), track_y),
+                        ],
+                        egui::Stroke::new(1.0, egui::Color32::from_rgba_unmultiplied(70, 70, 90, 80)),
+                    );
+                }
+
+                let track_labels = ["X", "Y", "Z", "RX", "RY", "RZ"];
+                for (i, label) in track_labels.iter().enumerate().take(6) {
+                    let track_y = track_area.top() + 10.0 + (i as f32) * 22.0;
+                    painter.text(
+                        egui::pos2(track_area.left() + 4.0, track_y),
+                        egui::Align2::LEFT_TOP,
+                        *label,
+                        egui::FontId::proportional(10.0),
+                        egui::Color32::from_gray(160),
+                    );
+                }
+
+                let playhead_x = time_to_x(self.anim_current_time);
+                painter.line_segment(
+                    [
+                        egui::pos2(playhead_x, track_area.top()),
+                        egui::pos2(playhead_x, track_area.bottom()),
+                    ],
+                    egui::Stroke::new(2.0, egui::Color32::from_rgb(255, 100, 80)),
+                );
+                painter.circle_filled(egui::pos2(playhead_x, track_area.top() + 6.0), 5.0, egui::Color32::from_rgb(255, 100, 80));
+
+                let keyframe_times = [0.5, 1.2, 2.0, 3.5, 4.0];
+                for &kf_time in &keyframe_times {
+                    let kf_x = time_to_x(kf_time);
+                    for track in 0..3 {
+                        let track_y = track_area.top() + 12.0 + (track as f32) * 22.0;
+                        painter.circle_filled(egui::pos2(kf_x, track_y), 4.0, egui::Color32::from_rgb(100, 200, 255));
+                    }
+                }
+
+                ui.add_space(timeline_height + 12.0);
+
+                ui.separator();
+
+                ui.add_space(8.0);
+
+                egui::Grid::new("anim_properties_grid")
+                    .num_columns(2)
+                    .spacing([8.0, 6.0])
+                    .show(ui, |ui| {
+                        ui.label(egui::RichText::new("Position").size(12.0).strong().color(egui::Color32::from_rgb(180, 180, 220)));
+                        ui.horizontal(|ui| {
+                            let mut px = 0.0f32;
+                            let mut py = 0.0f32;
+                            let mut pz = 0.0f32;
+                            ui.add(egui::DragValue::new(&mut px).prefix("X:").speed(0.01));
+                            ui.add(egui::DragValue::new(&mut py).prefix("Y:").speed(0.01));
+                            ui.add(egui::DragValue::new(&mut pz).prefix("Z:").speed(0.01));
+                        });
+                        ui.end_row();
+
+                        ui.label(egui::RichText::new("Rotation").size(12.0).strong().color(egui::Color32::from_rgb(220, 180, 180)));
+                        ui.horizontal(|ui| {
+                            let mut rx = 0.0f32;
+                            let mut ry = 0.0f32;
+                            let mut rz = 0.0f32;
+                            ui.add(egui::DragValue::new(&mut rx).prefix("X:").speed(0.5));
+                            ui.add(egui::DragValue::new(&mut ry).prefix("Y:").speed(0.5));
+                            ui.add(egui::DragValue::new(&mut rz).prefix("Z:").speed(0.5));
+                        });
+                        ui.end_row();
+
+                        ui.label(egui::RichText::new("Scale").size(12.0).strong().color(egui::Color32::from_rgb(180, 220, 180)));
+                        ui.horizontal(|ui| {
+                            let mut sx = 1.0f32;
+                            let mut sy = 1.0f32;
+                            let mut sz = 1.0f32;
+                            ui.add(egui::DragValue::new(&mut sx).prefix("X:").speed(0.01));
+                            ui.add(egui::DragValue::new(&mut sy).prefix("Y:").speed(0.01));
+                            ui.add(egui::DragValue::new(&mut sz).prefix("Z:").speed(0.01));
+                        });
+                        ui.end_row();
+                    });
+
+                ui.add_space(12.0);
+
+                ui.separator();
+
+                ui.add_space(8.0);
+
+                ui.horizontal(|ui| {
+                    let help_txt = match lang {
+                        EngineLanguage::Pt => "Barra de Espaço: Play/Pause | K: Add Keyframe | L: Loop | Home/End: Ir para início/fim",
+                        EngineLanguage::En => "Space: Play/Pause | K: Add Keyframe | L: Loop | Home/End: Go to start/end",
+                        EngineLanguage::Es => "Espacio: Play/Pause | K: Add Keyframe | L: Loop | Inicio/Fin: Ir al inicio/final",
+                    };
+                    ui.label(egui::RichText::new(help_txt).size(10.0).color(egui::Color32::from_gray(120)));
+                });
+            });
+
+        if let Some(status) = &self.anim_tab_status {
+            ui.add_space(8.0);
+            egui::Frame::default()
+                .fill(egui::Color32::from_rgba_unmultiplied(40, 40, 50, 200))
+                .show(ui, |ui| {
+                    ui.label(
+                        egui::RichText::new(status)
+                            .size(11.0)
+                            .color(egui::Color32::from_gray(200)),
+                    );
+                });
+        }
+    }
+
     fn draw_controller_tab(&mut self, ui: &mut egui::Ui, lang: EngineLanguage) {
         self.refresh_anim_clip_cache(ui.ctx(), false);
         let clips_txt = match lang {
@@ -5713,9 +6045,15 @@ impl FiosState {
                 EngineLanguage::En => "Animation Controller",
                 EngineLanguage::Es => "Controlador de animación",
             };
+            let animator_txt = match lang {
+                EngineLanguage::Pt => "Animador",
+                EngineLanguage::En => "Animator",
+                EngineLanguage::Es => "Animador",
+            };
             let c = self.tab == FiosTab::Controls;
             let g = self.tab == FiosTab::Graph;
             let k = self.tab == FiosTab::Controller;
+            let a = self.tab == FiosTab::Animator;
             if ui
                 .add(egui::Button::new(controls_txt).fill(if c {
                     egui::Color32::from_rgb(58, 84, 64)
@@ -5746,6 +6084,16 @@ impl FiosState {
             {
                 self.tab = FiosTab::Controller;
             }
+            if ui
+                .add(egui::Button::new(animator_txt).fill(if a {
+                    egui::Color32::from_rgb(156, 96, 76)
+                } else {
+                    egui::Color32::from_rgb(52, 52, 52)
+                }))
+                .clicked()
+            {
+                self.tab = FiosTab::Animator;
+            }
         });
         ui.add_space(4.0);
         ui.separator();
@@ -5754,6 +6102,7 @@ impl FiosState {
             FiosTab::Controls => self.draw_controls_tab(ui, lang),
             FiosTab::Graph => self.draw_graph(ui, lang),
             FiosTab::Controller => self.draw_controller_tab(ui, lang),
+            FiosTab::Animator => self.draw_animator_tab(ui, lang),
         }
     }
 
