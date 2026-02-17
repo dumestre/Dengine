@@ -1584,7 +1584,7 @@ impl App for EditorApp {
             self.fios.set_animator_tab();
         }
 
-        let selected_hierarchy = self.hierarchy.selected_object_name().to_string();
+        let _selected_hierarchy = self.hierarchy.selected_object_name().to_string();
 
         if self.fios_enabled {
             self.fios.draw_embedded(
@@ -2328,6 +2328,7 @@ fn main() -> eframe::Result<()> {
             })),
         depth_buffer: 24,
         stencil_buffer: 0,
+        renderer: eframe::Renderer::Wgpu,
         ..Default::default()
     };
 

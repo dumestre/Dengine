@@ -1,0 +1,13 @@
+[package]
+name = "engine_editor"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+engine_core = { path = "../engine_core" }
+engine_render = { path = "../engine_render" }
+egui = "0.33.3"
+glam = { version = "0.32.0", features = ["mint"] }
+
+[features]
+default = []

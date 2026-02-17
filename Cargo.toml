@@ -1,13 +1,24 @@
+[workspace]
+members = [
+    "engine_core",
+    "engine_render",
+    "engine_editor",
+    ".",
+]
+exclude = []
+
 [package]
-name = "Dengine"
+name = "dengine"
 version = "0.1.0"
 edition = "2024"
 
 [dependencies]
+hecs = "0.11"
 egui = "0.33.3"
 egui_dock = "0.18"
 eframe = { version = "0.33.3", features = ["wgpu"] }
 epaint = "0.33.3"
+wgpu = "0.19"
 image = { version = "0.25", default-features = false, features = ["png", "jpeg", "webp"] }
 egui-gizmo = { git = "https://github.com/dumestre/Eguizmo", branch = "main" }
 glam = { version = "0.32.0", features = ["mint"] }
@@ -21,3 +32,10 @@ meshopt = "0.6.2"
 portable-pty = "0.9"
 vt100 = "0.15"
 mlua = { version = "0.10", features = ["lua54", "vendored"] }
+
+engine_core = { path = "engine_core" }
+engine_render = { path = "engine_render" }
+engine_editor = { path = "engine_editor" }
+
+[lib]
+path = "src/lib.rs"

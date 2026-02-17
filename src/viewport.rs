@@ -1,5 +1,5 @@
-use std::collections::hash_map::DefaultHasher;
 use std::collections::HashSet;
+use std::collections::hash_map::DefaultHasher;
 use std::fs::{self, File};
 use std::hash::{Hash, Hasher};
 use std::io::{Read, Write};
@@ -68,7 +68,10 @@ struct SceneEntry {
 struct MeshData {
     name: String,
     vertices: Vec<Vec3>,
+    normals: Vec<Vec3>,
+    uvs: Vec<[f32; 2]>,
     triangles: Vec<[u32; 3]>,
+    texture_path: Option<String>,
 }
 
 #[derive(Clone, PartialEq)]
@@ -265,6 +268,8 @@ impl ViewportPanel {
 
     fn build_gpu_scene_mesh(&self, use_proxy: bool) -> MeshData {
         let mut vertices: Vec<Vec3> = Vec::new();
+        let mut normals: Vec<Vec3> = Vec::new();
+        let mut uvs: Vec<[f32; 2]> = Vec::new();
         let mut triangles: Vec<[u32; 3]> = Vec::new();
         for entry in &self.scene_entries {
             let mesh = if use_proxy { &entry.proxy } else { &entry.full };
@@ -274,6 +279,21 @@ impl ViewportPanel {
                     .iter()
                     .map(|v| entry.transform.transform_point3(*v)),
             );
+            // Transform normals by model matrix (direction only, normalize after)
+            normals.extend(
+                mesh.normals
+                    .iter()
+                    .map(|n| entry.transform.transform_vector3(*n).normalize_or_zero()),
+            );
+            // Pad normals if mesh has fewer normals than vertices
+            while normals.len() < vertices.len() {
+                normals.push(Vec3::Y);
+            }
+            // Pad UVs if mesh has fewer UVs than vertices
+            uvs.extend(mesh.uvs.iter().cloned());
+            while uvs.len() < vertices.len() {
+                uvs.push([0.0, 0.0]);
+            }
             for tri in &mesh.triangles {
                 if (tri[0] as usize) < mesh.vertices.len()
                     && (tri[1] as usize) < mesh.vertices.len()
@@ -286,7 +306,10 @@ impl ViewportPanel {
         MeshData {
             name: "SceneBatch".to_string(),
             vertices,
+            normals,
+            uvs,
             triangles,
+            texture_path: None,
         }
     }
 
@@ -1308,7 +1331,17 @@ impl ViewportPanel {
                         if let Some(gpu) = gpu_renderer {
                             let scene_batch = self.build_gpu_scene_mesh(use_proxy);
                             let mesh_id = self.gpu_scene_mesh_id(use_proxy);
-                            gpu.update_scene(mesh_id, &scene_batch.vertices, &scene_batch.triangles, proj * view);
+                            gpu.update_scene(
+                                mesh_id,
+                                &scene_batch.vertices,
+                                &scene_batch.normals,
+                                &scene_batch.uvs,
+                                &scene_batch.triangles,
+                                proj * view,
+                                Mat4::IDENTITY,
+                                eye,
+                                scene_batch.texture_path,
+                            );
                             let cb = gpu.paint_callback(viewport_rect);
                             ui.painter().add(egui::Shape::Callback(cb));
                             gpu_drawn = true;
@@ -1416,7 +1449,10 @@ fn make_proxy_mesh(full: &MeshData, max_tris: usize, max_vertices: usize) -> Mes
         return MeshData {
             name: format!("{} [proxy]", full.name),
             vertices: vec![Vec3::ZERO, Vec3::X * 0.2, Vec3::Y * 0.2],
+            normals: vec![Vec3::Y; 3],
+            uvs: vec![[0.0, 0.0], [1.0, 0.0], [0.0, 1.0]],
             triangles: vec![[0, 1, 2]],
+            texture_path: None,
         };
     }
 
@@ -1469,61 +1505,121 @@ fn make_proxy_mesh(full: &MeshData, max_tris: usize, max_vertices: usize) -> Mes
         return MeshData {
             name: format!("{} [proxy]", full.name),
             vertices: vec![Vec3::ZERO, Vec3::X * 0.2, Vec3::Y * 0.2],
+            normals: vec![Vec3::Y; 3],
+            uvs: vec![[0.0, 0.0], [1.0, 0.0], [0.0, 1.0]],
             triangles: vec![[0, 1, 2]],
+            texture_path: None,
         };
     }
 
-    MeshData {
+    let mut res = MeshData {
         name: if triangles.len() < full.triangles.len() || vertices.len() < full.vertices.len() {
             format!("{} [proxy]", full.name)
         } else {
             full.name.clone()
         },
         vertices,
+        normals: vec![], // Será recalculado
+        uvs: vec![],
         triangles,
-    }
+        texture_path: full.texture_path.clone(), // Proxy should inherit texture path from full
+    };
+    normalize_mesh(&mut res); // Garante normais e UVs
+    res
 }
 
 fn make_primitive_mesh(kind: Primitive3DKind) -> MeshData {
-    match kind {
+    let mut mesh = match kind {
         Primitive3DKind::Cube => make_cube_mesh(),
         Primitive3DKind::Sphere => make_sphere_mesh(14, 20),
         Primitive3DKind::Cone => make_cone_mesh(24),
         Primitive3DKind::Cylinder => make_cylinder_mesh(24),
         Primitive3DKind::Plane => make_plane_mesh(),
-    }
+    };
+    normalize_mesh(&mut mesh);
+    mesh
 }
 
 fn make_cube_mesh() -> MeshData {
     let h = 0.5_f32;
-    let vertices = vec![
-        Vec3::new(-h, -h, -h),
-        Vec3::new(h, -h, -h),
-        Vec3::new(h, h, -h),
-        Vec3::new(-h, h, -h),
-        Vec3::new(-h, -h, h),
-        Vec3::new(h, -h, h),
-        Vec3::new(h, h, h),
-        Vec3::new(-h, h, h),
+    let mut vertices = Vec::new();
+    let mut normals = Vec::new();
+    let mut uvs = Vec::new();
+    let mut triangles = Vec::new();
+
+    // Dados para um cubo de 24 vértices (6 faces * 4 vértices)
+    let face_normals = [
+        Vec3::new(0.0, 0.0, 1.0),  // Frente
+        Vec3::new(0.0, 0.0, -1.0), // Trás
+        Vec3::new(0.0, 1.0, 0.0),  // Cima
+        Vec3::new(0.0, -1.0, 0.0), // Baixo
+        Vec3::new(1.0, 0.0, 0.0),  // Direita
+        Vec3::new(-1.0, 0.0, 0.0), // Esquerda
     ];
-    let triangles = vec![
-        [0, 2, 1],
-        [0, 3, 2], // back
-        [4, 5, 6],
-        [4, 6, 7], // front
-        [0, 1, 5],
-        [0, 5, 4], // bottom
-        [3, 7, 6],
-        [3, 6, 2], // top
-        [0, 4, 7],
-        [0, 7, 3], // left
-        [1, 2, 6],
-        [1, 6, 5], // right
+
+    let face_vertices = [
+        // Frente
+        [
+            Vec3::new(-h, -h, h),
+            Vec3::new(h, -h, h),
+            Vec3::new(h, h, h),
+            Vec3::new(-h, h, h),
+        ],
+        // Trás
+        [
+            Vec3::new(h, -h, -h),
+            Vec3::new(-h, -h, -h),
+            Vec3::new(-h, h, -h),
+            Vec3::new(h, h, -h),
+        ],
+        // Cima
+        [
+            Vec3::new(-h, h, h),
+            Vec3::new(h, h, h),
+            Vec3::new(h, h, -h),
+            Vec3::new(-h, h, -h),
+        ],
+        // Baixo
+        [
+            Vec3::new(-h, -h, -h),
+            Vec3::new(h, -h, -h),
+            Vec3::new(h, -h, h),
+            Vec3::new(-h, -h, h),
+        ],
+        // Direita
+        [
+            Vec3::new(h, -h, h),
+            Vec3::new(h, -h, -h),
+            Vec3::new(h, h, -h),
+            Vec3::new(h, h, h),
+        ],
+        // Esquerda
+        [
+            Vec3::new(-h, -h, -h),
+            Vec3::new(-h, -h, h),
+            Vec3::new(-h, h, h),
+            Vec3::new(-h, h, -h),
+        ],
     ];
+
+    for i in 0..6 {
+        let base = vertices.len() as u32;
+        vertices.extend(&face_vertices[i]);
+        for _ in 0..4 {
+            normals.push(face_normals[i]);
+        }
+        uvs.extend(&[[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]]);
+        triangles.push([base, base + 1, base + 2]);
+        triangles.push([base, base + 2, base + 3]);
+    }
+
     MeshData {
         name: "Cube".to_string(),
         vertices,
+        normals,
+        uvs,
         triangles,
+        texture_path: None,
     }
 }
 
@@ -1536,10 +1632,14 @@ fn make_plane_mesh() -> MeshData {
         Vec3::new(-h, 0.0, h),
     ];
     let triangles = vec![[0, 1, 2], [0, 2, 3]];
+    let v_count = vertices.len();
     MeshData {
         name: "Plane".to_string(),
         vertices,
+        normals: vec![Vec3::Y; v_count],
+        uvs: vec![[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]],
         triangles,
+        texture_path: None,
     }
 }
 
@@ -1560,13 +1660,17 @@ fn make_cone_mesh(segments: usize) -> MeshData {
     for i in 0..seg {
         let a = (1 + i) as u32;
         let b = (1 + ((i + 1) % seg)) as u32;
-        triangles.push([0, b, a]);
-        triangles.push([base_center, a, b]);
+        triangles.push([0, a, b]); // CCW: Apex, Current, Next
+        triangles.push([base_center, b, a]); // CCW: Center, Next, Current
     }
+    let vcount = vertices.len();
     MeshData {
         name: "Cone".to_string(),
         vertices,
+        normals: vec![], // Será computado
+        uvs: vec![[0.0, 0.0]; vcount],
         triangles,
+        texture_path: None,
     }
 }
 
@@ -1597,13 +1701,17 @@ fn make_cylinder_mesh(segments: usize) -> MeshData {
         let t1 = (n + seg) as u32;
         triangles.push([b0, b1, t1]);
         triangles.push([b0, t1, t0]);
-        triangles.push([bottom_center, b1, b0]);
-        triangles.push([top_center, t0, t1]);
+        triangles.push([bottom_center, b0, b1]);
+        triangles.push([top_center, t1, t0]);
     }
+    let vcount = vertices.len();
     MeshData {
         name: "Cylinder".to_string(),
         vertices,
+        normals: vec![], // Será computado
+        uvs: vec![[0.0, 0.0]; vcount],
         triangles,
+        texture_path: None,
     }
 }
 
@@ -1632,14 +1740,18 @@ fn make_sphere_mesh(stacks: usize, slices: usize) -> MeshData {
             let b = (i * cols + j + 1) as u32;
             let c = ((i + 1) * cols + j) as u32;
             let d = ((i + 1) * cols + j + 1) as u32;
-            triangles.push([a, c, d]);
-            triangles.push([a, d, b]);
+            triangles.push([a, d, c]); // CCW: TopLeft, BottomRight, BottomLeft
+            triangles.push([a, b, d]); // CCW: TopLeft, TopRight, BottomRight
         }
     }
+    let vcount = vertices.len();
     MeshData {
         name: "Sphere".to_string(),
         vertices,
+        normals: vec![], // Será computado
+        uvs: vec![[0.0, 0.0]; vcount],
         triangles,
+        texture_path: None,
     }
 }
 
@@ -1689,6 +1801,11 @@ fn write_mesh_blob(f: &mut File, mesh: &MeshData) -> Result<(), String> {
         f.write_all(&v.y.to_le_bytes()).map_err(|e| e.to_string())?;
         f.write_all(&v.z.to_le_bytes()).map_err(|e| e.to_string())?;
     }
+    for n in &mesh.normals {
+        f.write_all(&n.x.to_le_bytes()).map_err(|e| e.to_string())?;
+        f.write_all(&n.y.to_le_bytes()).map_err(|e| e.to_string())?;
+        f.write_all(&n.z.to_le_bytes()).map_err(|e| e.to_string())?;
+    }
     for tri in &mesh.triangles {
         f.write_all(&tri[0].to_le_bytes())
             .map_err(|e| e.to_string())?;
@@ -1718,6 +1835,17 @@ fn read_mesh_blob(f: &mut File, name: &str) -> Result<MeshData, String> {
         let z = f32::from_le_bytes(fb);
         vertices.push(Vec3::new(x, y, z));
     }
+    let mut normals = Vec::with_capacity(vcount);
+    for _ in 0..vcount {
+        let mut fb = [0_u8; 4];
+        f.read_exact(&mut fb).map_err(|e| e.to_string())?;
+        let x = f32::from_le_bytes(fb);
+        f.read_exact(&mut fb).map_err(|e| e.to_string())?;
+        let y = f32::from_le_bytes(fb);
+        f.read_exact(&mut fb).map_err(|e| e.to_string())?;
+        let z = f32::from_le_bytes(fb);
+        normals.push(Vec3::new(x, y, z));
+    }
     let mut triangles = Vec::with_capacity(tcount);
     for _ in 0..tcount {
         f.read_exact(&mut buf4).map_err(|e| e.to_string())?;
@@ -1731,7 +1859,10 @@ fn read_mesh_blob(f: &mut File, name: &str) -> Result<MeshData, String> {
     Ok(MeshData {
         name: name.to_string(),
         vertices,
+        normals,
+        uvs: vec![[0.0, 0.0]; vcount],
         triangles,
+        texture_path: None,
     })
 }
 
@@ -1742,7 +1873,7 @@ fn write_vmesh_cache(
 ) -> Result<(), String> {
     let cache = viewport_cache_file_path(source)?;
     let mut f = File::create(cache).map_err(|e| e.to_string())?;
-    f.write_all(b"VMSH2").map_err(|e| e.to_string())?;
+    f.write_all(b"VMSH3").map_err(|e| e.to_string())?;
     f.write_all(&stamp.0.to_le_bytes())
         .map_err(|e| e.to_string())?;
     f.write_all(&stamp.1.to_le_bytes())
@@ -1760,7 +1891,7 @@ fn read_vmesh_cache(source: &Path, stamp: (u64, u64)) -> Result<Option<ViewportM
     let mut f = File::open(cache).map_err(|e| e.to_string())?;
     let mut magic = [0_u8; 5];
     f.read_exact(&mut magic).map_err(|e| e.to_string())?;
-    if &magic != b"VMSH2" {
+    if &magic != b"VMSH3" {
         return Ok(None);
     }
     let mut buf8 = [0_u8; 8];
@@ -1784,7 +1915,7 @@ fn read_vmesh_cache(source: &Path, stamp: (u64, u64)) -> Result<Option<ViewportM
 
 fn load_fbx_ascii_mesh(path: &Path) -> Result<MeshData, String> {
     use fbxcel_dom::any::AnyDocument;
-    use fbxcel_dom::v7400::object::{geometry::TypedGeometryHandle, TypedObjectHandle};
+    use fbxcel_dom::v7400::object::{TypedObjectHandle, geometry::TypedGeometryHandle};
     use std::io::BufReader;
 
     let file = std::fs::File::open(path).map_err(|e| e.to_string())?;
@@ -1795,7 +1926,23 @@ fn load_fbx_ascii_mesh(path: &Path) -> Result<MeshData, String> {
     };
 
     let mut vertices: Vec<Vec3> = Vec::new();
+    let mut uvs: Vec<[f32; 2]> = Vec::new();
     let mut triangles: Vec<[u32; 3]> = Vec::new();
+    let mut texture_path: Option<String> = None;
+
+    // Try to find a texture path in the FBX document
+    for obj in doc.objects() {
+        if let TypedObjectHandle::Texture(tex) = obj.get_typed() {
+            if let Some(filename) = tex.name() {
+                // Resolve path relative to the FBX file
+                let fbx_dir = path.parent().unwrap_or(Path::new(""));
+                let full_path = fbx_dir.join(filename);
+                texture_path = Some(full_path.to_string_lossy().to_string());
+                break; // Take the first texture found for simplicity
+            }
+        }
+    }
+
     for obj in doc.objects() {
         let TypedObjectHandle::Geometry(TypedGeometryHandle::Mesh(mesh)) = obj.get_typed() else {
             continue;
@@ -1814,6 +1961,12 @@ fn load_fbx_ascii_mesh(path: &Path) -> Result<MeshData, String> {
             cps.iter()
                 .map(|p| Vec3::new(-(p.x as f32), p.y as f32, -(p.z as f32))),
         );
+
+        // Extract UVs if available (simplified - FBX UVs can be complex)
+        // For now, fill with zeros as placeholder
+        for _ in 0..cps.len() {
+            uvs.push([0.0, 0.0]);
+        }
 
         let mut poly: Vec<u32> = Vec::new();
         for raw in poly_verts.raw_polygon_vertices() {
@@ -1848,7 +2001,10 @@ fn load_fbx_ascii_mesh(path: &Path) -> Result<MeshData, String> {
     Ok(MeshData {
         name,
         vertices,
+        normals: vec![], // Será computado
+        uvs,
         triangles,
+        texture_path,
     })
 }
 
@@ -1858,22 +2014,54 @@ fn load_obj_mesh(path: &Path) -> Result<MeshData, String> {
         single_index: true,
         ..Default::default()
     };
-    let (models, _mats) = tobj::load_obj(path, &opt).map_err(|e| e.to_string())?;
+    let (models, materials_result) = tobj::load_obj(path, &opt).map_err(|e| e.to_string())?;
+    let materials = materials_result.map_err(|e| e.to_string())?;
+
+    // Prepend the directory of the obj file to material texture paths
+    let obj_dir = path.parent().unwrap_or(Path::new(""));
+    let mut materials = materials;
+    for material in &mut materials {
+        if let Some(ref mut tex_path) = material.diffuse_texture {
+            *tex_path = obj_dir.join(&*tex_path).to_string_lossy().to_string();
+        }
+    }
 
     let mut vertices = Vec::new();
+    let mut uvs = Vec::new();
     let mut triangles = Vec::new();
+    let mut texture_path: Option<String> = None;
+
     for m in models {
         let base = vertices.len() as u32;
         let mesh = m.mesh;
         for p in mesh.positions.chunks_exact(3) {
             vertices.push(Vec3::new(p[0], p[1], p[2]));
         }
+        // Load UVs if available
+        if let Some(uv_data) = mesh.texcoords.get(..(mesh.positions.len() / 3 * 2)) {
+            for uv in uv_data.chunks_exact(2) {
+                uvs.push([uv[0], uv[1]]);
+            }
+        }
         for idx in mesh.indices.chunks_exact(3) {
             triangles.push([base + idx[0], base + idx[1], base + idx[2]]);
+        }
+
+        // Extract texture path from material
+        if let Some(material_id) = mesh.material_id {
+            if let Some(material) = materials.get(material_id) {
+                if let Some(tex) = &material.diffuse_texture {
+                    texture_path = Some(tex.clone());
+                }
+            }
         }
     }
     if vertices.is_empty() || triangles.is_empty() {
         return Err("OBJ sem vértices/triângulos".to_string());
+    }
+    // Pad UVs if needed
+    while uvs.len() < vertices.len() {
+        uvs.push([0.0, 0.0]);
     }
     let name = path
         .file_name()
@@ -1883,7 +2071,10 @@ fn load_obj_mesh(path: &Path) -> Result<MeshData, String> {
     Ok(MeshData {
         name,
         vertices,
+        normals: vec![], // Será computado
+        uvs,
         triangles,
+        texture_path,
     })
 }
 
@@ -1891,7 +2082,11 @@ fn load_gltf_mesh(path: &Path) -> Result<MeshData, String> {
     let gltf = gltf::Gltf::open(path).map_err(|e| e.to_string())?;
     let buffers = load_gltf_buffers_mesh_only(path, &gltf)?;
     let mut vertices = Vec::new();
+    let mut uvs = Vec::new();
     let mut triangles = Vec::new();
+    let mut texture_path: Option<String> = None;
+
+    let gltf_dir = path.parent().unwrap_or(Path::new(""));
 
     if let Some(scene) = gltf
         .document
@@ -1904,7 +2099,10 @@ fn load_gltf_mesh(path: &Path) -> Result<MeshData, String> {
                 Mat4::IDENTITY,
                 &buffers,
                 &mut vertices,
+                &mut uvs,
                 &mut triangles,
+                &mut texture_path,
+                gltf_dir,
             );
         }
     } else {
@@ -1914,7 +2112,10 @@ fn load_gltf_mesh(path: &Path) -> Result<MeshData, String> {
                 Mat4::IDENTITY,
                 &buffers,
                 &mut vertices,
+                &mut uvs,
                 &mut triangles,
+                &mut texture_path,
+                gltf_dir,
             );
         }
     }
@@ -1930,7 +2131,10 @@ fn load_gltf_mesh(path: &Path) -> Result<MeshData, String> {
     Ok(MeshData {
         name,
         vertices,
+        normals: vec![], // Será computado
+        uvs,
         triangles,
+        texture_path,
     })
 }
 
@@ -1939,7 +2143,10 @@ fn append_gltf_node_meshes(
     parent: Mat4,
     buffers: &[Vec<u8>],
     vertices: &mut Vec<Vec3>,
+    uvs: &mut Vec<[f32; 2]>,
     triangles: &mut Vec<[u32; 3]>,
+    texture_path: &mut Option<String>,
+    gltf_dir: &Path,
 ) {
     let local = Mat4::from_cols_array_2d(&node.transform().matrix());
     let world = parent * local;
@@ -1954,30 +2161,63 @@ fn append_gltf_node_meshes(
                 continue;
             };
 
+            // Extract texture path if not already found
+            if texture_path.is_none() {
+                let material = primitive.material();
+                if let Some(info) = material.pbr_metallic_roughness().base_color_texture() {
+                    let tex = info.texture();
+                    if let gltf::image::Source::Uri { uri, .. } = tex.source().source() {
+                        let full_path = gltf_dir.join(uri);
+                        *texture_path = Some(full_path.to_string_lossy().to_string());
+                    }
+                }
+            }
             let base = vertices.len() as u32;
-            let local_verts: Vec<Vec3> = positions
-                .map(|p| world.transform_point3(Vec3::new(p[0], p[1], p[2])))
-                .collect();
-            let vcount = local_verts.len() as u32;
-            vertices.extend(local_verts);
+            let positions_vec: Vec<_> = positions.collect();
+            let positions_len = positions_vec.len();
+            vertices.extend(
+                positions_vec
+                    .iter()
+                    .map(|p| world.transform_point3(Vec3::new(p[0], p[1], p[2]))),
+            );
+
+            // Collect UVs
+            if let Some(reader_uvs) = reader.read_tex_coords(0) {
+                uvs.extend(reader_uvs.into_f32().map(|uv| [uv[0], uv[1]]));
+            } else {
+                // If no UVs, fill with zeros for each vertex
+                for _ in 0..positions_len {
+                    uvs.push([0.0, 0.0]);
+                }
+            }
 
             if let Some(indices) = reader.read_indices() {
-                let idx_u32: Vec<u32> = indices.into_u32().collect();
-                for tri in idx_u32.chunks_exact(3) {
-                    triangles.push([base + tri[0], base + tri[1], base + tri[2]]);
+                for i in indices.into_u32().collect::<Vec<u32>>().chunks_exact(3) {
+                    triangles.push([base + i[0], base + i[1], base + i[2]]);
                 }
             } else {
+                // If no indices, generate a triangle fan
                 let mut i = 0;
-                while i + 2 < vcount {
-                    triangles.push([base + i, base + i + 1, base + i + 2]);
-                    i += 3;
+                while i + 2 < positions_len as u32 {
+                    triangles.push([base, base + i + 1, base + i + 2]);
+                    i += 1;
                 }
             }
         }
     }
 
+    // Process children
     for child in node.children() {
-        append_gltf_node_meshes(child, world, buffers, vertices, triangles);
+        append_gltf_node_meshes(
+            child,
+            world,
+            buffers,
+            vertices,
+            uvs,
+            triangles,
+            texture_path,
+            gltf_dir,
+        );
     }
 }
 
@@ -2008,6 +2248,10 @@ fn load_gltf_buffers_mesh_only(path: &Path, gltf: &gltf::Gltf) -> Result<Vec<Vec
 }
 
 fn normalize_mesh(mesh: &mut MeshData) {
+    if mesh.vertices.is_empty() {
+        return;
+    }
+
     let mut min = Vec3::splat(f32::INFINITY);
     let mut max = Vec3::splat(f32::NEG_INFINITY);
     for v in &mesh.vertices {
@@ -2020,6 +2264,29 @@ fn normalize_mesh(mesh: &mut MeshData) {
     let scale = if longest > 0.0 { 1.1 / longest } else { 1.0 };
     for v in &mut mesh.vertices {
         *v = (*v - center) * scale;
+    }
+
+    // Calcular normais suaves
+    mesh.normals = vec![Vec3::ZERO; mesh.vertices.len()];
+    for tri in &mesh.triangles {
+        let i0 = tri[0] as usize;
+        let i1 = tri[1] as usize;
+        let i2 = tri[2] as usize;
+        if i0 < mesh.vertices.len() && i1 < mesh.vertices.len() && i2 < mesh.vertices.len() {
+            let p0 = mesh.vertices[i0];
+            let p1 = mesh.vertices[i1];
+            let p2 = mesh.vertices[i2];
+            let n = (p1 - p0).cross(p2 - p0);
+            mesh.normals[i0] += n;
+            mesh.normals[i1] += n;
+            mesh.normals[i2] += n;
+        }
+    }
+    for n in &mut mesh.normals {
+        *n = n.normalize_or_zero();
+        if n.length_squared() < 0.01 {
+            *n = Vec3::Y;
+        }
     }
 }
 

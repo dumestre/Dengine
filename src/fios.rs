@@ -435,7 +435,7 @@ pub struct FiosState {
     anim_current_time: f64,
     anim_total_duration: f64,
     anim_is_recording: bool,
-    anim_selected_track: Option<usize>,
+    _anim_selected_track: Option<usize>,
 }
 
 impl FiosState {
@@ -1374,7 +1374,7 @@ impl FiosState {
             anim_current_time: 0.0,
             anim_total_duration: 5.0,
             anim_is_recording: false,
-            anim_selected_track: None,
+            _anim_selected_track: None,
         };
         out.load_from_disk();
         out.load_lua_script_from_disk();
