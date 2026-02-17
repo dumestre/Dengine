@@ -1,0 +1,30 @@
+    Checking dengine v0.1.0 (D:\Dev\Porjetos\Dengine)
+error[E0061]: this method takes 5 arguments but 4 arguments were supplied
+    --> src\inspector.rs:1019:78
+     |
+1019 |   ...                   ui.painter().rect(
+     |  ____________________________________^^^^-
+1020 | | ...                       resp.rect.expand(2.0),
+1021 | | ...                       4.0,
+1022 | | ...                       Color32::TRANSPARENT,
+...    |
+1028 | | ...                       ),
+1029 | | ...                   );
+     | |_______________________- argument #5 of type `StrokeKind` is missing
+     |
+note: method defined here
+    --> C:\Users\DJDUM\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\egui-0.33.3\src\painter.rs:421:12
+     |
+ 421 |     pub fn rect(
+     |            ^^^^
+help: provide the argument
+     |
+1019 |                                                                 ui.painter().rect(
+ ...
+1028 |                                                                     ),
+1029 ~                                                                     /* StrokeKind */,
+1030 ~                                                                 );
+     |
+
+For more information about this error, try `rustc --explain E0061`.
+error: could not compile `dengine` (bin "dengine") due to 1 previous error

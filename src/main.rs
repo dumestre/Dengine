@@ -1609,6 +1609,10 @@ impl App for EditorApp {
             }
         }
 
+        let current_texture = self
+            .viewport
+            .object_texture_path(self.hierarchy.selected_object_name());
+
         // Janela Inspetor
         self.inspector.show(
             ctx,
@@ -1626,6 +1630,7 @@ impl App for EditorApp {
             &mut self.viewport.light_color,
             &mut self.viewport.light_intensity,
             &mut self.viewport.light_enabled,
+            current_texture,
         );
         if let Some((object_name, pos, rot, scale)) = self.inspector.take_transform_live_request() {
             let _ = self
@@ -1637,6 +1642,10 @@ impl App for EditorApp {
             let _ = self
                 .viewport
                 .apply_object_transform_components(&object_name, pos, rot, scale);
+        }
+        if let Some((object_name, texture_path)) = self.inspector.take_texture_request() {
+            self.viewport
+                .set_object_texture_path(&object_name, texture_path);
         }
 
         let animator_targets = self.inspector.animator_targets();
@@ -1771,16 +1780,27 @@ impl App for EditorApp {
         // Sincronizar TODAS as luzes do inspetor com a viewport
         for name in self.viewport.scene_object_names() {
             if let Some(light) = self.inspector.get_object_light(&name) {
-                if name == "Directional Light" {
-                    self.viewport.light_enabled = light.enabled;
-                    self.viewport.light_color = light.color;
-                    self.viewport.light_intensity = light.intensity;
-                } else {
-                    // TODO: A viewport precisa de um método para adicionar luzes pontuais/spots
-                    // Por enquanto, sincronizamos pelo menos os dados.
+                match light.light_type {
+                    inspector::LightType::Directional => {
+                        // Sincronizar luz direcional global
+                        self.viewport.light_enabled = light.enabled;
+                        self.viewport.light_color = light.color;
+                        self.viewport.light_intensity = light.intensity;
+                        self.viewport.light_yaw = light.yaw;
+                        self.viewport.light_pitch = light.pitch;
+                    }
+                    inspector::LightType::Point => {
+                        // TODO: Implementar point lights na viewport GPU
+                        // Seria necessário passar múltiplas luzes para o shader
+                    }
+                    inspector::LightType::Spot => {
+                        // TODO: Implementar spot lights na viewport GPU
+                        // Seria necessário passar múltiplas luzes com parâmetros de cone para o shader
+                    }
                 }
             }
         }
+
 
         let engine_busy = self.is_playing;
 

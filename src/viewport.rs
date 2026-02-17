@@ -281,6 +281,8 @@ impl ViewportPanel {
         let mut normals: Vec<Vec3> = Vec::new();
         let mut uvs: Vec<[f32; 2]> = Vec::new();
         let mut triangles: Vec<[u32; 3]> = Vec::new();
+        let mut texture_path: Option<String> = None;
+
         for entry in &self.scene_entries {
             let mesh = if use_proxy { &entry.proxy } else { &entry.full };
             let base = vertices.len() as u32;
@@ -312,6 +314,10 @@ impl ViewportPanel {
                     triangles.push([base + tri[0], base + tri[1], base + tri[2]]);
                 }
             }
+            // Collect texture from first mesh that has one
+            if texture_path.is_none() && mesh.texture_path.is_some() {
+                texture_path = mesh.texture_path.clone();
+            }
         }
         MeshData {
             name: "SceneBatch".to_string(),
@@ -319,7 +325,7 @@ impl ViewportPanel {
             normals,
             uvs,
             triangles,
-            texture_path: None,
+            texture_path,
         }
     }
 
@@ -1423,6 +1429,26 @@ impl ViewportPanel {
                 }
             });
     }
+
+    pub fn object_texture_path(&self, object_name: &str) -> Option<String> {
+        self.scene_entries
+            .iter()
+            .find(|e| e.name == object_name)
+            .and_then(|e| e.full.texture_path.clone())
+    }
+
+    pub fn set_object_texture_path(&mut self, object_name: &str, path: Option<String>) -> bool {
+        if let Some(entry) = self
+            .scene_entries
+            .iter_mut()
+            .find(|e| e.name == object_name)
+        {
+            entry.full.texture_path = path;
+            true
+        } else {
+            false
+        }
+    }
 }
 
 fn load_png_as_texture(ctx: &egui::Context, png_path: &str) -> Option<TextureHandle> {
@@ -1461,7 +1487,7 @@ fn make_proxy_mesh(full: &MeshData, max_tris: usize, max_vertices: usize) -> Mes
             normals: vec![Vec3::Y; 3],
             uvs: vec![[0.0, 0.0], [1.0, 0.0], [0.0, 1.0]],
             triangles: vec![[0, 1, 2]],
-            texture_path: None,
+            texture_path: full.texture_path.clone(),
         };
     }
 
@@ -1517,7 +1543,7 @@ fn make_proxy_mesh(full: &MeshData, max_tris: usize, max_vertices: usize) -> Mes
             normals: vec![Vec3::Y; 3],
             uvs: vec![[0.0, 0.0], [1.0, 0.0], [0.0, 1.0]],
             triangles: vec![[0, 1, 2]],
-            texture_path: None,
+            texture_path: full.texture_path.clone(),
         };
     }
 
@@ -2175,9 +2201,46 @@ fn append_gltf_node_meshes(
                 let material = primitive.material();
                 if let Some(info) = material.pbr_metallic_roughness().base_color_texture() {
                     let tex = info.texture();
-                    if let gltf::image::Source::Uri { uri, .. } = tex.source().source() {
-                        let full_path = gltf_dir.join(uri);
-                        *texture_path = Some(full_path.to_string_lossy().to_string());
+                    match tex.source().source() {
+                        gltf::image::Source::Uri { uri, .. } => {
+                            let full_path = gltf_dir.join(uri);
+                            *texture_path = Some(full_path.to_string_lossy().to_string());
+                        }
+                        gltf::image::Source::View { view, mime_type } => {
+                            let buffer_index = view.buffer().index();
+                            if let Some(buffer_data) = buffers.get(buffer_index) {
+                                let start = view.offset();
+                                let end = start + view.length();
+                                if end <= buffer_data.len() {
+                                    let content = &buffer_data[start..end];
+                                    let mut hasher =
+                                        std::collections::hash_map::DefaultHasher::new();
+                                    content.hash(&mut hasher);
+                                    let h = hasher.finish();
+                                    let ext = match mime_type {
+                                        "image/jpeg" => "jpg",
+                                        "image/png" => "png",
+                                        _ => "bin",
+                                    };
+                                    let cache_dir =
+                                        Path::new("Assets").join(".cache").join("textures");
+                                    if let Ok(_) = std::fs::create_dir_all(&cache_dir) {
+                                        let filename = format!("{:016x}.{}", h, ext);
+                                        let file_path = cache_dir.join(filename);
+                                        if !file_path.exists() {
+                                            let _ = std::fs::write(&file_path, content);
+                                        }
+                                        if let Ok(abs) = std::fs::canonicalize(&file_path) {
+                                            *texture_path = Some(abs.to_string_lossy().to_string());
+                                        } else {
+                                            // Fallback if canonicalize fails (e.g. file creation failed)
+                                            *texture_path =
+                                                Some(file_path.to_string_lossy().to_string());
+                                        }
+                                    }
+                                }
+                            }
+                        }
                     }
                 }
             }
