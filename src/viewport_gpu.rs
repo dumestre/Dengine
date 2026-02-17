@@ -24,6 +24,9 @@ struct SceneState {
     model: [[f32; 4]; 4],
     camera_pos: [f32; 3],
     light_dir: [f32; 3],
+    light_color: [f32; 3],
+    light_intensity: f32,
+    light_enabled: f32,
     texture_path: Option<String>,
 }
 
@@ -86,6 +89,10 @@ impl ViewportGpuRenderer {
         mvp: Mat4,
         model: Mat4,
         camera_pos: Vec3,
+        light_dir: Vec3,
+        light_color: Vec3,
+        light_intensity: f32,
+        light_enabled: bool,
         texture_path: Option<String>,
     ) {
         let mut s = self.scene.lock().expect("scene lock");
@@ -134,8 +141,10 @@ impl ViewportGpuRenderer {
         s.mvp = mvp.to_cols_array_2d();
         s.model = model.to_cols_array_2d();
         s.camera_pos = [camera_pos.x, camera_pos.y, camera_pos.z];
-        // Direção de luz padrão — de cima-direita-frente
-        s.light_dir = [0.42, 0.78, 0.46];
+        s.light_dir = [light_dir.x, light_dir.y, light_dir.z];
+        s.light_color = [light_color.x, light_color.y, light_color.z];
+        s.light_intensity = light_intensity;
+        s.light_enabled = if light_enabled { 1.0 } else { 0.0 };
     }
 
     pub fn paint_callback(&self, rect: egui::Rect) -> egui::PaintCallback {
@@ -571,42 +580,45 @@ impl egui_wgpu::CallbackTrait for Draw3dCallback {
                 offs += 4;
             }
         }
-        // camera_pos
+        // camera_pos (128..140)
         push_f32(&mut resources.uniform_data, offs, scene.camera_pos[0]);
         offs += 4;
         push_f32(&mut resources.uniform_data, offs, scene.camera_pos[1]);
         offs += 4;
         push_f32(&mut resources.uniform_data, offs, scene.camera_pos[2]);
         offs += 4;
-        push_f32(&mut resources.uniform_data, offs, 0.0); // _pad0
+        // light_intensity (140..144)
+        push_f32(&mut resources.uniform_data, offs, scene.light_intensity);
         offs += 4;
-        // light_dir
+        // light_dir (144..156)
         push_f32(&mut resources.uniform_data, offs, scene.light_dir[0]);
         offs += 4;
         push_f32(&mut resources.uniform_data, offs, scene.light_dir[1]);
         offs += 4;
         push_f32(&mut resources.uniform_data, offs, scene.light_dir[2]);
         offs += 4;
-        push_f32(&mut resources.uniform_data, offs, 0.0); // _pad1
+        // light_enabled (156..160)
+        push_f32(&mut resources.uniform_data, offs, scene.light_enabled);
         offs += 4;
-        // tint (branco)
-        push_f32(&mut resources.uniform_data, offs, 1.0);
+        // light_color (160..172)
+        push_f32(&mut resources.uniform_data, offs, scene.light_color[0]);
         offs += 4;
-        push_f32(&mut resources.uniform_data, offs, 1.0);
+        push_f32(&mut resources.uniform_data, offs, scene.light_color[1]);
         offs += 4;
-        push_f32(&mut resources.uniform_data, offs, 1.0);
+        push_f32(&mut resources.uniform_data, offs, scene.light_color[2]);
         offs += 4;
-        push_f32(&mut resources.uniform_data, offs, 1.0);
-        offs += 4;
-        // has_texture
+        // has_texture (172..176)
         push_f32(&mut resources.uniform_data, offs, has_texture);
         offs += 4;
-        // padding
-        push_f32(&mut resources.uniform_data, offs, 0.0);
+        // tint (176..192)
+        push_f32(&mut resources.uniform_data, offs, 1.0); // R
         offs += 4;
-        push_f32(&mut resources.uniform_data, offs, 0.0);
+        push_f32(&mut resources.uniform_data, offs, 1.0); // G
         offs += 4;
-        push_f32(&mut resources.uniform_data, offs, 0.0);
+        push_f32(&mut resources.uniform_data, offs, 1.0); // B
+        offs += 4;
+        push_f32(&mut resources.uniform_data, offs, 1.0); // A
+        offs += 4;
         let _ = offs;
 
         queue.write_buffer(&resources.uniform_buffer, 0, &resources.uniform_data);

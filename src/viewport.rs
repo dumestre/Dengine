@@ -54,6 +54,11 @@ pub struct ViewportPanel {
     next_import_job_id: u64,
     undo_stack: Vec<ViewportSnapshot>,
     redo_stack: Vec<ViewportSnapshot>,
+    pub light_yaw: f32,
+    pub light_pitch: f32,
+    pub light_color: [f32; 3],
+    pub light_intensity: f32,
+    pub light_enabled: bool,
 }
 
 #[derive(Clone, PartialEq)]
@@ -221,6 +226,11 @@ impl ViewportPanel {
             next_import_job_id: 1,
             undo_stack: Vec::new(),
             redo_stack: Vec::new(),
+            light_yaw: 0.78,
+            light_pitch: 0.42,
+            light_color: [1.0, 1.0, 1.0],
+            light_intensity: 1.0,
+            light_enabled: true,
         };
         s.push_undo_snapshot();
         s
@@ -559,14 +569,9 @@ impl ViewportPanel {
         }
         self.push_undo_snapshot();
         let nav_proxy = make_proxy_mesh(&full, VIEWPORT_NAV_TRIANGLES, VIEWPORT_NAV_VERTICES);
-        let idx = self.scene_entries.len();
-        let col = (idx % 4) as f32;
-        let row = (idx / 4) as f32;
-        let spacing = 1.9_f32;
-        let tx = (col - 1.5) * spacing;
-        let tz = row * spacing;
-        let rotation = Mat4::from_rotation_y(std::f32::consts::PI);
-        let transform = rotation * Mat4::from_translation(Vec3::new(tx, 0.0, tz));
+        let target_pos = self.camera_target;
+        let rotation = Mat4::from_rotation_y(self.camera_yaw + std::f32::consts::PI);
+        let transform = Mat4::from_translation(target_pos) * rotation;
         let name = object_name.to_string();
         self.scene_entries.push(SceneEntry {
             name: name.clone(),
@@ -676,15 +681,10 @@ impl ViewportPanel {
                                 .pending_mesh_name
                                 .take()
                                 .unwrap_or_else(|| mesh.name.clone());
-                            let idx = self.scene_entries.len();
-                            let col = (idx % 4) as f32;
-                            let row = (idx / 4) as f32;
-                            let spacing = 1.9_f32;
-                            let tx = (col - 1.5) * spacing;
-                            let tz = row * spacing;
-                            let rotation = Mat4::from_rotation_y(std::f32::consts::PI);
-                            let transform =
-                                rotation * Mat4::from_translation(Vec3::new(tx, 0.0, tz));
+                            let target_pos = self.camera_target;
+                            let rotation =
+                                Mat4::from_rotation_y(self.camera_yaw + std::f32::consts::PI);
+                            let transform = Mat4::from_translation(target_pos) * rotation;
                             self.scene_entries.push(SceneEntry {
                                 name: name.clone(),
                                 transform,
@@ -1331,6 +1331,11 @@ impl ViewportPanel {
                         if let Some(gpu) = gpu_renderer {
                             let scene_batch = self.build_gpu_scene_mesh(use_proxy);
                             let mesh_id = self.gpu_scene_mesh_id(use_proxy);
+                            let light_dir = Vec3::new(
+                                self.light_yaw.cos() * self.light_pitch.cos(),
+                                self.light_pitch.sin(),
+                                self.light_yaw.sin() * self.light_pitch.cos(),
+                            );
                             gpu.update_scene(
                                 mesh_id,
                                 &scene_batch.vertices,
@@ -1340,6 +1345,10 @@ impl ViewportPanel {
                                 proj * view,
                                 Mat4::IDENTITY,
                                 eye,
+                                light_dir,
+                                Vec3::from(self.light_color),
+                                self.light_intensity,
+                                self.light_enabled,
                                 scene_batch.texture_path,
                             );
                             let cb = gpu.paint_callback(viewport_rect);

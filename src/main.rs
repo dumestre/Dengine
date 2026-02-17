@@ -9,11 +9,11 @@ mod viewport_gpu;
 
 use eframe::egui::text::LayoutJob;
 use eframe::egui::{TextureHandle, TextureOptions};
-use eframe::{egui, App, Frame, NativeOptions};
+use eframe::{App, Frame, NativeOptions, egui};
 use epaint::ColorImage;
 use hierarchy::HierarchyWindow;
 use inspector::InspectorWindow;
-use portable_pty::{native_pty_system, CommandBuilder, PtySize};
+use portable_pty::{CommandBuilder, PtySize, native_pty_system};
 use project::ProjectWindow;
 use raw_window_handle::{HasWindowHandle, RawWindowHandle};
 use std::collections::{HashMap, HashSet};
@@ -21,8 +21,8 @@ use std::fs::{self, File};
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use std::sync::mpsc::{self, Receiver, TryRecvError};
 use std::sync::Arc;
+use std::sync::mpsc::{self, Receiver, TryRecvError};
 use viewport::ViewportPanel;
 use viewport_gpu::ViewportGpuRenderer;
 use vt100::Parser;
@@ -1621,6 +1621,11 @@ impl App for EditorApp {
             &animation_controllers,
             &animation_modules,
             &fbx_animation_clips,
+            &mut self.viewport.light_yaw,
+            &mut self.viewport.light_pitch,
+            &mut self.viewport.light_color,
+            &mut self.viewport.light_intensity,
+            &mut self.viewport.light_enabled,
         );
         if let Some((object_name, pos, rot, scale)) = self.inspector.take_transform_live_request() {
             let _ = self
@@ -1726,7 +1731,7 @@ impl App for EditorApp {
                         vy = rb.jump_impulse;
                     }
                 }
-                vy += rb.gravity * dt;
+                vy += rb.gravity[1] * dt;
                 let dy = vy * dt;
                 if dy.abs() > 1e-6 {
                     let _ = self.viewport.move_object_by(&name, [0.0, dy, 0.0]);
@@ -1759,6 +1764,21 @@ impl App for EditorApp {
         for name in self.viewport.scene_object_names() {
             if self.hierarchy.object_is_deleted(&name) {
                 let _ = self.viewport.remove_scene_object(&name);
+                self.inspector.remove_object_data(&name);
+            }
+        }
+
+        // Sincronizar TODAS as luzes do inspetor com a viewport
+        for name in self.viewport.scene_object_names() {
+            if let Some(light) = self.inspector.get_object_light(&name) {
+                if name == "Directional Light" {
+                    self.viewport.light_enabled = light.enabled;
+                    self.viewport.light_color = light.color;
+                    self.viewport.light_intensity = light.intensity;
+                } else {
+                    // TODO: A viewport precisa de um método para adicionar luzes pontuais/spots
+                    // Por enquanto, sincronizamos pelo menos os dados.
+                }
             }
         }
 

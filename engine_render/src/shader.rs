@@ -20,14 +20,12 @@ struct Uniforms {
     mvp: mat4x4<f32>,
     model: mat4x4<f32>,
     camera_pos: vec3<f32>,
-    _pad0: f32,
+    light_intensity: f32,
     light_dir: vec3<f32>,
-    _pad1: f32,
-    tint: vec4<f32>,
+    light_enabled: f32,
+    light_color: vec3<f32>,
     has_texture: f32,
-    _pad2: f32,
-    _pad3: f32,
-    _pad4: f32,
+    tint: vec4<f32>,
 };
 
 @group(0) @binding(0)
@@ -78,21 +76,28 @@ fn fs_main(v: VsOut) -> @location(0) vec4<f32> {
         n = c * inverseSqrt(len2);
     }
 
-    // Light direction (normalized directional light)
-    let l = normalize(ubo.light_dir);
-
     // View direction
     let view_dir = normalize(ubo.camera_pos - v.world_pos);
 
-    // Blinn-Phong lighting
+    // Default lighting factors
     let ambient = 0.15;
-    let ndotl = max(dot(n, l), 0.0);
-    let diffuse = ndotl * 0.65;
+    var diffuse = 0.0;
+    var specular = 0.0;
+    var l_color = vec3<f32>(1.0, 1.0, 1.0);
 
-    // Specular (Blinn half-vector)
-    let half_dir = normalize(l + view_dir);
-    let ndoth = max(dot(n, half_dir), 0.0);
-    let specular = pow(ndoth, 32.0) * 0.25;
+    if (ubo.light_enabled > 0.5) {
+        // Light direction (normalized directional light)
+        let l = normalize(ubo.light_dir);
+        let ndotl = max(dot(n, l), 0.0);
+        diffuse = ndotl * 0.65;
+
+        // Specular (Blinn half-vector)
+        let half_dir = normalize(l + view_dir);
+        let ndoth = max(dot(n, half_dir), 0.0);
+        specular = pow(ndoth, 32.0) * 0.25;
+
+        l_color = ubo.light_color * ubo.light_intensity;
+    }
 
     // Rim lighting for depth perception
     let rim = pow(1.0 - max(dot(n, view_dir), 0.0), 2.5) * 0.08;
@@ -101,7 +106,8 @@ fn fs_main(v: VsOut) -> @location(0) vec4<f32> {
     let fill_dir = normalize(vec3<f32>(-0.3, -0.5, -0.4));
     let fill = max(dot(n, fill_dir), 0.0) * 0.10;
 
-    let shade = clamp(ambient + diffuse + specular + rim + fill, 0.0, 1.0);
+    let total_light = (ambient + (diffuse + specular) + rim + fill);
+    let shade = clamp(total_light, 0.0, 1.5); // Allow slightly over 1.0 for highlights
 
     // Base color from texture or tint
     var base_color = ubo.tint;
@@ -110,7 +116,7 @@ fn fs_main(v: VsOut) -> @location(0) vec4<f32> {
         base_color = tex_color * ubo.tint;
     }
 
-    let color = base_color.rgb * shade;
+    let color = base_color.rgb * l_color * shade;
     return vec4<f32>(color, base_color.a);
 }
 "#;
