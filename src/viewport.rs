@@ -77,6 +77,7 @@ struct MeshData {
     uvs: Vec<[f32; 2]>,
     triangles: Vec<[u32; 3]>,
     texture_path: Option<String>,
+    material_path: Option<String>,
 }
 
 #[derive(Clone, PartialEq)]
@@ -326,6 +327,7 @@ impl ViewportPanel {
             uvs,
             triangles,
             texture_path,
+            material_path: None,
         }
     }
 
@@ -1449,6 +1451,19 @@ impl ViewportPanel {
             false
         }
     }
+
+    pub fn set_object_material_path(&mut self, object_name: &str, path: Option<String>) -> bool {
+        if let Some(entry) = self
+            .scene_entries
+            .iter_mut()
+            .find(|e| e.name == object_name)
+        {
+            entry.full.material_path = path;
+            true
+        } else {
+            false
+        }
+    }
 }
 
 fn load_png_as_texture(ctx: &egui::Context, png_path: &str) -> Option<TextureHandle> {
@@ -1488,6 +1503,7 @@ fn make_proxy_mesh(full: &MeshData, max_tris: usize, max_vertices: usize) -> Mes
             uvs: vec![[0.0, 0.0], [1.0, 0.0], [0.0, 1.0]],
             triangles: vec![[0, 1, 2]],
             texture_path: full.texture_path.clone(),
+            material_path: full.material_path.clone(),
         };
     }
 
@@ -1544,6 +1560,7 @@ fn make_proxy_mesh(full: &MeshData, max_tris: usize, max_vertices: usize) -> Mes
             uvs: vec![[0.0, 0.0], [1.0, 0.0], [0.0, 1.0]],
             triangles: vec![[0, 1, 2]],
             texture_path: full.texture_path.clone(),
+            material_path: full.material_path.clone(),
         };
     }
 
@@ -1557,7 +1574,8 @@ fn make_proxy_mesh(full: &MeshData, max_tris: usize, max_vertices: usize) -> Mes
         normals: vec![], // Será recalculado
         uvs: vec![],
         triangles,
-        texture_path: full.texture_path.clone(), // Proxy should inherit texture path from full
+        texture_path: full.texture_path.clone(),
+        material_path: full.material_path.clone(),
     };
     normalize_mesh(&mut res); // Garante normais e UVs
     res
@@ -1655,6 +1673,7 @@ fn make_cube_mesh() -> MeshData {
         uvs,
         triangles,
         texture_path: None,
+        material_path: None,
     }
 }
 
@@ -1675,6 +1694,7 @@ fn make_plane_mesh() -> MeshData {
         uvs: vec![[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]],
         triangles,
         texture_path: None,
+        material_path: None,
     }
 }
 
@@ -1706,6 +1726,7 @@ fn make_cone_mesh(segments: usize) -> MeshData {
         uvs: vec![[0.0, 0.0]; vcount],
         triangles,
         texture_path: None,
+        material_path: None,
     }
 }
 
@@ -1747,6 +1768,7 @@ fn make_cylinder_mesh(segments: usize) -> MeshData {
         uvs: vec![[0.0, 0.0]; vcount],
         triangles,
         texture_path: None,
+        material_path: None,
     }
 }
 
@@ -1787,6 +1809,7 @@ fn make_sphere_mesh(stacks: usize, slices: usize) -> MeshData {
         uvs: vec![[0.0, 0.0]; vcount],
         triangles,
         texture_path: None,
+        material_path: None,
     }
 }
 
@@ -1898,6 +1921,7 @@ fn read_mesh_blob(f: &mut File, name: &str) -> Result<MeshData, String> {
         uvs: vec![[0.0, 0.0]; vcount],
         triangles,
         texture_path: None,
+        material_path: None,
     })
 }
 
@@ -2040,6 +2064,7 @@ fn load_fbx_ascii_mesh(path: &Path) -> Result<MeshData, String> {
         uvs,
         triangles,
         texture_path,
+        material_path: None,
     })
 }
 
@@ -2110,6 +2135,7 @@ fn load_obj_mesh(path: &Path) -> Result<MeshData, String> {
         uvs,
         triangles,
         texture_path,
+        material_path: None,
     })
 }
 
@@ -2170,6 +2196,7 @@ fn load_gltf_mesh(path: &Path) -> Result<MeshData, String> {
         uvs,
         triangles,
         texture_path,
+        material_path: None,
     })
 }
 

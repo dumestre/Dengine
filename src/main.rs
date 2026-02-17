@@ -343,53 +343,75 @@ impl EditorApp {
     }
 
     fn refresh_hub_projects(&mut self) {
+        eprintln!("[HUB] refresh_hub_projects iniciado");
         let mut out = Vec::<PathBuf>::new();
         let root = Path::new(".");
+        eprintln!("[HUB] Coletando arquivos .deng...");
         collect_deng_files(root, root, 0, &mut out);
+        eprintln!("[HUB] {} projetos coletados", out.len());
+        eprintln!("[HUB] Carregando registry...");
         for p in Self::load_hub_registry() {
             out.push(p);
         }
+        eprintln!("[HUB] Total apos registry: {} projetos", out.len());
         Self::sort_and_dedupe_paths(&mut out);
         self.hub_projects = out;
+        eprintln!("[HUB] Salvando registry...");
         self.save_hub_registry();
         if let Some(sel) = self.hub_selected {
             if sel >= self.hub_projects.len() {
                 self.hub_selected = None;
             }
         }
+        eprintln!("[HUB] refresh_hub_projects concluido");
     }
 
     fn create_project_dialog(&mut self) {
+        eprintln!("[HUB] create_project_dialog iniciado");
         let picked = rfd::FileDialog::new()
             .add_filter("Dengine Project", &["deng"])
             .set_file_name("NovoProjeto.deng")
             .save_file();
         let Some(path) = picked else {
+            eprintln!("[HUB] Nenhum projeto selecionado");
             return;
         };
+        eprintln!("[HUB] Projeto selecionado: {:?}", path);
         let project_file = Self::resolve_project_file_path(&path, true);
+        eprintln!("[HUB] Project file resolvido: {:?}", project_file);
 
         if let Ok(mut f) = File::create(&project_file) {
             let _ = f.write_all(b"DENG1\n");
+            eprintln!("[HUB] Arquivo .deng criado");
         }
         let normalized = Self::resolve_project_file_path(&project_file, true);
+        eprintln!("[HUB] Normalizado: {:?}", normalized);
         self.current_project = Some(normalized.clone());
         self.register_hub_project(&normalized);
         self.show_hub = false;
+        eprintln!("[HUB] show_hub = false, refresh_hub_projects");
         self.refresh_hub_projects();
+        eprintln!("[HUB] create_project_dialog concluido");
     }
 
     fn open_project_dialog(&mut self) {
+        eprintln!("[HUB] open_project_dialog iniciado");
         let picked = rfd::FileDialog::new()
             .add_filter("Dengine Project", &["deng"])
             .pick_file();
         let Some(path) = picked else {
+            eprintln!("[HUB] Nenhum projeto selecionado");
             return;
         };
+        eprintln!("[HUB] Projeto selecionado: {:?}", path);
         let normalized = Self::resolve_project_file_path(&path, false);
+        eprintln!("[HUB] Normalizado: {:?}", normalized);
         self.current_project = Some(normalized.clone());
         self.register_hub_project(&normalized);
         self.show_hub = false;
+        eprintln!("[HUB] show_hub = false");
+        self.refresh_hub_projects();
+        eprintln!("[HUB] open_project_dialog concluido");
     }
 
     fn draw_hub(&mut self, ctx: &egui::Context) {
@@ -1647,6 +1669,16 @@ impl App for EditorApp {
             self.viewport
                 .set_object_texture_path(&object_name, texture_path);
         }
+        if let Some((object_name, material_path)) = self.inspector.take_material_request() {
+            self.viewport
+                .set_object_material_path(&object_name, material_path);
+        }
+        // Handle material drop from hierarchy
+        if let Some((object_name, material_path)) = HierarchyWindow::take_pending_material_drop(ctx) {
+            eprintln!("[MATERIAL] Drop da hierarchy: objeto={}, material={}", object_name, material_path);
+            self.viewport
+                .set_object_material_path(&object_name, Some(material_path));
+        }
 
         let animator_targets = self.inspector.animator_targets();
         let live_anim_names: HashSet<String> =
@@ -2346,6 +2378,7 @@ fn collect_deng_files(root: &Path, current: &Path, depth: usize, out: &mut Vec<P
                 .strip_prefix(root)
                 .map(PathBuf::from)
                 .unwrap_or(path.clone());
+            eprintln!("[HUB] Encontrado .deng: {:?}", rel);
             out.push(rel);
         }
     }

@@ -162,6 +162,7 @@ pub struct InspectorWindow {
     object_texture: HashMap<String, String>,
     object_material: HashMap<String, String>,
     pending_texture_request: Option<(String, Option<String>)>,
+    pending_material_request: Option<(String, Option<String>)>,
     apply_loading_until: Option<Instant>,
 }
 
@@ -227,6 +228,7 @@ impl InspectorWindow {
             object_texture: HashMap::new(),
             object_material: HashMap::new(),
             pending_texture_request: None,
+            pending_material_request: None,
             apply_loading_until: None,
         }
     }
@@ -282,6 +284,10 @@ impl InspectorWindow {
 
     pub fn take_texture_request(&mut self) -> Option<(String, Option<String>)> {
         self.pending_texture_request.take()
+    }
+
+    pub fn take_material_request(&mut self) -> Option<(String, Option<String>)> {
+        self.pending_material_request.take()
     }
 
     pub fn get_object_light(&self, object_name: &str) -> Option<LightDraft> {
@@ -1040,16 +1046,32 @@ impl InspectorWindow {
                                                     );
 
                                                     let mut current_mat = self.object_material.get(selected_object).cloned().unwrap_or_default();
+                                                    let mut mat_dropped = false;
+
+                                                    // Check for dropped files (external)
+                                                    if let Some(dropped) = ui.ctx().input(|i| i.raw.dropped_files.first().cloned()) {
+                                                        if let Some(path) = &dropped.path {
+                                                            let ext = path.extension()
+                                                                .and_then(|e| e.to_str())
+                                                                .unwrap_or("")
+                                                                .to_lowercase();
+                                                            if matches!(ext.as_str(), "mat" | "material") {
+                                                                current_mat = path.to_string_lossy().to_string();
+                                                                mat_dropped = true;
+                                                            }
+                                                        }
+                                                    }
+
                                                     let mat_frame = egui::Frame::new()
                                                         .fill(Color32::from_rgb(35, 35, 35))
                                                         .stroke(Stroke::new(1.0, Color32::from_rgb(58, 58, 58)))
                                                         .corner_radius(6)
                                                         .inner_margin(egui::Margin::symmetric(8, 6));
 
-                                                    mat_frame.show(ui, |ui| {
+                                                    let mat_resp = mat_frame.show(ui, |ui| {
                                                         ui.horizontal(|ui| {
                                                             // Material indicator circle
-                                                            let circle_color = if !current_mat.is_empty() {
+                                                            let circle_color = if !current_mat.is_empty() || mat_dropped {
                                                                 Color32::from_rgb(255, 165, 0) // Laranja
                                                             } else {
                                                                 Color32::from_rgb(100, 100, 100)
@@ -1069,28 +1091,72 @@ impl InspectorWindow {
                                                         });
                                                     });
 
-                                                    // Drag and drop for material
-                                                    let is_hovering = ui.ctx().input(|i| !i.raw.hovered_files.is_empty());
-                                                    if is_hovering {
-                                                        if let Some(_pointer_pos) = ui.ctx().input(|i| i.pointer.hover_pos()) {
-                                                            // TODO: detect if over material field
-                                                        }
-                                                    }
-
-                                                    if let Some(dropped) = ui.ctx().input(|i| i.raw.dropped_files.first().cloned()) {
-                                                        if let Some(path) = &dropped.path {
-                                                            let path_str = path.to_string_lossy().to_string();
-                                                            let ext = path.extension()
+                                                    // Check for internal drag from Project window
+                                                    let pointer_pos = ui.ctx().input(|i| i.pointer.hover_pos());
+                                                    let is_dragging = ui.ctx().input(|i| i.pointer.primary_down() && i.pointer.delta().length_sq() > 0.0);
+                                                    
+                                                    if is_dragging && pointer_pos.is_some() && mat_resp.response.rect.contains(pointer_pos.unwrap()) {
+                                                        // Check if dragging from project window
+                                                        if let Some(dragging_asset) = ui.data(|d| d.get_temp::<String>(egui::Id::new("project_dragging_asset"))) {
+                                                            let ext = std::path::Path::new(&dragging_asset)
+                                                                .extension()
                                                                 .and_then(|e| e.to_str())
                                                                 .unwrap_or("")
                                                                 .to_lowercase();
                                                             if matches!(ext.as_str(), "mat" | "material") {
-                                                                current_mat = path_str;
+                                                                current_mat = dragging_asset.clone();
+                                                                mat_dropped = true;
+                                                                eprintln!("[MATERIAL] Drop interno do projeto: {}", dragging_asset);
                                                             }
                                                         }
                                                     }
 
-                                                    self.object_material.insert(selected_object.to_string(), current_mat);
+                                                    // Drag-drop highlight for material (external files)
+                                                    let is_hovering_file = ui.ctx().input(|i| !i.raw.hovered_files.is_empty());
+                                                    if is_hovering_file {
+                                                        if let Some(pointer_pos) = ui.ctx().input(|i| i.pointer.hover_pos()) {
+                                                            if mat_resp.response.rect.contains(pointer_pos) {
+                                                                ui.painter().rect_stroke(
+                                                                    mat_resp.response.rect.expand(2.0),
+                                                                    4.0,
+                                                                    Stroke::new(2.0, Color32::from_rgb(255, 165, 0)),
+                                                                    egui::StrokeKind::Outside,
+                                                                );
+                                                            }
+                                                        }
+                                                    }
+                                                    
+                                                    // Highlight for internal drag (from Project window)
+                                                    let pointer_pos = ui.ctx().input(|i| i.pointer.hover_pos());
+                                                    let is_dragging = ui.ctx().input(|i| i.pointer.primary_down() && i.pointer.delta().length_sq() > 0.0);
+                                                    if is_dragging && pointer_pos.is_some() && mat_resp.response.rect.contains(pointer_pos.unwrap()) {
+                                                        if let Some(dragging_asset) = ui.data(|d| d.get_temp::<String>(egui::Id::new("project_dragging_asset"))) {
+                                                            let ext = std::path::Path::new(&dragging_asset)
+                                                                .extension()
+                                                                .and_then(|e| e.to_str())
+                                                                .unwrap_or("")
+                                                                .to_lowercase();
+                                                            if matches!(ext.as_str(), "mat" | "material") {
+                                                                ui.painter().rect_stroke(
+                                                                    mat_resp.response.rect.expand(2.0),
+                                                                    4.0,
+                                                                    Stroke::new(2.0, Color32::from_rgb(255, 165, 0)),
+                                                                    egui::StrokeKind::Outside,
+                                                                );
+                                                            }
+                                                        }
+                                                    }
+
+                                                    let prev_mat = self.object_material.get(selected_object).cloned().unwrap_or_default();
+                                                    self.object_material.insert(selected_object.to_string(), current_mat.clone());
+
+                                                    if prev_mat != current_mat {
+                                                        eprintln!("[MATERIAL] Inspector: objeto={}, material={:?}", selected_object, current_mat);
+                                                        self.pending_material_request = Some((
+                                                            selected_object.to_string(),
+                                                            if current_mat.trim().is_empty() { None } else { Some(current_mat) },
+                                                        ));
+                                                    }
 
                                                     ui.add_space(10.0);
 
@@ -1111,7 +1177,12 @@ impl InspectorWindow {
                                                         .inner_margin(egui::Margin::symmetric(8, 6));
 
                                                     let mut resp_changed = false;
-                                                    tex_frame.show(ui, |ui| {
+                                                    
+                                                    // Check for internal drag from Project window (texture)
+                                                    let pointer_pos = ui.ctx().input(|i| i.pointer.hover_pos());
+                                                    let is_dragging = ui.ctx().input(|i| i.pointer.primary_down() && i.pointer.delta().length_sq() > 0.0);
+                                                    
+                                                    let tex_resp = tex_frame.show(ui, |ui| {
                                                         let is_hovering_file = ui.ctx().input(|i| !i.raw.hovered_files.is_empty());
 
                                                         ui.horizontal(|ui| {
@@ -1136,7 +1207,7 @@ impl InspectorWindow {
 
                                                             let resp = ui.text_edit_singleline(&mut current_tex);
 
-                                                            // Drag and drop feedback
+                                                            // Drag and drop feedback (external files)
                                                             if is_hovering_file {
                                                                 if let Some(pointer_pos) = ui.ctx().input(|i| i.pointer.hover_pos()) {
                                                                     if resp.rect.contains(pointer_pos) {
@@ -1149,8 +1220,8 @@ impl InspectorWindow {
                                                                     }
                                                                 }
                                                             }
-
-                                                            // Handle dropped files
+                                                            
+                                                            // Handle dropped files (external)
                                                             let dropped_files = ui.ctx().input(|i| i.raw.dropped_files.clone());
                                                             if !dropped_files.is_empty() {
                                                                 if let Some(pointer_pos) = ui.ctx().input(|i| i.pointer.hover_pos()) {
@@ -1174,6 +1245,22 @@ impl InspectorWindow {
                                                                     }
                                                                 }
                                                             }
+                                                            
+                                                            // Handle internal drag from Project window
+                                                            if is_dragging && pointer_pos.is_some() && resp.rect.contains(pointer_pos.unwrap()) {
+                                                                if let Some(dragging_asset) = ui.data(|d| d.get_temp::<String>(egui::Id::new("project_dragging_asset"))) {
+                                                                    let ext = std::path::Path::new(&dragging_asset)
+                                                                        .extension()
+                                                                        .and_then(|e| e.to_str())
+                                                                        .unwrap_or("")
+                                                                        .to_lowercase();
+                                                                    if matches!(ext.as_str(), "png" | "jpg" | "jpeg" | "tga" | "bmp") {
+                                                                        current_tex = dragging_asset.clone();
+                                                                        resp_changed = true;
+                                                                        eprintln!("[TEXTURA] Drop interno do projeto: {}", dragging_asset);
+                                                                    }
+                                                                }
+                                                            }
 
                                                             if resp.changed() {
                                                                 resp_changed = true;
@@ -1185,6 +1272,25 @@ impl InspectorWindow {
                                                             }
                                                         });
                                                     });
+
+                                                    // Highlight for internal drag
+                                                    if is_dragging && pointer_pos.is_some() && tex_resp.response.rect.contains(pointer_pos.unwrap()) {
+                                                        if let Some(dragging_asset) = ui.data(|d| d.get_temp::<String>(egui::Id::new("project_dragging_asset"))) {
+                                                            let ext = std::path::Path::new(&dragging_asset)
+                                                                .extension()
+                                                                .and_then(|e| e.to_str())
+                                                                .unwrap_or("")
+                                                                .to_lowercase();
+                                                            if matches!(ext.as_str(), "png" | "jpg" | "jpeg" | "tga" | "bmp") {
+                                                                ui.painter().rect_stroke(
+                                                                    tex_resp.response.rect.expand(2.0),
+                                                                    4.0,
+                                                                    Stroke::new(2.0, Color32::from_rgb(15, 232, 121)),
+                                                                    egui::StrokeKind::Outside,
+                                                                );
+                                                            }
+                                                        }
+                                                    }
 
                                                     if resp_changed {
                                                         let val = if current_tex.trim().is_empty() {

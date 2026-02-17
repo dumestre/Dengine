@@ -486,6 +486,14 @@ impl HierarchyWindow {
         self.request_delete_object(&selected);
     }
 
+    pub fn take_pending_material_drop(ctx: &egui::Context) -> Option<(String, String)> {
+        let data = ctx.data_mut(|d| d.get_temp::<(String, String)>(Id::new("pending_material_drop")));
+        if data.is_some() {
+            ctx.data_mut(|d| d.remove_temp::<(String, String)>(Id::new("pending_material_drop")));
+        }
+        data
+    }
+
     fn draw_object_row(
         &mut self,
         ui: &mut egui::Ui,
@@ -622,6 +630,42 @@ impl HierarchyWindow {
             ui.id().with(("hierarchy_drag_row", object_id)),
             egui::Sense::click_and_drag(),
         );
+        
+        // Handle dropped files (material)
+        if drag_resp.hovered() {
+            let dropped_files = ui.input(|i| i.raw.dropped_files.clone());
+            if !dropped_files.is_empty() {
+                if let Some(file) = dropped_files.first() {
+                    if let Some(path) = &file.path {
+                        let ext = path.extension()
+                            .and_then(|e| e.to_str())
+                            .unwrap_or("")
+                            .to_lowercase();
+                        if matches!(ext.as_str(), "mat" | "material") {
+                            // Highlight on hover
+                            ui.painter().rect_stroke(
+                                full_row_rect.shrink(1.0),
+                                3.0,
+                                Stroke::new(2.0, Color32::from_rgb(255, 165, 0)),
+                                egui::StrokeKind::Outside,
+                            );
+                            
+                            // Apply material on drop
+                            if ui.input(|i| i.raw.dropped_files.first().is_some()) {
+                                let path_str = path.to_string_lossy().to_string();
+                                ui.data_mut(|d| {
+                                    d.insert_temp(
+                                        Id::new("pending_material_drop"),
+                                        (object_id.to_string(), path_str),
+                                    );
+                                });
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        
         if !self.is_deleted(object_id) {
             let mut copy_clicked = false;
             let mut delete_clicked = false;

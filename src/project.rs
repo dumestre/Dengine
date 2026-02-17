@@ -691,6 +691,7 @@ impl ProjectWindow {
     }
 
     fn parse_fbx_animation_names(raw: &str) -> Vec<String> {
+        eprintln!("[FBX] parse_fbx_animation_names: {} chars", raw.len());
         let mut out = Vec::<String>::new();
         let mut push_unique = |name: &str| {
             let clean = name.trim();
@@ -786,14 +787,19 @@ impl ProjectWindow {
     fn parse_fbx_binary_animation_names(bytes: &[u8]) -> Vec<String> {
         let mut out = Vec::<String>::new();
 
+        eprintln!("[FBX] parse_fbx_binary_animation_names: {} bytes", bytes.len());
+
         // FBX binary header is 27 bytes, then nodes start
         if bytes.len() < 27 {
+            eprintln!("[FBX] Arquivo muito pequeno (< 27 bytes)");
             return out;
         }
 
         // Check for FBX binary magic
         let header = String::from_utf8_lossy(&bytes[0..20]);
+        eprintln!("[FBX] Header: {:?}", header);
         if !header.contains("Kaydara FBX Binary") {
+            eprintln!("[FBX] Não é um arquivo FBX binário válido");
             return out;
         }
 
@@ -807,14 +813,23 @@ impl ProjectWindow {
         // - padding to 4-byte align
         // - property data
 
+        eprintln!("[FBX] Iniciando scan em pos=27");
         let mut pos = 27; // Skip header
+        let mut iterations = 0;
 
         while pos + 4 < bytes.len() {
+            iterations += 1;
+            if iterations > 10000 {
+                eprintln!("[FBX] Limite de iteracoes atingido (10000), saindo");
+                break;
+            }
+            
             let record_len =
                 u32::from_le_bytes([bytes[pos], bytes[pos + 1], bytes[pos + 2], bytes[pos + 3]])
                     as usize;
 
             if record_len == 0 || record_len > bytes.len().saturating_sub(pos) {
+                eprintln!("[FBX] record_len invalid em pos={}: record_len={}", pos, record_len);
                 break;
             }
 
@@ -852,6 +867,7 @@ impl ProjectWindow {
             }
 
             if pos + name_len > bytes.len() {
+                eprintln!("[FBX] name_len excede buffer em pos={}", pos);
                 break;
             }
 
@@ -866,6 +882,7 @@ impl ProjectWindow {
 
             // Check if this is an AnimationStack node
             if node_name.contains("AnimationStack") || node_name.contains("AnimStack") {
+                eprintln!("[FBX] Encontrado AnimationStack: {:?}", node_name);
                 // Try to find the name property (usually first string property)
                 // Skip the properties and look for the name
                 let mut search_pos = pos;
@@ -906,37 +923,53 @@ impl ProjectWindow {
             pos = end_pos;
         }
 
-        // Also look for "Take" nodes in binary
-        let bytes_str = String::from_utf8_lossy(bytes);
-        let mut search_offset = 0;
-        while let Some(start) = bytes_str[search_offset..].find("Take") {
-            let ctx_start = search_offset.saturating_add(start).saturating_sub(20);
-            let ctx = &bytes_str[ctx_start
-                ..search_offset
-                    .saturating_add(start + 50)
-                    .min(bytes_str.len())];
+        // Also look for "Take" nodes in binary - use safe char-based iteration
+        // Only do this if we haven't found animations yet and the file isn't too large
+        if out.is_empty() && bytes.len() < 10_000_000 {
+            let bytes_str = String::from_utf8_lossy(bytes);
+            eprintln!("[FBX] Buscando Take em {} chars", bytes_str.len());
 
-            // Look for "Take" followed by a name in quotes or as length-prefixed
-            if ctx.contains("Take") {
-                // Extract what comes after "Take"
-                if let Some(after_take) = ctx.split("Take").last() {
-                    // Try to extract the name
-                    let name: String = after_take
-                        .chars()
-                        .skip_while(|c| !c.is_alphanumeric())
-                        .take_while(|c| c.is_alphanumeric() || *c == '_' || *c == '-')
-                        .collect();
-                    if !name.is_empty() && name.len() > 1 {
-                        if !out.iter().any(|x| x.eq_ignore_ascii_case(&name)) {
-                            out.push(name);
+            // Convert to chars for safe iteration
+            let chars: Vec<char> = bytes_str.chars().collect();
+            let mut i = 0;
+            let mut takes_found = 0;
+            while i < chars.len().saturating_sub(3) {
+                // Check for "Take" pattern
+                if chars[i] == 'T' && i + 3 < chars.len() {
+                    if chars[i + 1] == 'a' && chars[i + 2] == 'k' && chars[i + 3] == 'e' {
+                        takes_found += 1;
+                        if takes_found <= 10 {
+                            eprintln!("[FBX] Take encontrado na posicao {}", i);
                         }
+                        // Found "Take", extract alphanumeric name after it
+                        let name_start = i + 4;
+                        let name_chars: String = chars[name_start..]
+                            .iter()
+                            .skip_while(|c| !c.is_alphanumeric())
+                            .take_while(|c| c.is_alphanumeric() || **c == '_' || **c == '-')
+                            .take(64) // Limit name length
+                            .collect();
+
+                        if name_chars.len() > 1 {
+                            if takes_found <= 10 {
+                                eprintln!("[FBX] Nome extraido: {:?}", name_chars);
+                            }
+                            if !out.iter().any(|x| x.eq_ignore_ascii_case(&name_chars)) {
+                                out.push(name_chars);
+                            }
+                        }
+                        i += 4;
+                        continue;
                     }
                 }
+                i += 1;
             }
-            search_offset += start + 4;
-            if search_offset >= bytes_str.len() {
-                break;
-            }
+            eprintln!("[FBX] Total de Takes encontrados: {}", takes_found);
+            eprintln!("[FBX] Animacoes encontradas: {:?}", out);
+        } else if !out.is_empty() {
+            eprintln!("[FBX] Animacoes ja encontradas, pulando busca por Take");
+        } else {
+            eprintln!("[FBX] Arquivo muito grande para busca por Take ({} bytes > 10MB)", bytes.len());
         }
 
         out.dedup_by(|a, b| a.eq_ignore_ascii_case(b));
@@ -958,10 +991,14 @@ impl ProjectWindow {
         imported_fbx_name: &str,
         fbx_path: &Path,
     ) -> Result<Option<String>, String> {
+        eprintln!("[FBX] upsert_default_animation_module_for_fbx: {:?}", fbx_path);
         let bytes = fs::read(fbx_path).map_err(|e| e.to_string())?;
+        eprintln!("[FBX] Lido {} bytes", bytes.len());
         let raw = String::from_utf8_lossy(&bytes);
         let clips = Self::parse_fbx_animation_names(&raw);
+        eprintln!("[FBX] Clips encontrados: {:?}", clips);
         if clips.is_empty() {
+            eprintln!("[FBX] Sem clips de animacao, retornando None");
             return Ok(None);
         }
 
@@ -1023,9 +1060,13 @@ impl ProjectWindow {
         let is_binary = bytes.len() > 20
             && String::from_utf8_lossy(&bytes[0..20]).contains("Kaydara FBX Binary");
 
+        eprintln!("[FBX] parse_fbx_meta: {:?}, is_binary={}", path, is_binary);
+
         let animations = if is_binary {
+            eprintln!("[FBX] Usando parser binario");
             Self::parse_fbx_binary_animation_names(&bytes)
         } else {
+            eprintln!("[FBX] Usando parser ASCII");
             Self::parse_fbx_animation_names(&raw)
         };
 
@@ -1264,6 +1305,12 @@ impl ProjectWindow {
     pub fn dragging_asset_path(&self) -> Option<PathBuf> {
         let name = self.dragging_asset_name()?;
         self.asset_path_in_selected_folder(name)
+    }
+
+    fn get_asset_full_path(&self, asset_name: &str) -> String {
+        self.asset_path_in_selected_folder(asset_name)
+            .map(|p| p.to_string_lossy().to_string())
+            .unwrap_or_else(|| asset_name.to_string())
     }
 
     pub fn clear_dragging_asset(&mut self) {
@@ -2345,6 +2392,14 @@ impl ProjectWindow {
                                                     .is_some_and(|v| v.contains("::"))
                                                 {
                                                     self.dragging_asset = Some(asset.clone());
+                                                    // Store in egui data for cross-window drag
+                                                    let full_path = self.get_asset_full_path(&asset);
+                                                    ui.data_mut(|d| {
+                                                        d.insert_temp(
+                                                            egui::Id::new("project_dragging_asset"),
+                                                            full_path,
+                                                        );
+                                                    });
                                                 }
                                             }
                                             if tile_resp.hovered()
@@ -2359,6 +2414,14 @@ impl ProjectWindow {
                                                     .is_some_and(|v| v.contains("::"))
                                                 {
                                                     self.dragging_asset = Some(asset.clone());
+                                                    // Store in egui data for cross-window drag
+                                                    let full_path = self.get_asset_full_path(&asset);
+                                                    ui.data_mut(|d| {
+                                                        d.insert_temp(
+                                                            egui::Id::new("project_dragging_asset"),
+                                                            full_path,
+                                                        );
+                                                    });
                                                 }
                                             }
                                             col += 1;
