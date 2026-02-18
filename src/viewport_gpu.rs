@@ -137,13 +137,6 @@ impl ViewportGpuRenderer {
             }
             eprintln!("[GPU] Mesh upload: vertices={}, normals={}, uvs={}, triangles={}", 
                 s.vertices.len(), s.normals.len(), s.uvs.len(), triangles.len().min(MAX_GPU_TRIANGLES));
-            // Log primeiras UVs para debug
-            if s.uvs.len() >= 3 {
-                eprintln!("[GPU] Primeiras UVs: [{}, {}], [{}, {}], [{}, {}]", 
-                    s.uvs[0][0], s.uvs[0][1], 
-                    s.uvs[1][0], s.uvs[1][1],
-                    s.uvs[2][0], s.uvs[2][1]);
-            }
             let tri_target = triangles.len().min(MAX_GPU_TRIANGLES).max(1);
             let tri_step = ((triangles.len() as f32 / tri_target as f32).ceil() as usize).max(1);
             for (i, tri) in triangles.iter().enumerate() {
@@ -510,24 +503,18 @@ impl egui_wgpu::CallbackTrait for Draw3dCallback {
         // Carrega textura se necessário
         let mut has_texture = 0.0_f32;
 
-        eprintln!("[GPU] Texture path: {:?}", current_mesh_texture_path);
-
         if let Some(texture_path_str) = &current_mesh_texture_path {
-            eprintln!("[GPU] Carregando textura: {}", texture_path_str);
             if resources.current_texture_path.as_ref() != Some(texture_path_str) {
                 resources.current_texture_path = Some(texture_path_str.clone());
                 resources.current_bind_group = None;
-                eprintln!("[GPU] Bind group invalidado, novo path");
             }
 
             if resources.textures.get(texture_path_str).is_none() {
-                eprintln!("[GPU] Textura não em cache, carregando do disco");
                 // Normaliza o path para abrir o arquivo (remove \\?\ se existir)
                 let disk_path = normalize_path(texture_path_str);
                 let path = PathBuf::from(&disk_path);
                 match image::open(&path) {
                     Ok(img) => {
-                        eprintln!("[GPU] Imagem carregada: {}x{}", img.width(), img.height());
                         let rgba = img.to_rgba8();
                         let (width, height) = rgba.dimensions();
                         let size = wgpu::Extent3d {
@@ -571,12 +558,10 @@ impl egui_wgpu::CallbackTrait for Draw3dCallback {
                                 resources.white_pixel_texture.2.clone(),
                             ),
                         );
-                        eprintln!("[GPU] Textura carregada com sucesso!");
                         // Invalida bind group para recriar com a nova textura
                         resources.current_bind_group = None;
                     }
-                    Err(e) => {
-                        eprintln!("Falha ao carregar textura {}: {}", texture_path_str, e);
+                    Err(_e) => {
                         resources.textures.insert(
                             texture_path_str.clone(),
                             resources.white_pixel_texture.clone(),
@@ -588,10 +573,7 @@ impl egui_wgpu::CallbackTrait for Draw3dCallback {
             }
             if resources.textures.get(texture_path_str).is_some() {
                 has_texture = 1.0;
-                eprintln!("[GPU] has_texture = 1.0");
             }
-        } else {
-            eprintln!("[GPU] Sem textura");
         }
 
         // Preenche uniform buffer (192 bytes)
@@ -666,18 +648,13 @@ impl egui_wgpu::CallbackTrait for Draw3dCallback {
             || resources.current_texture_path.as_ref().map(|s| s.as_str())
                 != current_mesh_texture_path.as_ref().map(|s| s.as_str());
         if bind_group_needed {
-            eprintln!("[GPU] Criando bind group...");
             let (_tex, tex_view, tex_sampler) = if let Some(path) = &resources.current_texture_path
             {
-                if let Some(tex_data) = resources.textures.get(path) {
-                    eprintln!("[GPU] Textura encontrada no cache: {}", path);
-                    tex_data
-                } else {
-                    eprintln!("[GPU] Textura NAO encontrada no cache, usando white pixel: {}", path);
-                    &resources.white_pixel_texture
-                }
+                resources
+                    .textures
+                    .get(path)
+                    .unwrap_or(&resources.white_pixel_texture)
             } else {
-                eprintln!("[GPU] Sem textura, usando white pixel");
                 &resources.white_pixel_texture
             };
 
@@ -704,7 +681,6 @@ impl egui_wgpu::CallbackTrait for Draw3dCallback {
                         },
                     ],
                 }));
-            eprintln!("[GPU] Bind group criado!");
         }
 
         // Upload de mesh (chunked)
