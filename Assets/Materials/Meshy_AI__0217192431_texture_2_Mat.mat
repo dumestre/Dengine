@@ -1,0 +1,8 @@
+# Dengine Material
+# Auto-generated for Meshy_AI__0217192431_texture_2.fbx
+shader=Standard
+albedo=0.06,0.00,0.00
+metallic=0.0
+smoothness=0.5
+albedo=0.06,0.00,0.00
+albedo_texture=Assets\Textures\Meshy_AI__0217192431_texture.png

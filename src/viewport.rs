@@ -26,6 +26,15 @@ const VIEWPORT_PROXY_VERTICES: usize = 24_000;
 const VIEWPORT_NAV_TRIANGLES: usize = 18_000;
 const VIEWPORT_NAV_VERTICES: usize = 36_000;
 
+/// Normaliza um path removendo o prefixo verbatim do Windows (\\?\)
+fn normalize_path_string(path: &str) -> String {
+    if path.starts_with("\\\\?\\") {
+        path[4..].to_string()
+    } else {
+        path.to_string()
+    }
+}
+
 pub struct ViewportPanel {
     is_3d: bool,
     is_ortho: bool,
@@ -89,7 +98,13 @@ fn parse_material_texture_path(mat_path: &str) -> Option<String> {
         let line = line.trim();
         // Procura por albedo_texture, diffuse_texture, texture ou texture_path
         if let Some(val) = line.strip_prefix("albedo_texture=") {
-            let path = val.trim().trim_matches('"').to_string();
+            let mut path = val.trim().trim_matches('"').to_string();
+            
+            // Remove prefixo Windows \\?\ se existir
+            if path.starts_with("\\\\?\\") {
+                path = path[4..].to_string();
+            }
+            
             // Se for caminho relativo ou nome interno (ex: base_color_texture), procura em caches
             if !std::path::Path::new(&path).exists() || (!path.contains('/') && !path.contains('\\')) {
                 // Tenta extrair apenas o nome do arquivo
@@ -106,7 +121,7 @@ fn parse_material_texture_path(mat_path: &str) -> Option<String> {
                 let rel_path = mat_dir.join(&file_name);
                 if rel_path.exists() {
                     if let Ok(abs) = std::fs::canonicalize(&rel_path) {
-                        return Some(abs.to_string_lossy().to_string());
+                        return Some(normalize_path_string(&abs.to_string_lossy()));
                     }
                 }
                 // Tenta em Assets/Assets/ (legado)
@@ -122,7 +137,7 @@ fn parse_material_texture_path(mat_path: &str) -> Option<String> {
                             let entry_path = entry.path();
                             if entry_path.file_name().map(|n| n.to_string_lossy().to_string()) == Some(file_name.clone()) {
                                 if let Ok(abs) = std::fs::canonicalize(&entry_path) {
-                                    return Some(abs.to_string_lossy().to_string());
+                                    return Some(normalize_path_string(&abs.to_string_lossy()));
                                 }
                             }
                         }
@@ -134,7 +149,7 @@ fn parse_material_texture_path(mat_path: &str) -> Option<String> {
                             if matches!(ext.to_lowercase().as_str(), "png" | "jpg" | "jpeg") {
                                 if let Ok(abs) = std::fs::canonicalize(&entry_path) {
                                     eprintln!("[MATERIAL] Fallback textura cache: {:?}", abs);
-                                    return Some(abs.to_string_lossy().to_string());
+                                    return Some(normalize_path_string(&abs.to_string_lossy()));
                                 }
                             }
                         }
@@ -144,7 +159,10 @@ fn parse_material_texture_path(mat_path: &str) -> Option<String> {
             return Some(path);
         }
         if let Some(val) = line.strip_prefix("diffuse_texture=") {
-            let path = val.trim().trim_matches('"').to_string();
+            let mut path = val.trim().trim_matches('"').to_string();
+            if path.starts_with("\\\\?\\") {
+                path = path[4..].to_string();
+            }
             if !std::path::Path::new(&path).exists() {
                 let file_name = std::path::Path::new(&path).file_name()
                     .map(|s| s.to_string_lossy().to_string())
@@ -2111,7 +2129,7 @@ fn load_fbx_ascii_mesh(path: &Path) -> Result<MeshData, String> {
                 // Resolve path relative to the FBX file
                 let fbx_dir = path.parent().unwrap_or(Path::new(""));
                 let full_path = fbx_dir.join(filename);
-                texture_path = Some(full_path.to_string_lossy().to_string());
+                texture_path = Some(normalize_path_string(&full_path.to_string_lossy()));
                 break; // Take the first texture found for simplicity
             }
         }
@@ -2197,7 +2215,8 @@ fn load_obj_mesh(path: &Path) -> Result<MeshData, String> {
     let mut materials = materials;
     for material in &mut materials {
         if let Some(ref mut tex_path) = material.diffuse_texture {
-            *tex_path = obj_dir.join(&*tex_path).to_string_lossy().to_string();
+            let full_path = obj_dir.join(&*tex_path);
+            *tex_path = normalize_path_string(&full_path.to_string_lossy());
         }
     }
 
@@ -2346,7 +2365,7 @@ fn append_gltf_node_meshes(
                     match tex.source().source() {
                         gltf::image::Source::Uri { uri, .. } => {
                             let full_path = gltf_dir.join(uri);
-                            *texture_path = Some(full_path.to_string_lossy().to_string());
+                            *texture_path = Some(normalize_path_string(&full_path.to_string_lossy()));
                         }
                         gltf::image::Source::View { view, mime_type } => {
                             let buffer_index = view.buffer().index();
@@ -2373,11 +2392,11 @@ fn append_gltf_node_meshes(
                                             let _ = std::fs::write(&file_path, content);
                                         }
                                         if let Ok(abs) = std::fs::canonicalize(&file_path) {
-                                            *texture_path = Some(abs.to_string_lossy().to_string());
+                                            *texture_path = Some(normalize_path_string(&abs.to_string_lossy()));
                                         } else {
                                             // Fallback if canonicalize fails (e.g. file creation failed)
                                             *texture_path =
-                                                Some(file_path.to_string_lossy().to_string());
+                                                Some(normalize_path_string(&file_path.to_string_lossy()));
                                         }
                                     }
                                 }

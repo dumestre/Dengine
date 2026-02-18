@@ -10,6 +10,15 @@ use glam::{Mat4, Vec3};
 use engine_render::shader::{LIT_SHADER, LIT_UNIFORM_SIZE, LIT_VERTEX_STRIDE};
 
 const MAX_GPU_TRIANGLES: usize = 120_000;
+
+/// Normaliza um path removendo o prefixo verbatim do Windows (\\?\)
+fn normalize_path(path: &str) -> String {
+    if path.starts_with("\\\\?\\") {
+        path[4..].to_string()
+    } else {
+        path.to_string()
+    }
+}
 const MAX_GPU_VERTICES: usize = 160_000;
 const GPU_UPLOAD_BUDGET_BYTES: usize = 8 * 1024 * 1024;
 
@@ -426,7 +435,7 @@ impl egui_wgpu::CallbackTrait for Draw3dCallback {
             .or_insert_with(|| self.create_resources(device, queue));
 
         let scene = self.scene.lock().expect("scene lock");
-        let current_mesh_texture_path = scene.texture_path.clone();
+        let current_mesh_texture_path = scene.texture_path.clone().map(|p| normalize_path(&p));
 
         if scene.mesh_id == 0 || scene.vertices.is_empty() || scene.triangles.is_empty() {
             if resources.current_texture_path.as_ref() != current_mesh_texture_path.as_ref() {
@@ -500,7 +509,9 @@ impl egui_wgpu::CallbackTrait for Draw3dCallback {
 
             if resources.textures.get(texture_path_str).is_none() {
                 eprintln!("[GPU] Textura não em cache, carregando do disco");
-                let path = PathBuf::from(texture_path_str);
+                // Normaliza o path para abrir o arquivo (remove \\?\ se existir)
+                let disk_path = normalize_path(texture_path_str);
+                let path = PathBuf::from(&disk_path);
                 match image::open(&path) {
                     Ok(img) => {
                         eprintln!("[GPU] Imagem carregada: {}x{}", img.width(), img.height());
@@ -567,16 +578,16 @@ impl egui_wgpu::CallbackTrait for Draw3dCallback {
         }
 
         // Preenche uniform buffer (192 bytes)
-        // Layout:
+        // Layout do shader:
         //   0..64   mvp (mat4)
         //  64..128  model (mat4)
         // 128..140  camera_pos (vec3)
-        // 140..144  _pad0
+        // 140..144  light_intensity (f32)
         // 144..156  light_dir (vec3)
-        // 156..160  _pad1
-        // 160..176  tint (vec4)
-        // 176..180  has_texture
-        // 180..192  _pad2,3,4
+        // 156..160  light_enabled (f32)
+        // 160..172  light_color (vec3)
+        // 172..176  has_texture (f32)
+        // 176..192  tint (vec4)
         let mut offs = 0usize;
         for col in &scene.mvp {
             for f in col {

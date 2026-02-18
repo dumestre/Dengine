@@ -1,0 +1,7 @@
+# Dengine Material
+# Auto-generated for R1.glb
+shader=Standard
+albedo=0.61,0.00,0.00
+metallic=0.0
+smoothness=0.5
+albedo_texture=\\?\D:\Dev\Porjetos\Dengine\Assets\.cache\textures\55815cf078f8f100.jpg

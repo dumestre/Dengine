@@ -10,10 +10,13 @@
 /// Uniforms (bind group 0, binding 0):
 ///   - mvp: mat4x4<f32>           (64 bytes)
 ///   - model: mat4x4<f32>         (64 bytes)
-///   - camera_pos: vec3<f32>      (12 bytes + 4 pad)
-///   - light_dir: vec3<f32>       (12 bytes + 4 pad)
+///   - camera_pos: vec3<f32>      (12 bytes)
+///   - light_intensity: f32       (4 bytes)
+///   - light_dir: vec3<f32>       (12 bytes)
+///   - light_enabled: f32         (4 bytes)
+///   - light_color: vec3<f32>     (12 bytes)
+///   - has_texture: f32           (4 bytes)
 ///   - tint: vec4<f32>            (16 bytes)
-///   - has_texture: f32           (4 bytes + 12 pad)
 ///   Total = 192 bytes
 pub const LIT_SHADER: &str = r#"
 struct Uniforms {

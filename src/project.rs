@@ -513,21 +513,20 @@ impl ProjectWindow {
                 found_tex
             };
             
-            let texture_line = if let Some(tex) = &texture_path {
-                // Quando tem textura, albedo deve ser branco (1,1,1) para a textura aparecer corretamente
+            let mat_content = if let Some(tex) = &texture_path {
+                // Quando tem textura, usa só albedo_texture (albedo branco é default)
                 format!(
-                    "albedo=1,1,1\nalbedo_texture={}\n",
+                    "# Dengine Material\n# Auto-generated for {}\nshader=Standard\nalbedo_texture={}\n",
+                    imported_name,
                     tex
                 )
             } else {
-                String::new()
+                // Sem textura, usa cor sólida
+                format!(
+                    "# Dengine Material\n# Auto-generated for {}\nshader=Standard\nalbedo=1,1,1,1\nmetallic=0.0\nsmoothness=0.5\n",
+                    imported_name
+                )
             };
-            
-            let mat_content = format!(
-                "# Dengine Material\n# Auto-generated for {}\nshader=Standard\nalbedo=1,1,1,1\nmetallic=0.0\nsmoothness=0.5\n{}",
-                imported_name,
-                texture_line
-            );
             self.create_text_asset_with_name(
                 language,
                 "Materials",
