@@ -404,6 +404,10 @@ impl ViewportPanel {
 
         for entry in &self.scene_entries {
             let mesh = if use_proxy { &entry.proxy } else { &entry.full };
+            eprintln!("[VIEWPORT build_gpu] mesh.uvs.len()={}, mesh.vertices.len()={}", mesh.uvs.len(), mesh.vertices.len());
+            if !mesh.uvs.is_empty() {
+                eprintln!("[VIEWPORT build_gpu] Primeira UV do mesh: [{}, {}]", mesh.uvs[0][0], mesh.uvs[0][1]);
+            }
             let base = vertices.len() as u32;
             vertices.extend(
                 mesh.vertices
@@ -421,7 +425,12 @@ impl ViewportPanel {
                 normals.push(Vec3::Y);
             }
             // Pad UVs if mesh has fewer UVs than vertices
+            eprintln!("[VIEWPORT build_gpu] Antes de extend: uvs.len()={}", uvs.len());
             uvs.extend(mesh.uvs.iter().cloned());
+            eprintln!("[VIEWPORT build_gpu] Depois de extend: uvs.len()={}", uvs.len());
+            if !mesh.uvs.is_empty() {
+                eprintln!("[VIEWPORT build_gpu] UV copiada: [{}, {}]", mesh.uvs[0][0], mesh.uvs[0][1]);
+            }
             while uvs.len() < vertices.len() {
                 uvs.push([0.0, 0.0]);
             }
@@ -805,8 +814,12 @@ impl ViewportPanel {
                             self.push_undo_snapshot();
                             let is_heavy = mesh.triangles.len() > MAX_RUNTIME_TRIANGLES
                                 || mesh.vertices.len() > MAX_RUNTIME_VERTICES;
-                            let full =
-                                make_proxy_mesh(&mesh, MAX_RUNTIME_TRIANGLES, MAX_RUNTIME_VERTICES);
+                            // Full mesh mantém UVs e dados completos
+                            let mut full = mesh;
+                            // Otimiza se necessário
+                            if is_heavy {
+                                full = make_proxy_mesh(&full, MAX_RUNTIME_TRIANGLES, MAX_RUNTIME_VERTICES);
+                            }
                             let nav_proxy = make_proxy_mesh(
                                 &full,
                                 VIEWPORT_NAV_TRIANGLES,
@@ -815,7 +828,7 @@ impl ViewportPanel {
                             let name = self
                                 .pending_mesh_name
                                 .take()
-                                .unwrap_or_else(|| mesh.name.clone());
+                                .unwrap_or_else(|| full.name.clone());
                             let target_pos = self.camera_target;
                             let rotation =
                                 Mat4::from_rotation_y(self.camera_yaw + std::f32::consts::PI);
@@ -1705,12 +1718,25 @@ fn make_proxy_mesh(full: &MeshData, max_tris: usize, max_vertices: usize) -> Mes
         },
         vertices,
         normals: vec![], // Será recalculado
-        uvs: vec![],
+        uvs: vec![], // Será copiado abaixo
         triangles,
         texture_path: full.texture_path.clone(),
         material_path: full.material_path.clone(),
     };
-    normalize_mesh(&mut res); // Garante normais e UVs
+    
+    // Copiar UVs do mesh original
+    // Como os vértices foram simplificados, precisamos mapear as UVs
+    // Abordagem simples: usar UVs dos vértices originais baseado na posição
+    if !full.uvs.is_empty() && full.vertices.len() == res.vertices.len() {
+        // Se o número de vértices é o mesmo, copiar diretamente
+        res.uvs = full.uvs.clone();
+    } else if !full.uvs.is_empty() {
+        // Mapear UVs baseado no índice original (aproximação)
+        // Para proxy de navegação, UVs não são críticas
+        res.uvs = vec![[0.0, 0.0]; res.vertices.len()];
+    }
+    
+    normalize_mesh(&mut res); // Garante normais
     res
 }
 
@@ -2154,11 +2180,10 @@ fn load_fbx_ascii_mesh(path: &Path) -> Result<MeshData, String> {
                 .map(|p| Vec3::new(-(p.x as f32), p.y as f32, -(p.z as f32))),
         );
 
-        // Extract UVs if available (simplified - FBX UVs can be complex)
-        // For now, fill with zeros as placeholder
-        for _ in 0..cps.len() {
-            uvs.push([0.0, 0.0]);
-        }
+        // FBX UVs: fbxcel_dom has limited UV extraction support
+        // For now, use placeholder UVs - FBX files with textures should use GLTF/GLB instead
+        // TODO: Implement proper UV extraction using fbxcel crate's layer element API
+        uvs.resize(vertices.len(), [0.0, 0.0]);
 
         let mut poly: Vec<u32> = Vec::new();
         for raw in poly_verts.raw_polygon_vertices() {
@@ -2323,6 +2348,10 @@ fn load_gltf_mesh(path: &Path) -> Result<MeshData, String> {
         .and_then(|s| s.to_str())
         .unwrap_or("GLB")
         .to_string();
+    eprintln!("[GLB] MeshData criado: vertices={}, uvs={}, triangles={}", vertices.len(), uvs.len(), triangles.len());
+    if !uvs.is_empty() {
+        eprintln!("[GLB] Primeira UV do MeshData: [{}, {}]", uvs[0][0], uvs[0][1]);
+    }
     Ok(MeshData {
         name,
         vertices,
@@ -2416,8 +2445,14 @@ fn append_gltf_node_meshes(
 
             // Collect UVs
             if let Some(reader_uvs) = reader.read_tex_coords(0) {
-                uvs.extend(reader_uvs.into_f32().map(|uv| [uv[0], uv[1]]));
+                let uv_data: Vec<[f32; 2]> = reader_uvs.into_f32().map(|uv| [uv[0], uv[1]]).collect();
+                eprintln!("[GLTF] {} UVs carregadas do GLTF", uv_data.len());
+                if uv_data.len() > 0 {
+                    eprintln!("[GLTF] Primeira UV: [{}, {}]", uv_data[0][0], uv_data[0][1]);
+                }
+                uvs.extend(uv_data);
             } else {
+                eprintln!("[GLTF] Sem UVs no GLTF, preenchendo com zeros");
                 // If no UVs, fill with zeros for each vertex
                 for _ in 0..positions_len {
                     uvs.push([0.0, 0.0]);
