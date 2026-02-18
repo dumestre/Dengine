@@ -488,16 +488,22 @@ impl egui_wgpu::CallbackTrait for Draw3dCallback {
         // Carrega textura se necessário
         let mut has_texture = 0.0_f32;
 
+        eprintln!("[GPU] Texture path: {:?}", current_mesh_texture_path);
+
         if let Some(texture_path_str) = &current_mesh_texture_path {
+            eprintln!("[GPU] Carregando textura: {}", texture_path_str);
             if resources.current_texture_path.as_ref() != Some(texture_path_str) {
                 resources.current_texture_path = Some(texture_path_str.clone());
                 resources.current_bind_group = None;
+                eprintln!("[GPU] Bind group invalidado, novo path");
             }
 
             if resources.textures.get(texture_path_str).is_none() {
+                eprintln!("[GPU] Textura não em cache, carregando do disco");
                 let path = PathBuf::from(texture_path_str);
                 match image::open(&path) {
                     Ok(img) => {
+                        eprintln!("[GPU] Imagem carregada: {}x{}", img.width(), img.height());
                         let rgba = img.to_rgba8();
                         let (width, height) = rgba.dimensions();
                         let size = wgpu::Extent3d {
@@ -541,6 +547,7 @@ impl egui_wgpu::CallbackTrait for Draw3dCallback {
                                 resources.white_pixel_texture.2.clone(),
                             ),
                         );
+                        eprintln!("[GPU] Textura carregada com sucesso!");
                     }
                     Err(e) => {
                         eprintln!("Falha ao carregar textura {}: {}", texture_path_str, e);
@@ -553,7 +560,10 @@ impl egui_wgpu::CallbackTrait for Draw3dCallback {
             }
             if resources.textures.get(texture_path_str).is_some() {
                 has_texture = 1.0;
+                eprintln!("[GPU] has_texture = 1.0");
             }
+        } else {
+            eprintln!("[GPU] Sem textura");
         }
 
         // Preenche uniform buffer (192 bytes)

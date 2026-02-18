@@ -172,6 +172,72 @@ enum InspectorDockSide {
     Right,
 }
 
+#[derive(Debug)]
+struct MaterialProperties {
+    albedo: [f32; 3],
+    metallic: f32,
+    roughness: f32,
+    texture_path: Option<String>,
+}
+
+fn parse_material_properties(mat_path: &str) -> Option<MaterialProperties> {
+    let content = std::fs::read_to_string(mat_path).ok()?;
+    let mut albedo = [1.0, 1.0, 1.0];
+    let mut metallic = 0.0;
+    let mut roughness = 0.5;
+    let mut texture_path: Option<String> = None;
+    
+    for line in content.lines() {
+        let line = line.trim();
+        if let Some(val) = line.strip_prefix("albedo=") {
+            let parts: Vec<&str> = val.split(',').collect();
+            if parts.len() >= 3 {
+                albedo[0] = parts[0].trim().parse().unwrap_or(1.0);
+                albedo[1] = parts[1].trim().parse().unwrap_or(1.0);
+                albedo[2] = parts[2].trim().parse().unwrap_or(1.0);
+            }
+        }
+        if let Some(val) = line.strip_prefix("metallic=") {
+            metallic = val.trim().parse().unwrap_or(0.0);
+        }
+        if let Some(val) = line.strip_prefix("roughness=") {
+            roughness = val.trim().parse().unwrap_or(0.5);
+        }
+        if let Some(val) = line.strip_prefix("smoothness=") {
+            roughness = 1.0 - val.trim().parse().unwrap_or(0.5);
+        }
+        if let Some(val) = line.strip_prefix("albedo_texture=") {
+            texture_path = Some(val.trim().to_string());
+        }
+    }
+    
+    Some(MaterialProperties { albedo, metallic, roughness, texture_path })
+}
+
+fn update_material_property(mat_path: &str, key: &str, value: &str) {
+    if let Ok(content) = std::fs::read_to_string(mat_path) {
+        let mut new_content = String::new();
+        let mut found = false;
+        
+        for line in content.lines() {
+            if line.trim().starts_with(&format!("{}=", key)) {
+                new_content.push_str(&format!("{}={}\n", key, value));
+                found = true;
+            } else {
+                new_content.push_str(line);
+                new_content.push('\n');
+            }
+        }
+        
+        if !found {
+            new_content.push_str(&format!("{}={}\n", key, value));
+        }
+        
+        let _ = std::fs::write(mat_path, new_content);
+        eprintln!("[MATERIAL] Atualizado {}: {} = {}", mat_path, key, value);
+    }
+}
+
 fn load_png_as_texture(
     ctx: &egui::Context,
     png_path: &str,
@@ -201,6 +267,14 @@ fn load_png_as_texture(
 }
 
 impl InspectorWindow {
+    fn parse_material_properties(mat_path: &str) -> Option<MaterialProperties> {
+        parse_material_properties(mat_path)
+    }
+
+    fn update_material_property(mat_path: &str, key: &str, value: &str) {
+        update_material_property(mat_path, key, value)
+    }
+
     pub fn new() -> Self {
         Self {
             open: true,
@@ -1154,11 +1228,48 @@ impl InspectorWindow {
                                                         eprintln!("[MATERIAL] Inspector: objeto={}, material={:?}", selected_object, current_mat);
                                                         self.pending_material_request = Some((
                                                             selected_object.to_string(),
-                                                            if current_mat.trim().is_empty() { None } else { Some(current_mat) },
+                                                            if current_mat.trim().is_empty() { None } else { Some(current_mat.clone()) },
                                                         ));
                                                     }
 
                                                     ui.add_space(10.0);
+
+                                                    // Material Properties (when material is assigned)
+                                                    if !current_mat.is_empty() {
+                                                        if let Some(mat_props) = Self::parse_material_properties(&current_mat) {
+                                                            egui::CollapsingHeader::new("Propriedades do Material")
+                                                                .default_open(false)
+                                                                .show(ui, |ui| {
+                                                                    ui.label("Albedo (Cor):");
+                                                                    let mut albedo_color = mat_props.albedo;
+                                                                    if ui.color_edit_button_rgb(&mut albedo_color).changed() {
+                                                                        Self::update_material_property(&current_mat, "albedo", 
+                                                                            &format!("{:.2},{:.2},{:.2}", albedo_color[0], albedo_color[1], albedo_color[2]));
+                                                                    }
+                                                                    
+                                                                    ui.add_space(4.0);
+                                                                    ui.label("Metallic:");
+                                                                    let mut metallic = mat_props.metallic;
+                                                                    if ui.add(egui::DragValue::new(&mut metallic).range(0.0..=1.0)).changed() {
+                                                                        Self::update_material_property(&current_mat, "metallic", &format!("{:.2}", metallic));
+                                                                    }
+                                                                    
+                                                                    ui.add_space(4.0);
+                                                                    ui.label("Roughness/Smoothness:");
+                                                                    let mut roughness = mat_props.roughness;
+                                                                    if ui.add(egui::DragValue::new(&mut roughness).range(0.0..=1.0)).changed() {
+                                                                        Self::update_material_property(&current_mat, "roughness", &format!("{:.2}", roughness));
+                                                                    }
+                                                                    
+                                                                    ui.add_space(4.0);
+                                                                    ui.label("Textura Albedo:");
+                                                                    let mut tex_path = mat_props.texture_path.unwrap_or_default();
+                                                                    if ui.text_edit_singleline(&mut tex_path).changed() {
+                                                                        Self::update_material_property(&current_mat, "albedo_texture", &tex_path);
+                                                                    }
+                                                                });
+                                                        }
+                                                    }
 
                                                     // Texture Field
                                                     ui.label(

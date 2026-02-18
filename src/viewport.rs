@@ -80,6 +80,106 @@ struct MeshData {
     material_path: Option<String>,
 }
 
+/// Parse um arquivo .mat e extrai o caminho da textura (albedo/diffuse)
+fn parse_material_texture_path(mat_path: &str) -> Option<String> {
+    let content = std::fs::read_to_string(mat_path).ok()?;
+    let mat_dir = std::path::Path::new(mat_path).parent()?;
+    
+    for line in content.lines() {
+        let line = line.trim();
+        // Procura por albedo_texture, diffuse_texture, texture ou texture_path
+        if let Some(val) = line.strip_prefix("albedo_texture=") {
+            let path = val.trim().trim_matches('"').to_string();
+            // Se for caminho relativo ou nome interno (ex: base_color_texture), procura em caches
+            if !std::path::Path::new(&path).exists() || (!path.contains('/') && !path.contains('\\')) {
+                // Tenta extrair apenas o nome do arquivo
+                let file_name = std::path::Path::new(&path).file_name()
+                    .map(|s| s.to_string_lossy().to_string())
+                    .unwrap_or_else(|| path.clone());
+                
+                // Tenta em Assets/Textures/
+                let textures_path = format!("Assets/Textures/{}", file_name);
+                if std::path::Path::new(&textures_path).exists() {
+                    return Some(textures_path);
+                }
+                // Tenta relativo ao material
+                let rel_path = mat_dir.join(&file_name);
+                if rel_path.exists() {
+                    if let Ok(abs) = std::fs::canonicalize(&rel_path) {
+                        return Some(abs.to_string_lossy().to_string());
+                    }
+                }
+                // Tenta em Assets/Assets/ (legado)
+                let assets_path = format!("Assets/Assets/{}", file_name);
+                if std::path::Path::new(&assets_path).exists() {
+                    return Some(assets_path);
+                }
+                // Tenta em .cache/textures/ (GLB)
+                let cache_dir = Path::new("Assets").join(".cache").join("textures");
+                if cache_dir.exists() {
+                    if let Ok(entries) = std::fs::read_dir(&cache_dir) {
+                        for entry in entries.flatten() {
+                            let entry_path = entry.path();
+                            if entry_path.file_name().map(|n| n.to_string_lossy().to_string()) == Some(file_name.clone()) {
+                                if let Ok(abs) = std::fs::canonicalize(&entry_path) {
+                                    return Some(abs.to_string_lossy().to_string());
+                                }
+                            }
+                        }
+                    }
+                    // Fallback: primeira textura em cache
+                    for entry in std::fs::read_dir(&cache_dir).ok()?.flatten() {
+                        let entry_path = entry.path();
+                        if let Some(ext) = entry_path.extension().and_then(|e| e.to_str()) {
+                            if matches!(ext.to_lowercase().as_str(), "png" | "jpg" | "jpeg") {
+                                if let Ok(abs) = std::fs::canonicalize(&entry_path) {
+                                    eprintln!("[MATERIAL] Fallback textura cache: {:?}", abs);
+                                    return Some(abs.to_string_lossy().to_string());
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            return Some(path);
+        }
+        if let Some(val) = line.strip_prefix("diffuse_texture=") {
+            let path = val.trim().trim_matches('"').to_string();
+            if !std::path::Path::new(&path).exists() {
+                let file_name = std::path::Path::new(&path).file_name()
+                    .map(|s| s.to_string_lossy().to_string())
+                    .unwrap_or_else(|| path.clone());
+                let textures_path = format!("Assets/Textures/{}", file_name);
+                if std::path::Path::new(&textures_path).exists() {
+                    return Some(textures_path);
+                }
+            }
+            return Some(path);
+        }
+        if let Some(val) = line.strip_prefix("texture=") {
+            return Some(val.trim().trim_matches('"').to_string());
+        }
+        if let Some(val) = line.strip_prefix("texture_path=") {
+            return Some(val.trim().trim_matches('"').to_string());
+        }
+    }
+    
+    // Fallback: procura textura com nome similar ao material
+    let mat_name = std::path::Path::new(mat_path).file_stem()?
+        .to_string_lossy().to_string();
+    let base_name = mat_name.strip_suffix("_Mat").unwrap_or(&mat_name);
+    
+    for ext in &["png", "jpg", "jpeg"] {
+        let tex_path = format!("Assets/Textures/{}_{}.{}", base_name, base_name, ext);
+        if std::path::Path::new(&tex_path).exists() {
+            eprintln!("[MATERIAL] Textura encontrada por nome similar: {}", tex_path);
+            return Some(tex_path);
+        }
+    }
+    
+    None
+}
+
 #[derive(Clone, PartialEq)]
 struct ViewportSnapshot {
     scene_entries: Vec<SceneEntry>,
@@ -316,8 +416,17 @@ impl ViewportPanel {
                 }
             }
             // Collect texture from first mesh that has one
-            if texture_path.is_none() && mesh.texture_path.is_some() {
-                texture_path = mesh.texture_path.clone();
+            if texture_path.is_none() {
+                // First try direct texture_path
+                if mesh.texture_path.is_some() {
+                    texture_path = mesh.texture_path.clone();
+                }
+                // Then try material_path
+                if texture_path.is_none() && mesh.material_path.is_some() {
+                    if let Some(mat_path) = &mesh.material_path {
+                        texture_path = parse_material_texture_path(mat_path);
+                    }
+                }
             }
         }
         MeshData {
@@ -1372,6 +1481,7 @@ impl ViewportPanel {
                                 } else {
                                     &entry.full
                                 };
+                                eprintln!("[VIEWPORT] Renderizando: {} (proxy={}), material_path={:?}", entry.name, is_navigating, mesh.material_path);
                                 draw_solid_mesh(ui, viewport_rect, mvp_obj, mesh);
                             }
                         }
@@ -1453,14 +1563,19 @@ impl ViewportPanel {
     }
 
     pub fn set_object_material_path(&mut self, object_name: &str, path: Option<String>) -> bool {
+        eprintln!("[VIEWPORT] set_object_material_path: objeto={}, path={:?}", object_name, path);
         if let Some(entry) = self
             .scene_entries
             .iter_mut()
             .find(|e| e.name == object_name)
         {
-            entry.full.material_path = path;
+            eprintln!("[VIEWPORT] Material definido: {:?} -> {:?}", entry.full.material_path, path);
+            entry.full.material_path = path.clone();
+            // Also update proxy mesh
+            entry.proxy.material_path = path;
             true
         } else {
+            eprintln!("[VIEWPORT] Objeto nao encontrado: {}", object_name);
             false
         }
     }
@@ -2566,7 +2681,53 @@ fn draw_wire_mesh(ui: &mut egui::Ui, viewport: Rect, mvp: Mat4, mesh: &MeshData,
 fn draw_solid_mesh(ui: &mut egui::Ui, viewport: Rect, mvp: Mat4, mesh: &MeshData) {
     let max_triangles = 14_000usize;
     let light = Vec3::new(0.42, 0.78, 0.46).normalize();
-    let mut tris: Vec<(f32, Pos2, Pos2, Pos2, Color32)> = Vec::new();
+
+    // Load texture from texture_path or from material_path
+    let texture_path = mesh.texture_path.clone().or_else(|| {
+        mesh.material_path.as_ref().and_then(|mat_path| {
+            eprintln!("[VIEWPORT] Tentando carregar textura do material: {}", mat_path);
+            parse_material_texture_path(mat_path)
+        })
+    });
+    
+    eprintln!("[VIEWPORT] Mesh: {}, texture_path={:?}, material_path={:?}", mesh.name, mesh.texture_path, mesh.material_path);
+    eprintln!("[VIEWPORT] Texture path final: {:?}", texture_path);
+    eprintln!("[VIEWPORT] UVs disponiveis: {}", mesh.uvs.len());
+    
+    // Load texture if available
+    let texture = if let Some(path) = &texture_path {
+        eprintln!("[VIEWPORT] Carregando textura: {}", path);
+        if std::path::Path::new(path).exists() {
+            eprintln!("[VIEWPORT] Arquivo existe");
+            if let Ok(bytes) = std::fs::read(path) {
+                if let Ok(image) = image::load_from_memory(&bytes) {
+                    let rgba = image.to_rgba8();
+                    let size = [rgba.width() as usize, rgba.height() as usize];
+                    let color_image = egui::ColorImage::from_rgba_unmultiplied(size, rgba.as_raw());
+                    let tex = ui.ctx().load_texture(path.clone(), color_image, egui::TextureOptions::LINEAR);
+                    eprintln!("[VIEWPORT] Textura carregada: {}x{}", size[0], size[1]);
+                    Some(tex)
+                } else {
+                    eprintln!("[VIEWPORT] Erro ao fazer parse da imagem");
+                    None
+                }
+            } else {
+                eprintln!("[VIEWPORT] Erro ao ler arquivo");
+                None
+            }
+        } else {
+            eprintln!("[VIEWPORT] Arquivo nao existe: {}", path);
+            None
+        }
+    } else {
+        None
+    };
+
+    let has_texture = texture.is_some() && !mesh.uvs.is_empty();
+    eprintln!("[VIEWPORT] has_texture={}, texture.is_some()={}, uvs.len()={}", has_texture, texture.is_some(), mesh.uvs.len());
+    let has_normals = mesh.normals.len() == mesh.vertices.len();
+    
+    let mut tris: Vec<(f32, Pos2, Pos2, Pos2, Color32, [f32; 2], [f32; 2], [f32; 2])> = Vec::new();
     tris.reserve(mesh.triangles.len().min(max_triangles));
 
     for tri in mesh.triangles.iter().take(max_triangles) {
@@ -2580,12 +2741,20 @@ fn draw_solid_mesh(ui: &mut egui::Ui, viewport: Rect, mvp: Mat4, mesh: &MeshData
         let a3 = mesh.vertices[ia];
         let b3 = mesh.vertices[ib];
         let c3 = mesh.vertices[ic];
-        let n = (b3 - a3).cross(c3 - a3);
-        let n_len2 = n.length_squared();
-        if n_len2 <= 1e-8 {
-            continue;
-        }
-        let nrm = n / n_len2.sqrt();
+        
+        // Get normal
+        let nrm = if has_normals {
+            mesh.normals[ia]
+        } else {
+            let n = (b3 - a3).cross(c3 - a3);
+            let n_len2 = n.length_squared();
+            if n_len2 <= 1e-8 {
+                Vec3::Y
+            } else {
+                n / n_len2.sqrt()
+            }
+        };
+        
         let diff = nrm.dot(light).max(0.0);
         let amb = 0.28_f32;
         let lit = (amb + diff * 0.72).clamp(0.0, 1.0);
@@ -2628,21 +2797,61 @@ fn draw_solid_mesh(ui: &mut egui::Ui, viewport: Rect, mvp: Mat4, mesh: &MeshData
         }
 
         let depth = (ndc_a.z + ndc_b.z + ndc_c.z) / 3.0;
-        let edge_boost = (1.0 - nrm.z.abs()).clamp(0.0, 1.0) * 0.12;
-        let v = ((58.0 + (lit + edge_boost) * 156.0).min(255.0)) as u8;
-        let b = ((v as f32) * 1.06).min(255.0) as u8;
-        let color = Color32::from_rgb(v, v, b);
-        tris.push((depth, pa, pb, pc, color));
+        
+        // Get UVs
+        let uv_a = if ia < mesh.uvs.len() { mesh.uvs[ia] } else { [0.0, 0.0] };
+        let uv_b = if ib < mesh.uvs.len() { mesh.uvs[ib] } else { [0.0, 0.0] };
+        let uv_c = if ic < mesh.uvs.len() { mesh.uvs[ic] } else { [0.0, 0.0] };
+        
+        // Calculate color based on texture or solid color
+        let base_color = if has_texture {
+            Color32::WHITE // Texture will provide the color
+        } else {
+            let edge_boost = (1.0 - nrm.z.abs()).clamp(0.0, 1.0) * 0.12;
+            let v = ((58.0 + (lit + edge_boost) * 156.0).min(255.0)) as u8;
+            let b = ((v as f32) * 1.06).min(255.0) as u8;
+            Color32::from_rgb(v, v, b)
+        };
+        
+        tris.push((depth, pa, pb, pc, base_color, uv_a, uv_b, uv_c));
     }
 
     tris.sort_by(|a, b| b.0.total_cmp(&a.0));
     let mut solid = egui::epaint::Mesh::default();
-    for (_, pa, pb, pc, color) in tris {
+
+    for (_, pa, pb, pc, color, uv_a, uv_b, uv_c) in tris {
         let base = solid.vertices.len() as u32;
-        solid.colored_vertex(pa, color);
-        solid.colored_vertex(pb, color);
-        solid.colored_vertex(pc, color);
-        solid.add_triangle(base, base + 1, base + 2);
+
+        if has_texture {
+            // Use textured vertices
+            if let Some(ref tex) = texture {
+                solid.vertices.push(egui::epaint::Vertex {
+                    pos: pa,
+                    uv: egui::pos2(uv_a[0], uv_a[1]),
+                    color,
+                });
+                solid.vertices.push(egui::epaint::Vertex {
+                    pos: pb,
+                    uv: egui::pos2(uv_b[0], uv_b[1]),
+                    color,
+                });
+                solid.vertices.push(egui::epaint::Vertex {
+                    pos: pc,
+                    uv: egui::pos2(uv_c[0], uv_c[1]),
+                    color,
+                });
+                solid.indices.push(base);
+                solid.indices.push(base + 1);
+                solid.indices.push(base + 2);
+                solid.texture_id = tex.id();
+            }
+        } else {
+            // Use colored vertices (original behavior)
+            solid.colored_vertex(pa, color);
+            solid.colored_vertex(pb, color);
+            solid.colored_vertex(pc, color);
+            solid.add_triangle(base, base + 1, base + 2);
+        }
     }
 
     if !solid.vertices.is_empty() {

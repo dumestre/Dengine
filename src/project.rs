@@ -343,6 +343,86 @@ impl ProjectWindow {
         dest_dir.join(base_name)
     }
 
+    /// Extrai o caminho da textura de um arquivo FBX (se existir textura embutida ou referenciada)
+    fn extract_fbx_texture_path(fbx_path: &Path) -> Option<String> {
+        eprintln!("[FBX] extract_fbx_texture_path: {:?}", fbx_path);
+        let fbx_dir = fbx_path.parent()?;
+        let fbx_name = fbx_path.file_stem()?.to_string_lossy();
+        eprintln!("[FBX] Procurando por: {}*", fbx_name);
+        
+        // Tenta extrair nome base (remove _1, _2, etc do final)
+        let base_name = if let Some(idx) = fbx_name.rfind("_texture_") {
+            // Meshy_AI__0217192431_texture_6 → Meshy_AI__0217192431
+            &fbx_name[..idx]
+        } else if fbx_name.ends_with("_texture") {
+            // Meshy_AI__0217192431_texture → Meshy_AI__0217192431
+            &fbx_name[..fbx_name.len() - "_texture".len()]
+        } else {
+            &fbx_name
+        };
+        eprintln!("[FBX] Nome base: {}", base_name);
+        
+        // Procura por texturas com nome similar
+        let texture_extensions = [
+            format!("{}_texture.png", base_name),
+            format!("{}_texture.jpg", base_name),
+            format!("{}_texture.jpeg", base_name),
+            format!("{}_texture.tga", base_name),
+            format!("{}.png", fbx_name),
+            format!("{}.jpg", fbx_name),
+            format!("{}.jpeg", fbx_name),
+            format!("{}.tga", fbx_name),
+        ];
+        
+        // Procura em Assets/Meshes/
+        for tex_name in &texture_extensions {
+            let tex_path = fbx_dir.join(tex_name);
+            if tex_path.exists() {
+                eprintln!("[FBX] Textura encontrada (Meshes): {:?}", tex_path);
+                return Some(tex_path.to_string_lossy().to_string());
+            }
+        }
+        
+        // Procura em Assets/Textures/ (pasta correta para texturas)
+        let textures_dir = Path::new("Assets").join("Textures");
+        eprintln!("[FBX] Procurando em Assets/Textures/: exists={}", textures_dir.exists());
+        if textures_dir.exists() {
+            for tex_name in &texture_extensions {
+                let tex_path = textures_dir.join(tex_name);
+                if tex_path.exists() {
+                    eprintln!("[FBX] Textura encontrada (Textures): {:?}", tex_path);
+                    return Some(tex_path.to_string_lossy().to_string());
+                }
+            }
+            // Também procura sem sufixo _texture
+            let simple_exts = ["png", "jpg", "jpeg", "tga"];
+            for ext in &simple_exts {
+                let tex_name = format!("{}.{}", base_name, ext);
+                let tex_path = textures_dir.join(&tex_name);
+                if tex_path.exists() {
+                    eprintln!("[FBX] Textura encontrada (Textures simples): {:?}", tex_path);
+                    return Some(tex_path.to_string_lossy().to_string());
+                }
+            }
+        }
+        
+        // Fallback: procura em Assets/Assets/ (legado)
+        let assets_dir = Path::new("Assets").join("Assets");
+        if assets_dir.exists() {
+            eprintln!("[FBX] Fallback: procurando em Assets/Assets/");
+            for tex_name in &texture_extensions {
+                let tex_path = assets_dir.join(tex_name);
+                if tex_path.exists() {
+                    eprintln!("[FBX] Textura encontrada (Assets/Assets legado): {:?}", tex_path);
+                    return Some(tex_path.to_string_lossy().to_string());
+                }
+            }
+        }
+        
+        eprintln!("[FBX] Textura nao encontrada para {:?}", fbx_path);
+        None
+    }
+
     fn import_model_path(&mut self, src_path: &Path, language: EngineLanguage) {
         if !src_path.is_file() {
             self.status_text = format!(
@@ -397,6 +477,66 @@ impl ProjectWindow {
             self.selected_asset = None;
         }
         self.deleted_assets.remove(&imported_name);
+        
+        // Create automatic material for FBX and GLB imports
+        if ext == "fbx" || ext == "glb" || ext == "gltf" {
+            let mat_name = format!("{}_Mat", dest_path.file_stem().and_then(|s| s.to_str()).unwrap_or("Material"));
+            
+            // Try to extract texture path
+            let texture_path = if ext == "fbx" {
+                Self::extract_fbx_texture_path(&dest_path)
+            } else {
+                // For GLB/GLTF, try to find extracted texture in cache
+                let cache_dir = Path::new("Assets").join(".cache").join("textures");
+                let mut found_tex: Option<String> = None;
+                if cache_dir.exists() {
+                    if let Ok(entries) = std::fs::read_dir(&cache_dir) {
+                        for entry in entries.flatten() {
+                            let path = entry.path();
+                            if let Some(ext) = path.extension().and_then(|e| e.to_str()) {
+                                if matches!(ext.to_lowercase().as_str(), "png" | "jpg" | "jpeg") {
+                                    // Copy to Textures folder
+                                    let tex_name = format!("{}_{}", dest_path.file_stem().unwrap_or_default().to_string_lossy(), path.file_name().unwrap_or_default().to_string_lossy());
+                                    let dest_tex = Path::new("Assets").join("Textures").join(&tex_name);
+                                    if let Ok(_) = std::fs::create_dir_all("Assets/Textures") {
+                                        if let Ok(_) = std::fs::copy(&path, &dest_tex) {
+                                            eprintln!("[GLB] Textura extraída: {:?}", dest_tex);
+                                            found_tex = Some(dest_tex.to_string_lossy().to_string());
+                                            break;
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                found_tex
+            };
+            
+            let texture_line = if let Some(tex) = &texture_path {
+                // Quando tem textura, albedo deve ser branco (1,1,1) para a textura aparecer corretamente
+                format!(
+                    "albedo=1,1,1\nalbedo_texture={}\n",
+                    tex
+                )
+            } else {
+                String::new()
+            };
+            
+            let mat_content = format!(
+                "# Dengine Material\n# Auto-generated for {}\nshader=Standard\nalbedo=1,1,1,1\nmetallic=0.0\nsmoothness=0.5\n{}",
+                imported_name,
+                texture_line
+            );
+            self.create_text_asset_with_name(
+                language,
+                "Materials",
+                &mat_name,
+                "mat",
+                &mat_content,
+            );
+        }
+        
         if ext == "fbx" {
             match self.upsert_default_animation_module_for_fbx(&imported_name, &dest_path) {
                 Ok(Some(module)) => {
@@ -437,6 +577,37 @@ impl ProjectWindow {
             }
         }
         dir.join(format!("{base_stem}.{ext}"))
+    }
+
+    fn create_text_asset_with_name(
+        &mut self,
+        language: EngineLanguage,
+        target_folder: &'static str,
+        name: &str,
+        ext: &str,
+        content: &str,
+    ) {
+        let dir = Path::new("Assets").join(target_folder);
+        if let Err(err) = fs::create_dir_all(&dir) {
+            self.status_text = format!(
+                "{}: erro ao criar pasta ({err})",
+                self.tr(language, "create")
+            );
+            return;
+        }
+        let target = dir.join(format!("{name}.{ext}"));
+        if let Err(err) = fs::write(&target, content.as_bytes()) {
+            self.status_text = format!(
+                "{}: erro ao criar arquivo ({err})",
+                self.tr(language, "create")
+            );
+            return;
+        }
+        let imported = self.imported_assets.entry(target_folder).or_default();
+        if !imported.iter().any(|n| n == name) {
+            imported.push(name.to_string());
+        }
+        self.deleted_assets.remove(name);
     }
 
     fn create_text_asset(
@@ -671,6 +842,7 @@ impl ProjectWindow {
             "Meshes" => Some(PathBuf::from("Assets/Meshes")),
             "Mold" => Some(PathBuf::from("Assets/Mold")),
             "Scripts" => Some(PathBuf::from("Assets/Scripts")),
+            "Textures" => Some(PathBuf::from("Assets/Textures")),
             "Packages" => Some(PathBuf::from("Packages")),
             "TextMeshPro" => Some(PathBuf::from("Packages/TextMeshPro")),
             "InputSystem" => Some(PathBuf::from("Packages/InputSystem")),
@@ -1838,7 +2010,7 @@ impl ProjectWindow {
 
                                 if self.assets_open {
                                     for folder in
-                                        ["Animations", "Materials", "Meshes", "Mold", "Scripts"]
+                                        ["Animations", "Materials", "Meshes", "Mold", "Scripts", "Textures"]
                                     {
                                         if !self.should_show_folder(folder) {
                                             continue;
