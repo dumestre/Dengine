@@ -23,8 +23,7 @@ impl MovementSystem {
 
     pub fn update(&mut self, world: &mut EngineWorld, dt: f32) {
         // Iterate over entities with Transform and Player components
-        for (transform, _player) in &mut world.world_mut().query::<(&mut Transform, &Player)>()
-        {
+        for (transform, _player) in &mut world.world_mut().query::<(&mut Transform, &Player)>() {
             // Player movement logic - can be extended with input
             let _ = transform;
             let _ = dt;
@@ -55,7 +54,8 @@ impl RenderSystem {
     pub fn update(&mut self, world: &EngineWorld) -> Vec<Renderable> {
         let mut renderables = Vec::new();
 
-        for (transform, mesh_renderer) in &mut world.world().query::<(&Transform, &MeshRenderer)>() {
+        for (transform, mesh_renderer) in &mut world.world().query::<(&Transform, &MeshRenderer)>()
+        {
             let mesh_renderer: &MeshRenderer = mesh_renderer;
             if mesh_renderer.is_valid() {
                 renderables.push(Renderable {

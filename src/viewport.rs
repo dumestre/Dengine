@@ -1,5 +1,5 @@
-use std::collections::HashSet;
 use std::collections::hash_map::DefaultHasher;
+use std::collections::{HashMap, HashSet};
 use std::fs::{self, File};
 use std::hash::{Hash, Hasher};
 use std::io::{Read, Write};
@@ -7,6 +7,7 @@ use std::path::{Path, PathBuf};
 use std::sync::mpsc::{self, Receiver, Sender};
 
 use crate::hierarchy::Primitive3DKind;
+use crate::inspector;
 use crate::viewport_gpu::ViewportGpuRenderer;
 use eframe::egui::{
     self, Align2, Color32, FontId, PointerButton, Pos2, Rect, Sense, Stroke, TextureHandle,
@@ -58,6 +59,7 @@ pub struct ViewportPanel {
     dropped_asset_label: Option<String>,
     mesh_status: Option<String>,
     mesh_loading: bool,
+    pending_delete_object: Option<String>,
     import_pipeline: AssetImportPipeline,
     pending_mesh_job: Option<u64>,
     next_import_job_id: u64,
@@ -68,6 +70,9 @@ pub struct ViewportPanel {
     pub light_color: [f32; 3],
     pub light_intensity: f32,
     pub light_enabled: bool,
+    pending_gizmo_undo: bool,
+    gizmo_interacting: bool,
+    texture_cache: HashMap<String, TextureHandle>,
 }
 
 #[derive(Clone, PartialEq)]
@@ -93,25 +98,28 @@ struct MeshData {
 fn parse_material_texture_path(mat_path: &str) -> Option<String> {
     let content = std::fs::read_to_string(mat_path).ok()?;
     let mat_dir = std::path::Path::new(mat_path).parent()?;
-    
+
     for line in content.lines() {
         let line = line.trim();
         // Procura por albedo_texture, diffuse_texture, texture ou texture_path
         if let Some(val) = line.strip_prefix("albedo_texture=") {
             let mut path = val.trim().trim_matches('"').to_string();
-            
+
             // Remove prefixo Windows \\?\ se existir
             if path.starts_with("\\\\?\\") {
                 path = path[4..].to_string();
             }
-            
+
             // Se for caminho relativo ou nome interno (ex: base_color_texture), procura em caches
-            if !std::path::Path::new(&path).exists() || (!path.contains('/') && !path.contains('\\')) {
+            if !std::path::Path::new(&path).exists()
+                || (!path.contains('/') && !path.contains('\\'))
+            {
                 // Tenta extrair apenas o nome do arquivo
-                let file_name = std::path::Path::new(&path).file_name()
+                let file_name = std::path::Path::new(&path)
+                    .file_name()
                     .map(|s| s.to_string_lossy().to_string())
                     .unwrap_or_else(|| path.clone());
-                
+
                 // Tenta em Assets/Textures/
                 let textures_path = format!("Assets/Textures/{}", file_name);
                 if std::path::Path::new(&textures_path).exists() {
@@ -135,7 +143,11 @@ fn parse_material_texture_path(mat_path: &str) -> Option<String> {
                     if let Ok(entries) = std::fs::read_dir(&cache_dir) {
                         for entry in entries.flatten() {
                             let entry_path = entry.path();
-                            if entry_path.file_name().map(|n| n.to_string_lossy().to_string()) == Some(file_name.clone()) {
+                            if entry_path
+                                .file_name()
+                                .map(|n| n.to_string_lossy().to_string())
+                                == Some(file_name.clone())
+                            {
                                 if let Ok(abs) = std::fs::canonicalize(&entry_path) {
                                     return Some(normalize_path_string(&abs.to_string_lossy()));
                                 }
@@ -164,7 +176,8 @@ fn parse_material_texture_path(mat_path: &str) -> Option<String> {
                 path = path[4..].to_string();
             }
             if !std::path::Path::new(&path).exists() {
-                let file_name = std::path::Path::new(&path).file_name()
+                let file_name = std::path::Path::new(&path)
+                    .file_name()
                     .map(|s| s.to_string_lossy().to_string())
                     .unwrap_or_else(|| path.clone());
                 let textures_path = format!("Assets/Textures/{}", file_name);
@@ -181,20 +194,74 @@ fn parse_material_texture_path(mat_path: &str) -> Option<String> {
             return Some(val.trim().trim_matches('"').to_string());
         }
     }
-    
+
     // Fallback: procura textura com nome similar ao material
-    let mat_name = std::path::Path::new(mat_path).file_stem()?
-        .to_string_lossy().to_string();
+    let mat_name = std::path::Path::new(mat_path)
+        .file_stem()?
+        .to_string_lossy()
+        .to_string();
     let base_name = mat_name.strip_suffix("_Mat").unwrap_or(&mat_name);
-    
+
     for ext in &["png", "jpg", "jpeg"] {
         let tex_path = format!("Assets/Textures/{}_{}.{}", base_name, base_name, ext);
         if std::path::Path::new(&tex_path).exists() {
-            eprintln!("[MATERIAL] Textura encontrada por nome similar: {}", tex_path);
+            eprintln!(
+                "[MATERIAL] Textura encontrada por nome similar: {}",
+                tex_path
+            );
             return Some(tex_path);
         }
     }
-    
+
+    None
+}
+
+fn material_name_variations(name: &str) -> Vec<String> {
+    let trimmed = name.trim();
+    if trimmed.is_empty() {
+        return Vec::new();
+    }
+    let mut variations = Vec::new();
+    variations.push(trimmed.to_string());
+
+    if let Some(idx) = trimmed.find(" (Mesh") {
+        let base = trimmed[..idx].trim_end();
+        if !base.is_empty() {
+            variations.push(base.to_string());
+        }
+    }
+
+    if let Some(stem) = Path::new(trimmed).file_stem().and_then(|s| s.to_str()) {
+        let stem_trimmed = stem.trim();
+        if !stem_trimmed.is_empty() {
+            variations.push(stem_trimmed.to_string());
+        }
+    }
+
+    variations
+}
+
+fn find_material_path_for_names<Names, Name>(names: Names) -> Option<String>
+where
+    Names: IntoIterator<Item = Name>,
+    Name: AsRef<str>,
+{
+    let materials_dir = Path::new("Assets").join("Materials");
+    let mut seen = HashSet::new();
+    for name in names {
+        for candidate in material_name_variations(name.as_ref()) {
+            if !seen.insert(candidate.clone()) {
+                continue;
+            }
+            let material_path = materials_dir.join(format!("{candidate}_Mat.mat"));
+            if material_path.exists() {
+                if let Ok(abs) = std::fs::canonicalize(&material_path) {
+                    return Some(normalize_path_string(&abs.to_string_lossy()));
+                }
+                return Some(normalize_path_string(&material_path.to_string_lossy()));
+            }
+        }
+    }
     None
 }
 
@@ -301,6 +368,37 @@ impl ViewportPanel {
         max_d2.sqrt().clamp(0.2, 50.0)
     }
 
+    fn scene_entry_screen_hit_info(
+        entry: &SceneEntry,
+        viewport_rect: Rect,
+        mvp: Mat4,
+    ) -> Option<(Pos2, f32)> {
+        let world_center = Self::scene_entry_world_center(entry);
+        let screen_center = project_point(viewport_rect, mvp, world_center)?;
+        let radius_world = Self::scene_entry_world_radius(entry, world_center);
+        if radius_world <= 0.0 {
+            return Some((screen_center, 20.0));
+        }
+        let offsets = [
+            Vec3::new(radius_world, 0.0, 0.0),
+            Vec3::new(0.0, radius_world, 0.0),
+            Vec3::new(0.0, 0.0, radius_world),
+            Vec3::new(radius_world, radius_world, 0.0),
+            Vec3::new(radius_world, 0.0, radius_world),
+        ];
+        let mut max_radius = 0.0;
+        for offset in offsets {
+            if let Some(point) = project_point(viewport_rect, mvp, world_center + offset) {
+                let dist = screen_center.distance(point);
+                if dist > max_radius {
+                    max_radius = dist;
+                }
+            }
+        }
+        let screen_radius = (max_radius * 1.25).max(18.0);
+        Some((screen_center, screen_radius))
+    }
+
     fn focus_selected_or_origin(&mut self) {
         if let Some(name) = self.selected_scene_object.clone() {
             if let Some(entry) = self.scene_entries.iter().find(|o| o.name == name) {
@@ -340,6 +438,7 @@ impl ViewportPanel {
             dropped_asset_label: None,
             mesh_status: None,
             mesh_loading: false,
+            pending_delete_object: None,
             import_pipeline,
             pending_mesh_job: None,
             next_import_job_id: 1,
@@ -350,6 +449,9 @@ impl ViewportPanel {
             light_color: [1.0, 1.0, 1.0],
             light_intensity: 1.0,
             light_enabled: true,
+            pending_gizmo_undo: false,
+            gizmo_interacting: false,
+            texture_cache: HashMap::new(),
         };
         s.push_undo_snapshot();
         s
@@ -367,6 +469,21 @@ impl ViewportPanel {
 
     pub fn panel_rect(&self) -> Option<Rect> {
         self.last_viewport_rect
+    }
+
+    pub fn request_delete_selected_object(&mut self) {
+        if self.pending_delete_object.is_some() {
+            return;
+        }
+        if self.object_selected {
+            if let Some(name) = self.selected_scene_object.clone() {
+                self.pending_delete_object = Some(name);
+            }
+        }
+    }
+
+    pub fn take_pending_delete_object(&mut self) -> Option<String> {
+        self.pending_delete_object.take()
     }
 
     pub fn selected_object_name(&self) -> Option<&str> {
@@ -395,12 +512,14 @@ impl ViewportPanel {
         hasher.finish().max(1)
     }
 
-    fn build_gpu_scene_mesh(&self, use_proxy: bool) -> MeshData {
+    fn build_gpu_scene_mesh(&self, use_proxy: bool) -> (MeshData, bool) {
         let mut vertices: Vec<Vec3> = Vec::new();
         let mut normals: Vec<Vec3> = Vec::new();
         let mut uvs: Vec<[f32; 2]> = Vec::new();
         let mut triangles: Vec<[u32; 3]> = Vec::new();
         let mut texture_path: Option<String> = None;
+        let mut texture_conflict = false;
+        let mut unique_texture: Option<String> = None;
 
         for entry in &self.scene_entries {
             let mesh = if use_proxy { &entry.proxy } else { &entry.full };
@@ -433,21 +552,28 @@ impl ViewportPanel {
                     triangles.push([base + tri[0], base + tri[1], base + tri[2]]);
                 }
             }
-            // Collect texture from first mesh that has one
+            let entry_texture = mesh.texture_path.clone().or_else(|| {
+                mesh.material_path
+                    .as_ref()
+                    .and_then(|mp| parse_material_texture_path(mp))
+            });
             if texture_path.is_none() {
-                // First try direct texture_path
-                if mesh.texture_path.is_some() {
-                    texture_path = mesh.texture_path.clone();
-                }
-                // Then try material_path
-                if texture_path.is_none() && mesh.material_path.is_some() {
-                    if let Some(mat_path) = &mesh.material_path {
-                        texture_path = parse_material_texture_path(mat_path);
-                    }
+                texture_path = entry_texture.clone();
+            }
+            if let Some(tex) = entry_texture {
+                match &unique_texture {
+                    Some(prev) if prev != &tex => texture_conflict = true,
+                    None => unique_texture = Some(tex.clone()),
+                    _ => {}
                 }
             }
         }
-        MeshData {
+        if texture_conflict {
+            texture_path = None;
+        } else {
+            texture_path = unique_texture.clone().or(texture_path);
+        }
+        let mesh_summary = MeshData {
             name: "SceneBatch".to_string(),
             vertices,
             normals,
@@ -455,7 +581,8 @@ impl ViewportPanel {
             triangles,
             texture_path,
             material_path: None,
-        }
+        };
+        (mesh_summary, texture_conflict)
     }
 
     pub fn set_selected_object(&mut self, object_name: &str) {
@@ -721,6 +848,30 @@ impl ViewportPanel {
         true
     }
 
+    pub fn spawn_light(&mut self, object_name: &str, light_type: inspector::LightType) -> bool {
+        let full = make_light_mesh(light_type);
+        if full.vertices.is_empty() || full.triangles.is_empty() {
+            return false;
+        }
+        self.push_undo_snapshot();
+        let nav_proxy = make_proxy_mesh(&full, VIEWPORT_NAV_TRIANGLES, VIEWPORT_NAV_VERTICES);
+        let target_pos = self.camera_target;
+        let rotation = Mat4::from_rotation_y(self.camera_yaw + std::f32::consts::PI);
+        let transform = Mat4::from_translation(target_pos) * rotation;
+        let name = object_name.to_string();
+        self.scene_entries.push(SceneEntry {
+            name: name.clone(),
+            transform,
+            full,
+            proxy: nav_proxy,
+        });
+        self.selected_scene_object = Some(name.clone());
+        self.dropped_asset_label = Some(name);
+        self.object_selected = true;
+        self.mesh_status = Some("Luz adicionada".to_string());
+        true
+    }
+
     pub fn on_asset_file_dropped_named(&mut self, path: &Path, object_name: &str) {
         self.pending_mesh_name = Some(object_name.to_string());
         self.on_asset_file_dropped(path);
@@ -809,7 +960,11 @@ impl ViewportPanel {
                             let mut full = mesh;
                             // Otimiza se necessário
                             if is_heavy {
-                                full = make_proxy_mesh(&full, MAX_RUNTIME_TRIANGLES, MAX_RUNTIME_VERTICES);
+                                full = make_proxy_mesh(
+                                    &full,
+                                    MAX_RUNTIME_TRIANGLES,
+                                    MAX_RUNTIME_VERTICES,
+                                );
                             }
                             let nav_proxy = make_proxy_mesh(
                                 &full,
@@ -830,6 +985,23 @@ impl ViewportPanel {
                                 full,
                                 proxy: nav_proxy,
                             });
+                            if let Some(entry) = self.scene_entries.last_mut() {
+                                if entry.full.material_path.is_none() {
+                                    let mut name_candidates = vec![name.clone()];
+                                    if let Some(stem) = Path::new(&entry.full.name)
+                                        .file_stem()
+                                        .and_then(|s| s.to_str())
+                                    {
+                                        name_candidates.push(stem.to_string());
+                                    }
+                                    if let Some(mat_path) =
+                                        find_material_path_for_names(name_candidates.iter())
+                                    {
+                                        entry.full.material_path = Some(mat_path.clone());
+                                        entry.proxy.material_path = Some(mat_path);
+                                    }
+                                }
+                            }
                             self.selected_scene_object = Some(name.clone());
                             self.dropped_asset_label = Some(name);
                             self.object_selected = true;
@@ -1441,11 +1613,13 @@ impl ViewportPanel {
                         let hover_pos = ctx.input(|i| i.pointer.hover_pos());
                         if let Some(cursor) = hover_pos {
                             let mut best: Option<(f32, String)> = None;
+                            let view_proj = proj * view;
                             for entry in &self.scene_entries {
-                                let center = Self::scene_entry_world_center(entry);
-                                if let Some(screen) = project_point(viewport_rect, proj * view, center) {
+                                if let Some((screen, radius_px)) =
+                                    Self::scene_entry_screen_hit_info(entry, viewport_rect, view_proj)
+                                {
                                     let dist = cursor.distance(screen);
-                                    if dist <= 22.0 {
+                                    if dist <= radius_px {
                                         match &best {
                                             Some((best_d, _)) if dist >= *best_d => {}
                                             _ => best = Some((dist, entry.name.clone())),
@@ -1468,31 +1642,34 @@ impl ViewportPanel {
                         let use_proxy = is_navigating;
                         let mut gpu_drawn = false;
                         if let Some(gpu) = gpu_renderer {
-                            let scene_batch = self.build_gpu_scene_mesh(use_proxy);
-                            let mesh_id = self.gpu_scene_mesh_id(use_proxy);
-                            let light_dir = Vec3::new(
-                                self.light_yaw.cos() * self.light_pitch.cos(),
-                                self.light_pitch.sin(),
-                                self.light_yaw.sin() * self.light_pitch.cos(),
-                            );
-                            gpu.update_scene(
-                                mesh_id,
-                                &scene_batch.vertices,
-                                &scene_batch.normals,
-                                &scene_batch.uvs,
-                                &scene_batch.triangles,
-                                proj * view,
-                                Mat4::IDENTITY,
-                                eye,
-                                light_dir,
-                                Vec3::from(self.light_color),
-                                self.light_intensity,
-                                self.light_enabled,
-                                scene_batch.texture_path,
-                            );
-                            let cb = gpu.paint_callback(viewport_rect);
-                            ui.painter().add(egui::Shape::Callback(cb));
-                            gpu_drawn = true;
+                            let (scene_batch, texture_conflict) =
+                                self.build_gpu_scene_mesh(use_proxy);
+                            if !texture_conflict {
+                                let mesh_id = self.gpu_scene_mesh_id(use_proxy);
+                                let light_dir = Vec3::new(
+                                    self.light_yaw.cos() * self.light_pitch.cos(),
+                                    self.light_pitch.sin(),
+                                    self.light_yaw.sin() * self.light_pitch.cos(),
+                                );
+                                gpu.update_scene(
+                                    mesh_id,
+                                    &scene_batch.vertices,
+                                    &scene_batch.normals,
+                                    &scene_batch.uvs,
+                                    &scene_batch.triangles,
+                                    proj * view,
+                                    Mat4::IDENTITY,
+                                    eye,
+                                    light_dir,
+                                    Vec3::from(self.light_color),
+                                    self.light_intensity,
+                                    self.light_enabled,
+                                    scene_batch.texture_path,
+                                );
+                                let cb = gpu.paint_callback(viewport_rect);
+                                ui.painter().add(egui::Shape::Callback(cb));
+                                gpu_drawn = true;
+                            }
                         }
                         if !gpu_drawn {
                             for entry in &self.scene_entries {
@@ -1504,7 +1681,13 @@ impl ViewportPanel {
                                     &entry.full
                                 };
                                 eprintln!("[VIEWPORT] Renderizando: {} (proxy={}), material_path={:?}", entry.name, is_navigating, mesh.material_path);
-                                draw_solid_mesh(ui, viewport_rect, mvp_obj, mesh);
+                                draw_solid_mesh(
+                                    ui,
+                                    viewport_rect,
+                                    mvp_obj,
+                                    mesh,
+                                    &mut self.texture_cache,
+                                );
                             }
                         }
                         for entry in &self.scene_entries {
@@ -1545,13 +1728,26 @@ impl ViewportPanel {
                             .orientation(self.gizmo_orientation)
                             .viewport(viewport_rect);
 
-                        if let Some(result) = gizmo.interact(ui) {
+                        let gizmo_result = gizmo.interact(ui);
+                        let interacting = gizmo_result.is_some();
+                        if interacting && !self.gizmo_interacting {
+                            self.pending_gizmo_undo = true;
+                        }
+                        self.gizmo_interacting = interacting;
+                        if !interacting {
+                            self.pending_gizmo_undo = false;
+                        }
+
+                        if let Some(result) = gizmo_result {
                             let new_transform = Mat4::from(result.transform());
                             if let Some(name) = selected_name {
                                 if let Some(idx) = self.scene_entries.iter().position(|o| o.name == name) {
                                     let old = self.scene_entries[idx].transform;
                                     if old != new_transform {
-                                        self.push_undo_snapshot();
+                                        if self.pending_gizmo_undo {
+                                            self.push_undo_snapshot();
+                                            self.pending_gizmo_undo = false;
+                                        }
                                         self.scene_entries[idx].transform = new_transform;
                                     }
                                 }
@@ -1559,6 +1755,9 @@ impl ViewportPanel {
                                 self.model_matrix = new_transform;
                             }
                         }
+                    } else {
+                        self.gizmo_interacting = false;
+                        self.pending_gizmo_undo = false;
                     }
                 }
             });
@@ -1585,13 +1784,19 @@ impl ViewportPanel {
     }
 
     pub fn set_object_material_path(&mut self, object_name: &str, path: Option<String>) -> bool {
-        eprintln!("[VIEWPORT] set_object_material_path: objeto={}, path={:?}", object_name, path);
+        eprintln!(
+            "[VIEWPORT] set_object_material_path: objeto={}, path={:?}",
+            object_name, path
+        );
         if let Some(entry) = self
             .scene_entries
             .iter_mut()
             .find(|e| e.name == object_name)
         {
-            eprintln!("[VIEWPORT] Material definido: {:?} -> {:?}", entry.full.material_path, path);
+            eprintln!(
+                "[VIEWPORT] Material definido: {:?} -> {:?}",
+                entry.full.material_path, path
+            );
             entry.full.material_path = path.clone();
             // Also update proxy mesh
             entry.proxy.material_path = path;
@@ -1709,12 +1914,12 @@ fn make_proxy_mesh(full: &MeshData, max_tris: usize, max_vertices: usize) -> Mes
         },
         vertices,
         normals: vec![], // Será recalculado
-        uvs: vec![], // Será copiado abaixo
+        uvs: vec![],     // Será copiado abaixo
         triangles,
         texture_path: full.texture_path.clone(),
         material_path: full.material_path.clone(),
     };
-    
+
     // Copiar UVs do mesh original
     // Como os vértices foram simplificados, precisamos mapear as UVs
     // Abordagem simples: usar UVs dos vértices originais baseado na posição
@@ -1726,7 +1931,7 @@ fn make_proxy_mesh(full: &MeshData, max_tris: usize, max_vertices: usize) -> Mes
         // Para proxy de navegação, UVs não são críticas
         res.uvs = vec![[0.0, 0.0]; res.vertices.len()];
     }
-    
+
     normalize_mesh(&mut res); // Garante normais
     res
 }
@@ -1739,6 +1944,23 @@ fn make_primitive_mesh(kind: Primitive3DKind) -> MeshData {
         Primitive3DKind::Cylinder => make_cylinder_mesh(24),
         Primitive3DKind::Plane => make_plane_mesh(),
     };
+    normalize_mesh(&mut mesh);
+    mesh
+}
+
+fn make_light_mesh(light_type: inspector::LightType) -> MeshData {
+    let mut mesh = match light_type {
+        inspector::LightType::Point => make_sphere_mesh(14, 24),
+        inspector::LightType::Spot => make_cone_mesh(28),
+        inspector::LightType::Directional => {
+            let mut plane = make_plane_mesh();
+            for v in &mut plane.vertices {
+                *v *= 0.6;
+            }
+            plane
+        }
+    };
+    mesh.name = format!("{} Indicator", light_type.as_str());
     normalize_mesh(&mut mesh);
     mesh
 }
@@ -1969,7 +2191,19 @@ fn load_viewport_mesh_asset_cached(path: &Path) -> Result<ViewportMeshAsset, Str
         return Ok(asset);
     }
 
-    let full = load_mesh_from_path(path)?;
+    let mut full = load_mesh_from_path(path)?;
+    if full.material_path.is_none() {
+        let mut candidates = Vec::new();
+        if let Some(file_name) = path.file_name().and_then(|n| n.to_str()) {
+            candidates.push(file_name.to_string());
+        }
+        if let Some(file_stem) = path.file_stem().and_then(|n| n.to_str()) {
+            candidates.push(file_stem.to_string());
+        }
+        if let Some(mat_path) = find_material_path_for_names(candidates.iter()) {
+            full.material_path = Some(mat_path);
+        }
+    }
     let proxy = make_proxy_mesh(&full, VIEWPORT_PROXY_TRIANGLES, VIEWPORT_PROXY_VERTICES);
     let asset = ViewportMeshAsset { full, proxy };
     let _ = write_vmesh_cache(path, &asset, stamp);
@@ -2022,6 +2256,17 @@ fn write_mesh_blob(f: &mut File, mesh: &MeshData) -> Result<(), String> {
         f.write_all(&tri[2].to_le_bytes())
             .map_err(|e| e.to_string())?;
     }
+    let uv_count = mesh.uvs.len() as u32;
+    f.write_all(&uv_count.to_le_bytes())
+        .map_err(|e| e.to_string())?;
+    for uv in &mesh.uvs {
+        f.write_all(&uv[0].to_le_bytes())
+            .map_err(|e| e.to_string())?;
+        f.write_all(&uv[1].to_le_bytes())
+            .map_err(|e| e.to_string())?;
+    }
+    write_optional_string(f, mesh.texture_path.as_ref())?;
+    write_optional_string(f, mesh.material_path.as_ref())?;
     Ok(())
 }
 
@@ -2064,15 +2309,50 @@ fn read_mesh_blob(f: &mut File, name: &str) -> Result<MeshData, String> {
         let c = u32::from_le_bytes(buf4);
         triangles.push([a, b, c]);
     }
+    f.read_exact(&mut buf4).map_err(|e| e.to_string())?;
+    let uv_count = u32::from_le_bytes(buf4) as usize;
+    let mut uvs = Vec::with_capacity(uv_count);
+    for _ in 0..uv_count {
+        let mut fb = [0_u8; 4];
+        f.read_exact(&mut fb).map_err(|e| e.to_string())?;
+        let u = f32::from_le_bytes(fb);
+        f.read_exact(&mut fb).map_err(|e| e.to_string())?;
+        let v = f32::from_le_bytes(fb);
+        uvs.push([u, v]);
+    }
+    let texture_path = read_optional_string(f)?;
+    let material_path = read_optional_string(f)?;
     Ok(MeshData {
         name: name.to_string(),
         vertices,
         normals,
-        uvs: vec![[0.0, 0.0]; vcount],
+        uvs,
         triangles,
-        texture_path: None,
-        material_path: None,
+        texture_path,
+        material_path,
     })
+}
+
+fn write_optional_string(f: &mut File, value: Option<&String>) -> Result<(), String> {
+    let bytes = value.map(|v| v.as_bytes());
+    let len = bytes.map(|b| b.len() as u32).unwrap_or(0);
+    f.write_all(&len.to_le_bytes()).map_err(|e| e.to_string())?;
+    if let Some(data) = bytes {
+        f.write_all(data).map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
+fn read_optional_string(f: &mut File) -> Result<Option<String>, String> {
+    let mut len_buf = [0_u8; 4];
+    f.read_exact(&mut len_buf).map_err(|e| e.to_string())?;
+    let len = u32::from_le_bytes(len_buf) as usize;
+    if len == 0 {
+        return Ok(None);
+    }
+    let mut buf = vec![0_u8; len];
+    f.read_exact(&mut buf).map_err(|e| e.to_string())?;
+    String::from_utf8(buf).map(Some).map_err(|e| e.to_string())
 }
 
 fn write_vmesh_cache(
@@ -2082,7 +2362,7 @@ fn write_vmesh_cache(
 ) -> Result<(), String> {
     let cache = viewport_cache_file_path(source)?;
     let mut f = File::create(cache).map_err(|e| e.to_string())?;
-    f.write_all(b"VMSH3").map_err(|e| e.to_string())?;
+    f.write_all(b"VMSH4").map_err(|e| e.to_string())?;
     f.write_all(&stamp.0.to_le_bytes())
         .map_err(|e| e.to_string())?;
     f.write_all(&stamp.1.to_le_bytes())
@@ -2100,7 +2380,7 @@ fn read_vmesh_cache(source: &Path, stamp: (u64, u64)) -> Result<Option<ViewportM
     let mut f = File::open(cache).map_err(|e| e.to_string())?;
     let mut magic = [0_u8; 5];
     f.read_exact(&mut magic).map_err(|e| e.to_string())?;
-    if &magic != b"VMSH3" {
+    if &magic != b"VMSH4" {
         return Ok(None);
     }
     let mut buf8 = [0_u8; 8];
@@ -2381,7 +2661,8 @@ fn append_gltf_node_meshes(
                     match tex.source().source() {
                         gltf::image::Source::Uri { uri, .. } => {
                             let full_path = gltf_dir.join(uri);
-                            *texture_path = Some(normalize_path_string(&full_path.to_string_lossy()));
+                            *texture_path =
+                                Some(normalize_path_string(&full_path.to_string_lossy()));
                         }
                         gltf::image::Source::View { view, mime_type } => {
                             let buffer_index = view.buffer().index();
@@ -2408,11 +2689,13 @@ fn append_gltf_node_meshes(
                                             let _ = std::fs::write(&file_path, content);
                                         }
                                         if let Ok(abs) = std::fs::canonicalize(&file_path) {
-                                            *texture_path = Some(normalize_path_string(&abs.to_string_lossy()));
+                                            *texture_path =
+                                                Some(normalize_path_string(&abs.to_string_lossy()));
                                         } else {
                                             // Fallback if canonicalize fails (e.g. file creation failed)
-                                            *texture_path =
-                                                Some(normalize_path_string(&file_path.to_string_lossy()));
+                                            *texture_path = Some(normalize_path_string(
+                                                &file_path.to_string_lossy(),
+                                            ));
                                         }
                                     }
                                 }
@@ -2432,7 +2715,8 @@ fn append_gltf_node_meshes(
 
             // Collect UVs
             if let Some(reader_uvs) = reader.read_tex_coords(0) {
-                let uv_data: Vec<[f32; 2]> = reader_uvs.into_f32().map(|uv| [uv[0], uv[1]]).collect();
+                let uv_data: Vec<[f32; 2]> =
+                    reader_uvs.into_f32().map(|uv| [uv[0], uv[1]]).collect();
                 uvs.extend(uv_data);
             } else {
                 // If no UVs, fill with zeros for each vertex
@@ -2714,55 +2998,56 @@ fn draw_wire_mesh(ui: &mut egui::Ui, viewport: Rect, mvp: Mat4, mesh: &MeshData,
     );
 }
 
-fn draw_solid_mesh(ui: &mut egui::Ui, viewport: Rect, mvp: Mat4, mesh: &MeshData) {
+fn draw_solid_mesh(
+    ui: &mut egui::Ui,
+    viewport: Rect,
+    mvp: Mat4,
+    mesh: &MeshData,
+    texture_cache: &mut HashMap<String, TextureHandle>,
+) {
     let max_triangles = 14_000usize;
     let light = Vec3::new(0.42, 0.78, 0.46).normalize();
 
     // Load texture from texture_path or from material_path
     let texture_path = mesh.texture_path.clone().or_else(|| {
-        mesh.material_path.as_ref().and_then(|mat_path| {
-            eprintln!("[VIEWPORT] Tentando carregar textura do material: {}", mat_path);
-            parse_material_texture_path(mat_path)
-        })
+        mesh.material_path
+            .as_ref()
+            .and_then(|mat_path| parse_material_texture_path(mat_path))
     });
-    
-    eprintln!("[VIEWPORT] Mesh: {}, texture_path={:?}, material_path={:?}", mesh.name, mesh.texture_path, mesh.material_path);
-    eprintln!("[VIEWPORT] Texture path final: {:?}", texture_path);
-    eprintln!("[VIEWPORT] UVs disponiveis: {}", mesh.uvs.len());
-    
+
     // Load texture if available
-    let texture = if let Some(path) = &texture_path {
-        eprintln!("[VIEWPORT] Carregando textura: {}", path);
-        if std::path::Path::new(path).exists() {
-            eprintln!("[VIEWPORT] Arquivo existe");
-            if let Ok(bytes) = std::fs::read(path) {
-                if let Ok(image) = image::load_from_memory(&bytes) {
-                    let rgba = image.to_rgba8();
-                    let size = [rgba.width() as usize, rgba.height() as usize];
-                    let color_image = egui::ColorImage::from_rgba_unmultiplied(size, rgba.as_raw());
-                    let tex = ui.ctx().load_texture(path.clone(), color_image, egui::TextureOptions::LINEAR);
-                    eprintln!("[VIEWPORT] Textura carregada: {}x{}", size[0], size[1]);
-                    Some(tex)
-                } else {
-                    eprintln!("[VIEWPORT] Erro ao fazer parse da imagem");
-                    None
-                }
-            } else {
-                eprintln!("[VIEWPORT] Erro ao ler arquivo");
-                None
-            }
-        } else {
-            eprintln!("[VIEWPORT] Arquivo nao existe: {}", path);
-            None
+    let texture = texture_path.and_then(|path| {
+        if !std::path::Path::new(&path).exists() {
+            return None;
         }
-    } else {
+        if let Some(cached) = texture_cache.get(&path) {
+            return Some(cached.clone());
+        }
+        if let Ok(bytes) = std::fs::read(&path) {
+            if let Ok(image) = image::load_from_memory(&bytes) {
+                let rgba = image.to_rgba8();
+                let size = [rgba.width() as usize, rgba.height() as usize];
+                let color_image = egui::ColorImage::from_rgba_unmultiplied(size, rgba.as_raw());
+                let tex =
+                    ui.ctx()
+                        .load_texture(path.clone(), color_image, egui::TextureOptions::LINEAR);
+                texture_cache.insert(path.clone(), tex.clone());
+                return Some(tex);
+            }
+        }
+        texture_cache.remove(&path);
         None
-    };
+    });
 
     let has_texture = texture.is_some() && !mesh.uvs.is_empty();
-    eprintln!("[VIEWPORT] has_texture={}, texture.is_some()={}, uvs.len()={}", has_texture, texture.is_some(), mesh.uvs.len());
+    eprintln!(
+        "[VIEWPORT] has_texture={}, texture.is_some()={}, uvs.len()={}",
+        has_texture,
+        texture.is_some(),
+        mesh.uvs.len()
+    );
     let has_normals = mesh.normals.len() == mesh.vertices.len();
-    
+
     let mut tris: Vec<(f32, Pos2, Pos2, Pos2, Color32, [f32; 2], [f32; 2], [f32; 2])> = Vec::new();
     tris.reserve(mesh.triangles.len().min(max_triangles));
 
@@ -2777,7 +3062,7 @@ fn draw_solid_mesh(ui: &mut egui::Ui, viewport: Rect, mvp: Mat4, mesh: &MeshData
         let a3 = mesh.vertices[ia];
         let b3 = mesh.vertices[ib];
         let c3 = mesh.vertices[ic];
-        
+
         // Get normal
         let nrm = if has_normals {
             mesh.normals[ia]
@@ -2790,7 +3075,7 @@ fn draw_solid_mesh(ui: &mut egui::Ui, viewport: Rect, mvp: Mat4, mesh: &MeshData
                 n / n_len2.sqrt()
             }
         };
-        
+
         let diff = nrm.dot(light).max(0.0);
         let amb = 0.28_f32;
         let lit = (amb + diff * 0.72).clamp(0.0, 1.0);
@@ -2833,12 +3118,24 @@ fn draw_solid_mesh(ui: &mut egui::Ui, viewport: Rect, mvp: Mat4, mesh: &MeshData
         }
 
         let depth = (ndc_a.z + ndc_b.z + ndc_c.z) / 3.0;
-        
+
         // Get UVs
-        let uv_a = if ia < mesh.uvs.len() { mesh.uvs[ia] } else { [0.0, 0.0] };
-        let uv_b = if ib < mesh.uvs.len() { mesh.uvs[ib] } else { [0.0, 0.0] };
-        let uv_c = if ic < mesh.uvs.len() { mesh.uvs[ic] } else { [0.0, 0.0] };
-        
+        let uv_a = if ia < mesh.uvs.len() {
+            mesh.uvs[ia]
+        } else {
+            [0.0, 0.0]
+        };
+        let uv_b = if ib < mesh.uvs.len() {
+            mesh.uvs[ib]
+        } else {
+            [0.0, 0.0]
+        };
+        let uv_c = if ic < mesh.uvs.len() {
+            mesh.uvs[ic]
+        } else {
+            [0.0, 0.0]
+        };
+
         // Calculate color based on texture or solid color
         let base_color = if has_texture {
             Color32::WHITE // Texture will provide the color
@@ -2848,7 +3145,7 @@ fn draw_solid_mesh(ui: &mut egui::Ui, viewport: Rect, mvp: Mat4, mesh: &MeshData
             let b = ((v as f32) * 1.06).min(255.0) as u8;
             Color32::from_rgb(v, v, b)
         };
-        
+
         tris.push((depth, pa, pb, pc, base_color, uv_a, uv_b, uv_c));
     }
 

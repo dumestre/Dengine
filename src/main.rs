@@ -7,9 +7,8 @@ mod terminai;
 mod viewport;
 mod viewport_gpu;
 
-use eframe::egui::text::LayoutJob;
-use eframe::egui::{TextureHandle, TextureOptions};
-use eframe::{App, Frame, NativeOptions, egui};
+use eframe::egui::{self, Key, Modifiers, TextureHandle, TextureOptions, text::LayoutJob};
+use eframe::{App, Frame, NativeOptions};
 use epaint::ColorImage;
 use hierarchy::HierarchyWindow;
 use inspector::InspectorWindow;
@@ -1669,13 +1668,17 @@ impl App for EditorApp {
             self.viewport
                 .set_object_texture_path(&object_name, texture_path);
         }
-        if let Some((object_name, material_path)) = self.inspector.take_material_request() {
+        if let Some((object_name, shader_path)) = self.inspector.take_shader_request() {
             self.viewport
-                .set_object_material_path(&object_name, material_path);
+                .set_object_material_path(&object_name, shader_path);
         }
         // Handle material drop from hierarchy
-        if let Some((object_name, material_path)) = HierarchyWindow::take_pending_material_drop(ctx) {
-            eprintln!("[MATERIAL] Drop da hierarchy: objeto={}, material={}", object_name, material_path);
+        if let Some((object_name, material_path)) = HierarchyWindow::take_pending_material_drop(ctx)
+        {
+            eprintln!(
+                "[MATERIAL] Drop da hierarchy: objeto={}, material={}",
+                object_name, material_path
+            );
             self.viewport
                 .set_object_material_path(&object_name, Some(material_path));
         }
@@ -1797,10 +1800,40 @@ impl App for EditorApp {
         }
         let i_left = self.inspector.docked_left_width();
         let i_right = self.inspector.docked_right_width();
+        if let Some(delete_request) = self.viewport.take_pending_delete_object() {
+            self.hierarchy.request_delete_by_name(&delete_request);
+        }
         self.hierarchy
             .show(ctx, i_left, i_right, project_bottom, self.language);
         while let Some(req) = self.hierarchy.take_spawn_primitive_request() {
             let _ = self.viewport.spawn_primitive(req.kind, &req.object_name);
+        }
+        if let Some(light_req) = self.hierarchy.take_spawn_light_request() {
+            self.viewport
+                .spawn_light(&light_req.object_name, light_req.light_type);
+            let mut light = inspector::LightDraft::default();
+            light.light_type = light_req.light_type;
+            match light.light_type {
+                inspector::LightType::Point => {
+                    light.color = [1.0, 1.0, 1.0];
+                    light.intensity = 1.5;
+                    light.range = 20.0;
+                }
+                inspector::LightType::Spot => {
+                    light.color = [1.0, 0.9, 0.7];
+                    light.intensity = 2.0;
+                    light.range = 30.0;
+                    light.cone_angle = 45.0;
+                }
+                inspector::LightType::Directional => {
+                    light.color = [1.0, 1.0, 1.0];
+                    light.intensity = 0.8;
+                    light.yaw = self.viewport.light_yaw;
+                    light.pitch = self.viewport.light_pitch;
+                }
+            }
+            self.inspector
+                .set_object_light(&light_req.object_name, light);
         }
         for name in self.viewport.scene_object_names() {
             if self.hierarchy.object_is_deleted(&name) {
@@ -1832,7 +1865,6 @@ impl App for EditorApp {
                 }
             }
         }
-
 
         let engine_busy = self.is_playing;
 
@@ -2168,6 +2200,10 @@ impl App for EditorApp {
         }
         let drop_pos = pointer_pos.or(self.last_pointer_pos);
         let pointer_down = ctx.input(|i| i.pointer.primary_down());
+        let delete_pressed = ctx.input_mut(|i| {
+            i.consume_key(Modifiers::NONE, Key::Delete)
+                || i.consume_key(Modifiers::NONE, Key::Backspace)
+        });
         if !pointer_down {
             if let (Some(asset_name), Some(pos)) = (self.project.dragging_asset_name(), drop_pos) {
                 let drag_path = self.project.dragging_asset_path();
@@ -2186,6 +2222,18 @@ impl App for EditorApp {
                 }
             }
             self.project.clear_dragging_asset();
+        }
+
+        if delete_pressed && !ctx.wants_keyboard_input() {
+            if let Some(pos) = drop_pos {
+                if self.viewport.contains_point(pos) {
+                    self.viewport.request_delete_selected_object();
+                } else if self.hierarchy.contains_point(pos) {
+                    self.hierarchy.handle_delete_shortcut();
+                } else if self.project.contains_point(pos) {
+                    self.project.handle_delete_shortcut(self.language);
+                }
+            }
         }
 
         let dropped_files = ctx.input(|i| i.raw.dropped_files.clone());

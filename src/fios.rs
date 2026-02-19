@@ -7,8 +7,8 @@ use std::path::{Path, PathBuf};
 
 mod modules;
 use modules::{
-    friendly_module_name, group_modules_by_category, parse_available_module, AvailableModule,
-    ModuleCategory, ModuleChainItem, ModuleControl,
+    AvailableModule, ModuleCategory, ModuleChainItem, ModuleControl, friendly_module_name,
+    group_modules_by_category, parse_available_module,
 };
 
 const ACTION_COUNT: usize = 8;
@@ -2233,11 +2233,7 @@ impl FiosState {
                     } else {
                         pressed[action_idx]
                     };
-                    if active {
-                        1.0
-                    } else {
-                        0.0
-                    }
+                    if active { 1.0 } else { 0.0 }
                 }
                 FiosNodeKind::Constant => node.value,
                 FiosNodeKind::Add => {
@@ -2354,11 +2350,7 @@ impl FiosState {
                         cache,
                         stack,
                     );
-                    if b.abs() < 1e-5 {
-                        0.0
-                    } else {
-                        a / b
-                    }
+                    if b.abs() < 1e-5 { 0.0 } else { a / b }
                 }
                 FiosNodeKind::Max => {
                     let a = Self::eval_input_of_node(
@@ -2445,11 +2437,7 @@ impl FiosState {
                         cache,
                         stack,
                     );
-                    if g > 0.0 {
-                        v
-                    } else {
-                        0.0
-                    }
+                    if g > 0.0 { v } else { 0.0 }
                 }
                 FiosNodeKind::Abs => Self::eval_input_of_node(
                     nodes,
@@ -2513,11 +2501,7 @@ impl FiosState {
                         stack,
                     );
                     let t = node.param_a.abs().clamp(0.0, 1.0);
-                    if v.abs() < t {
-                        0.0
-                    } else {
-                        v
-                    }
+                    if v.abs() < t { 0.0 } else { v }
                 }
                 FiosNodeKind::Invert => -Self::eval_input_of_node(
                     nodes,

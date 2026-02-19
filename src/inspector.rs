@@ -1,6 +1,7 @@
 use crate::EngineLanguage;
 use eframe::egui::{
     self, Align2, Color32, FontFamily, FontId, Id, Order, Pos2, Rect, Stroke, TextureHandle,
+    TextureOptions,
 };
 use epaint::ColorImage;
 use std::collections::HashMap;
@@ -160,9 +161,10 @@ pub struct InspectorWindow {
     object_animator: HashMap<String, AnimatorDraft>,
     object_light: HashMap<String, LightDraft>,
     object_texture: HashMap<String, String>,
-    object_material: HashMap<String, String>,
+    object_shader: HashMap<String, String>,
     pending_texture_request: Option<(String, Option<String>)>,
-    pending_material_request: Option<(String, Option<String>)>,
+    pending_shader_request: Option<(String, Option<String>)>,
+    shader_texture_cache: HashMap<String, TextureHandle>,
     apply_loading_until: Option<Instant>,
 }
 
@@ -172,53 +174,131 @@ enum InspectorDockSide {
     Right,
 }
 
-#[derive(Debug)]
-struct MaterialProperties {
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ShaderType {
+    Standard,
+    Unlit,
+    Transparent,
+}
+
+impl ShaderType {
+    pub const ALL: [ShaderType; 3] = [
+        ShaderType::Standard,
+        ShaderType::Unlit,
+        ShaderType::Transparent,
+    ];
+
+    fn as_str(&self) -> &'static str {
+        match self {
+            ShaderType::Standard => "Standard",
+            ShaderType::Unlit => "Unlit",
+            ShaderType::Transparent => "Transparent",
+        }
+    }
+
+    fn display_name(&self) -> &'static str {
+        match self {
+            ShaderType::Standard => "Standard",
+            ShaderType::Unlit => "Unlit",
+            ShaderType::Transparent => "Transparent",
+        }
+    }
+
+    fn from_str(value: &str) -> Self {
+        match value.trim().to_lowercase().as_str() {
+            "unlit" => ShaderType::Unlit,
+            "transparent" => ShaderType::Transparent,
+            _ => ShaderType::Standard,
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
+struct ShaderProperties {
+    shader_type: ShaderType,
     albedo: [f32; 3],
     metallic: f32,
     roughness: f32,
     texture_path: Option<String>,
+    normal_map: Option<String>,
+    emission_color: [f32; 3],
+    emission_strength: f32,
 }
 
-fn parse_material_properties(mat_path: &str) -> Option<MaterialProperties> {
+impl Default for ShaderProperties {
+    fn default() -> Self {
+        Self {
+            shader_type: ShaderType::Standard,
+            albedo: [1.0, 1.0, 1.0],
+            metallic: 0.0,
+            roughness: 0.5,
+            texture_path: None,
+            normal_map: None,
+            emission_color: [0.0, 0.0, 0.0],
+            emission_strength: 0.0,
+        }
+    }
+}
+
+fn parse_shader_properties(mat_path: &str) -> Option<ShaderProperties> {
     let content = std::fs::read_to_string(mat_path).ok()?;
-    let mut albedo = [1.0, 1.0, 1.0];
-    let mut metallic = 0.0;
-    let mut roughness = 0.5;
-    let mut texture_path: Option<String> = None;
-    
+    let mut props = ShaderProperties::default();
+
     for line in content.lines() {
         let line = line.trim();
+        if let Some(val) = line.strip_prefix("shader=") {
+            props.shader_type = ShaderType::from_str(val);
+        }
+        if let Some(val) = line.strip_prefix("shader_type=") {
+            props.shader_type = ShaderType::from_str(val);
+        }
         if let Some(val) = line.strip_prefix("albedo=") {
             let parts: Vec<&str> = val.split(',').collect();
             if parts.len() >= 3 {
-                albedo[0] = parts[0].trim().parse().unwrap_or(1.0);
-                albedo[1] = parts[1].trim().parse().unwrap_or(1.0);
-                albedo[2] = parts[2].trim().parse().unwrap_or(1.0);
+                props.albedo[0] = parts[0].trim().parse().unwrap_or(1.0);
+                props.albedo[1] = parts[1].trim().parse().unwrap_or(1.0);
+                props.albedo[2] = parts[2].trim().parse().unwrap_or(1.0);
             }
         }
         if let Some(val) = line.strip_prefix("metallic=") {
-            metallic = val.trim().parse().unwrap_or(0.0);
+            props.metallic = val.trim().parse().unwrap_or(0.0);
         }
         if let Some(val) = line.strip_prefix("roughness=") {
-            roughness = val.trim().parse().unwrap_or(0.5);
+            props.roughness = val.trim().parse().unwrap_or(0.5);
         }
         if let Some(val) = line.strip_prefix("smoothness=") {
-            roughness = 1.0 - val.trim().parse().unwrap_or(0.5);
+            props.roughness = 1.0 - val.trim().parse().unwrap_or(0.5);
         }
         if let Some(val) = line.strip_prefix("albedo_texture=") {
-            texture_path = Some(val.trim().to_string());
+            props.texture_path = Some(val.trim().to_string());
+        }
+        if let Some(val) = line.strip_prefix("texture=") {
+            props.texture_path = Some(val.trim().to_string());
+        }
+        if let Some(val) = line.strip_prefix("normal_map=") {
+            props.normal_map = Some(val.trim().to_string());
+        }
+        if let Some(val) = line.strip_prefix("emission=") {
+            let parts: Vec<&str> = val.split(',').collect();
+            if parts.len() >= 3 {
+                props.emission_color[0] = parts[0].trim().parse().unwrap_or(0.0);
+                props.emission_color[1] = parts[1].trim().parse().unwrap_or(0.0);
+                props.emission_color[2] = parts[2].trim().parse().unwrap_or(0.0);
+            }
+        }
+        if let Some(val) = line.strip_prefix("emission_strength=") {
+            props.emission_strength = val.trim().parse().unwrap_or(0.0);
         }
     }
-    
-    Some(MaterialProperties { albedo, metallic, roughness, texture_path })
+
+    Some(props)
 }
 
-fn update_material_property(mat_path: &str, key: &str, value: &str) {
+fn update_shader_property(mat_path: &str, key: &str, value: &str) {
     if let Ok(content) = std::fs::read_to_string(mat_path) {
         let mut new_content = String::new();
         let mut found = false;
-        
+
         for line in content.lines() {
             if line.trim().starts_with(&format!("{}=", key)) {
                 new_content.push_str(&format!("{}={}\n", key, value));
@@ -228,13 +308,13 @@ fn update_material_property(mat_path: &str, key: &str, value: &str) {
                 new_content.push('\n');
             }
         }
-        
+
         if !found {
             new_content.push_str(&format!("{}={}\n", key, value));
         }
-        
+
         let _ = std::fs::write(mat_path, new_content);
-        eprintln!("[MATERIAL] Atualizado {}: {} = {}", mat_path, key, value);
+        eprintln!("[SHADER] Atualizado {}: {} = {}", mat_path, key, value);
     }
 }
 
@@ -267,12 +347,12 @@ fn load_png_as_texture(
 }
 
 impl InspectorWindow {
-    fn parse_material_properties(mat_path: &str) -> Option<MaterialProperties> {
-        parse_material_properties(mat_path)
+    fn parse_shader_properties(mat_path: &str) -> Option<ShaderProperties> {
+        parse_shader_properties(mat_path)
     }
 
-    fn update_material_property(mat_path: &str, key: &str, value: &str) {
-        update_material_property(mat_path, key, value)
+    fn update_shader_property(mat_path: &str, key: &str, value: &str) {
+        update_shader_property(mat_path, key, value)
     }
 
     pub fn new() -> Self {
@@ -300,11 +380,42 @@ impl InspectorWindow {
             object_animator: HashMap::new(),
             object_light: HashMap::new(),
             object_texture: HashMap::new(),
-            object_material: HashMap::new(),
+            object_shader: HashMap::new(),
             pending_texture_request: None,
-            pending_material_request: None,
+            pending_shader_request: None,
+            shader_texture_cache: HashMap::new(),
             apply_loading_until: None,
         }
+    }
+
+    fn ensure_shader_texture_preview(
+        &mut self,
+        ctx: &egui::Context,
+        texture_path: &str,
+    ) -> Option<TextureHandle> {
+        if let Some(handle) = self.shader_texture_cache.get(texture_path) {
+            return Some(handle.clone());
+        }
+        let path = Path::new(texture_path);
+        if !path.exists() {
+            return None;
+        }
+        if let Ok(bytes) = std::fs::read(path) {
+            if let Ok(image) = image::load_from_memory(&bytes) {
+                let rgba = image.to_rgba8();
+                let size = [rgba.width() as usize, rgba.height() as usize];
+                let color_image = ColorImage::from_rgba_unmultiplied(size, rgba.as_raw());
+                let tex = ctx.load_texture(
+                    texture_path.to_owned(),
+                    color_image,
+                    TextureOptions::LINEAR,
+                );
+                self.shader_texture_cache
+                    .insert(texture_path.to_string(), tex.clone());
+                return Some(tex);
+            }
+        }
+        None
     }
 
     pub fn fios_controller_targets(&self) -> Vec<(String, FiosControllerDraft)> {
@@ -360,12 +471,16 @@ impl InspectorWindow {
         self.pending_texture_request.take()
     }
 
-    pub fn take_material_request(&mut self) -> Option<(String, Option<String>)> {
-        self.pending_material_request.take()
+    pub fn take_shader_request(&mut self) -> Option<(String, Option<String>)> {
+        self.pending_shader_request.take()
     }
 
     pub fn get_object_light(&self, object_name: &str) -> Option<LightDraft> {
         self.object_light.get(object_name).cloned()
+    }
+
+    pub fn set_object_light(&mut self, object_name: &str, light: LightDraft) {
+        self.object_light.insert(object_name.to_string(), light);
     }
 
     pub fn take_transform_apply_request(
@@ -1080,7 +1195,7 @@ impl InspectorWindow {
                                     if !selected_object.is_empty()
                                         && selected_object != "Directional Light"
                                     {
-                                        // Seção de Material
+                                        // Seção de Shader
                                         let mut current_tex = self
                                             .object_texture
                                             .get(selected_object)
@@ -1097,30 +1212,136 @@ impl InspectorWindow {
                                             .show(ui, |ui| {
                                                 ui.label(
                                                     egui::RichText::new(match language {
-                                                        EngineLanguage::Pt => "Material",
-                                                        EngineLanguage::En => "Material",
-                                                        EngineLanguage::Es => "Material",
+                                                        EngineLanguage::Pt => "Shader",
+                                                        EngineLanguage::En => "Shader",
+                                                        EngineLanguage::Es => "Shader",
                                                     })
                                                     .strong()
                                                     .size(13.0)
                                                     .color(Color32::WHITE),
                                                 );
                                                 ui.add_space(6.0);
+                                                let mut current_shader = self.object_shader.get(selected_object).cloned().unwrap_or_default();
+                                                let mut resp_changed = false;
+                                                let preview_handle = if !current_tex.is_empty() {
+                                                    self.ensure_shader_texture_preview(ctx, &current_tex)
+                                                } else {
+                                                    None
+                                                };
+                                                ui.horizontal(|ui| {
+                                                    let preview_size = egui::vec2(86.0, 86.0);
+                                                    let (preview_rect, _) = ui.allocate_exact_size(
+                                                        preview_size,
+                                                        egui::Sense::hover(),
+                                                    );
+                                                    if let Some(texture) = &preview_handle {
+                                                        ui.painter().rect_filled(
+                                                            preview_rect,
+                                                            8.0,
+                                                            Color32::from_rgb(22, 22, 22),
+                                                        );
+                                                        ui.painter().image(
+                                                            texture.id(),
+                                                            preview_rect,
+                                                            egui::Rect::from_min_max(
+                                                                egui::pos2(0.0, 0.0),
+                                                                egui::pos2(1.0, 1.0),
+                                                            ),
+                                                            Color32::WHITE,
+                                                        );
+                                                    } else {
+                                                        ui.painter().rect_stroke(
+                                                            preview_rect,
+                                                            8.0,
+                                                            Stroke::new(1.0, Color32::from_gray(90)),
+                                                            egui::StrokeKind::Outside,
+                                                        );
+                                                        ui.painter().text(
+                                                            preview_rect.center(),
+                                                            Align2::CENTER_CENTER,
+                                                            match language {
+                                                                EngineLanguage::Pt => "Sem textura\narraste um shader",
+                                                                EngineLanguage::En => "No texture\nDrag a shader",
+                                                                EngineLanguage::Es => "Sin textura\nArrastra un shader",
+                                                            },
+                                                            FontId::new(10.0, FontFamily::Proportional),
+                                                            Color32::from_gray(170),
+                                                        );
+                                                    }
+                                                    ui.add_space(8.0);
+                                                    ui.vertical(|ui| {
+                                                        ui.label(
+                                                            egui::RichText::new(match language {
+                                                                EngineLanguage::Pt => "Painel Shader",
+                                                                EngineLanguage::En => "Shader Panel",
+                                                                EngineLanguage::Es => "Panel de Shader",
+                                                            })
+                                                            .strong()
+                                                            .size(12.0),
+                                                        );
+                                                        ui.label(
+                                                            egui::RichText::new(match language {
+                                                                EngineLanguage::Pt => {
+                                                                    "Arraste um .mat ou selecione da árvore para manter texturas."
+                                                                }
+                                                                EngineLanguage::En => {
+                                                                    "Drop a .mat or pick from the tree to keep textures."
+                                                                }
+                                                                EngineLanguage::Es => {
+                                                                    "Suelta un .mat o elige en el árbol para conservar texturas."
+                                                                }
+                                                            })
+                                                            .size(10.0)
+                                                            .color(Color32::from_gray(200)),
+                                                        );
+                                                        ui.add_space(2.0);
+                                                        ui.horizontal(|ui| {
+                                                            let inline_color = if !current_shader.is_empty() {
+                                                                Color32::from_rgb(255, 165, 0)
+                                                            } else {
+                                                                Color32::from_rgb(120, 120, 120)
+                                                            };
+                                                            let (_, circle_resp) = ui.allocate_exact_size(
+                                                                egui::vec2(12.0, 12.0),
+                                                                egui::Sense::hover(),
+                                                            );
+                                                            ui.painter().circle_filled(
+                                                                circle_resp.rect.center(),
+                                                                5.5,
+                                                                inline_color,
+                                                            );
+                                                            if circle_resp.hovered() {
+                                                                ui.painter().circle_stroke(
+                                                                    circle_resp.rect.center(),
+                                                                    6.0,
+                                                                    Stroke::new(1.0, Color32::from_gray(160)),
+                                                                );
+                                                            }
+                                                            ui.label(
+                                                                egui::RichText::new(match language {
+                                                                    EngineLanguage::Pt => "Shader ativo",
+                                                                    EngineLanguage::En => "Active Shader",
+                                                                    EngineLanguage::Es => "Shader activo",
+                                                                })
+                                                                .size(10.0)
+                                                                .color(Color32::WHITE),
+                                                            );
+                                                        });
+                                                    });
+                                                });
+                                                ui.add_space(6.0);
 
                                                 // Material e Textura
                                                 ui.vertical(|ui| {
-                                                    // Material Field
+                                                    // Shader Field
                                                     ui.label(
                                                         egui::RichText::new(match language {
-                                                            EngineLanguage::Pt => "Material",
-                                                            EngineLanguage::En => "Material",
-                                                            EngineLanguage::Es => "Material",
+                                                            EngineLanguage::Pt => "Shader",
+                                                            EngineLanguage::En => "Shader",
+                                                            EngineLanguage::Es => "Shader",
                                                         })
                                                         .size(11.0)
                                                     );
-
-                                                    let mut current_mat = self.object_material.get(selected_object).cloned().unwrap_or_default();
-                                                    let mut mat_dropped = false;
 
                                                     // Check for dropped files (external)
                                                     if let Some(dropped) = ui.ctx().input(|i| i.raw.dropped_files.first().cloned()) {
@@ -1130,22 +1351,21 @@ impl InspectorWindow {
                                                                 .unwrap_or("")
                                                                 .to_lowercase();
                                                             if matches!(ext.as_str(), "mat" | "material") {
-                                                                current_mat = path.to_string_lossy().to_string();
-                                                                mat_dropped = true;
+                                                                current_shader = path.to_string_lossy().to_string();
                                                             }
                                                         }
                                                     }
 
-                                                    let mat_frame = egui::Frame::new()
+                                                    let shader_frame = egui::Frame::new()
                                                         .fill(Color32::from_rgb(35, 35, 35))
                                                         .stroke(Stroke::new(1.0, Color32::from_rgb(58, 58, 58)))
                                                         .corner_radius(6)
                                                         .inner_margin(egui::Margin::symmetric(8, 6));
 
-                                                    let mat_resp = mat_frame.show(ui, |ui| {
+                                                    let shader_resp = shader_frame.show(ui, |ui| {
                                                         ui.horizontal(|ui| {
                                                             // Material indicator circle
-                                                            let circle_color = if !current_mat.is_empty() || mat_dropped {
+                                                            let circle_color = if !current_shader.is_empty() {
                                                                 Color32::from_rgb(255, 165, 0) // Laranja
                                                             } else {
                                                                 Color32::from_rgb(100, 100, 100)
@@ -1156,11 +1376,11 @@ impl InspectorWindow {
                                                             );
                                                             ui.painter().circle_filled(rect.center(), 6.0, circle_color);
 
-                                                            ui.text_edit_singleline(&mut current_mat);
+                                                            ui.text_edit_singleline(&mut current_shader);
 
                                                             // Clear button
                                                             if ui.small_button("✕").clicked() {
-                                                                current_mat.clear();
+                                                                current_shader.clear();
                                                             }
                                                         });
                                                     });
@@ -1168,8 +1388,8 @@ impl InspectorWindow {
                                                     // Check for internal drag from Project window
                                                     let pointer_pos = ui.ctx().input(|i| i.pointer.hover_pos());
                                                     let is_dragging = ui.ctx().input(|i| i.pointer.primary_down() && i.pointer.delta().length_sq() > 0.0);
-                                                    
-                                                    if is_dragging && pointer_pos.is_some() && mat_resp.response.rect.contains(pointer_pos.unwrap()) {
+
+                                                    if is_dragging && pointer_pos.is_some() && shader_resp.response.rect.contains(pointer_pos.unwrap()) {
                                                         // Check if dragging from project window
                                                         if let Some(dragging_asset) = ui.data(|d| d.get_temp::<String>(egui::Id::new("project_dragging_asset"))) {
                                                             let ext = std::path::Path::new(&dragging_asset)
@@ -1178,9 +1398,8 @@ impl InspectorWindow {
                                                                 .unwrap_or("")
                                                                 .to_lowercase();
                                                             if matches!(ext.as_str(), "mat" | "material") {
-                                                                current_mat = dragging_asset.clone();
-                                                                mat_dropped = true;
-                                                                eprintln!("[MATERIAL] Drop interno do projeto: {}", dragging_asset);
+                                                                current_shader = dragging_asset.clone();
+                                                                eprintln!("[SHADER] Drop interno do projeto: {}", dragging_asset);
                                                             }
                                                         }
                                                     }
@@ -1189,9 +1408,9 @@ impl InspectorWindow {
                                                     let is_hovering_file = ui.ctx().input(|i| !i.raw.hovered_files.is_empty());
                                                     if is_hovering_file {
                                                         if let Some(pointer_pos) = ui.ctx().input(|i| i.pointer.hover_pos()) {
-                                                            if mat_resp.response.rect.contains(pointer_pos) {
+                                                            if shader_resp.response.rect.contains(pointer_pos) {
                                                                 ui.painter().rect_stroke(
-                                                                    mat_resp.response.rect.expand(2.0),
+                                                                    shader_resp.response.rect.expand(2.0),
                                                                     4.0,
                                                                     Stroke::new(2.0, Color32::from_rgb(255, 165, 0)),
                                                                     egui::StrokeKind::Outside,
@@ -1199,11 +1418,11 @@ impl InspectorWindow {
                                                             }
                                                         }
                                                     }
-                                                    
+
                                                     // Highlight for internal drag (from Project window)
                                                     let pointer_pos = ui.ctx().input(|i| i.pointer.hover_pos());
                                                     let is_dragging = ui.ctx().input(|i| i.pointer.primary_down() && i.pointer.delta().length_sq() > 0.0);
-                                                    if is_dragging && pointer_pos.is_some() && mat_resp.response.rect.contains(pointer_pos.unwrap()) {
+                                                    if is_dragging && pointer_pos.is_some() && shader_resp.response.rect.contains(pointer_pos.unwrap()) {
                                                         if let Some(dragging_asset) = ui.data(|d| d.get_temp::<String>(egui::Id::new("project_dragging_asset"))) {
                                                             let ext = std::path::Path::new(&dragging_asset)
                                                                 .extension()
@@ -1212,7 +1431,7 @@ impl InspectorWindow {
                                                                 .to_lowercase();
                                                             if matches!(ext.as_str(), "mat" | "material") {
                                                                 ui.painter().rect_stroke(
-                                                                    mat_resp.response.rect.expand(2.0),
+                                                                    shader_resp.response.rect.expand(2.0),
                                                                     4.0,
                                                                     Stroke::new(2.0, Color32::from_rgb(255, 165, 0)),
                                                                     egui::StrokeKind::Outside,
@@ -1221,53 +1440,167 @@ impl InspectorWindow {
                                                         }
                                                     }
 
-                                                    let prev_mat = self.object_material.get(selected_object).cloned().unwrap_or_default();
-                                                    self.object_material.insert(selected_object.to_string(), current_mat.clone());
+                                                    let prev_shader = self.object_shader.get(selected_object).cloned().unwrap_or_default();
+                                                    self.object_shader.insert(selected_object.to_string(), current_shader.clone());
 
-                                                    if prev_mat != current_mat {
-                                                        eprintln!("[MATERIAL] Inspector: objeto={}, material={:?}", selected_object, current_mat);
-                                                        self.pending_material_request = Some((
+                                                    if prev_shader != current_shader {
+                                                        eprintln!("[SHADER] Inspector: objeto={}, shader={:?}", selected_object, current_shader);
+                                                        self.pending_shader_request = Some((
                                                             selected_object.to_string(),
-                                                            if current_mat.trim().is_empty() { None } else { Some(current_mat.clone()) },
+                                                            if current_shader.trim().is_empty() { None } else { Some(current_shader.clone()) },
                                                         ));
+                                                    }
+                                                    if !current_shader.trim().is_empty() && current_tex.trim().is_empty() {
+                                                        if let Some(shader_props) = Self::parse_shader_properties(&current_shader) {
+                                                            if let Some(auto_tex) = shader_props.texture_path {
+                                                                if !auto_tex.trim().is_empty() && auto_tex != current_tex {
+                                                                    eprintln!("[SHADER] Aplicando textura do shader: {}", auto_tex);
+                                                                    current_tex = auto_tex;
+                                                                    resp_changed = true;
+                                                                }
+                                                            }
+                                                        }
                                                     }
 
                                                     ui.add_space(10.0);
 
-                                                    // Material Properties (when material is assigned)
-                                                    if !current_mat.is_empty() {
-                                                        if let Some(mat_props) = Self::parse_material_properties(&current_mat) {
-                                                            egui::CollapsingHeader::new("Propriedades do Material")
-                                                                .default_open(false)
-                                                                .show(ui, |ui| {
-                                                                    ui.label("Albedo (Cor):");
-                                                                    let mut albedo_color = mat_props.albedo;
-                                                                    if ui.color_edit_button_rgb(&mut albedo_color).changed() {
-                                                                        Self::update_material_property(&current_mat, "albedo", 
-                                                                            &format!("{:.2},{:.2},{:.2}", albedo_color[0], albedo_color[1], albedo_color[2]));
-                                                                    }
-                                                                    
-                                                                    ui.add_space(4.0);
-                                                                    ui.label("Metallic:");
-                                                                    let mut metallic = mat_props.metallic;
-                                                                    if ui.add(egui::DragValue::new(&mut metallic).range(0.0..=1.0)).changed() {
-                                                                        Self::update_material_property(&current_mat, "metallic", &format!("{:.2}", metallic));
-                                                                    }
-                                                                    
-                                                                    ui.add_space(4.0);
-                                                                    ui.label("Roughness/Smoothness:");
-                                                                    let mut roughness = mat_props.roughness;
-                                                                    if ui.add(egui::DragValue::new(&mut roughness).range(0.0..=1.0)).changed() {
-                                                                        Self::update_material_property(&current_mat, "roughness", &format!("{:.2}", roughness));
-                                                                    }
-                                                                    
-                                                                    ui.add_space(4.0);
-                                                                    ui.label("Textura Albedo:");
-                                                                    let mut tex_path = mat_props.texture_path.unwrap_or_default();
-                                                                    if ui.text_edit_singleline(&mut tex_path).changed() {
-                                                                        Self::update_material_property(&current_mat, "albedo_texture", &tex_path);
-                                                                    }
+                                                    // Shader Properties (when shader is assigned)
+                                                    if !current_shader.is_empty() {
+                                                        if let Some(shader_props) = Self::parse_shader_properties(&current_shader) {
+                                                            egui::CollapsingHeader::new(match language {
+                                                                EngineLanguage::Pt => "Propriedades do Shader",
+                                                                EngineLanguage::En => "Shader Properties",
+                                                                EngineLanguage::Es => "Propiedades del Shader",
+                                                            })
+                                                            .default_open(false)
+                                                            .show(ui, |ui| {
+                                                                ui.label(match language {
+                                                                    EngineLanguage::Pt => "Tipo de Shader:",
+                                                                    EngineLanguage::En => "Shader Type:",
+                                                                    EngineLanguage::Es => "Tipo de Shader:",
                                                                 });
+                                                                let mut shader_type = shader_props.shader_type;
+                                                                egui::ComboBox::from_id_salt(ui.id().with("shader_type"))
+                                                                    .selected_text(shader_type.display_name())
+                                                                    .show_ui(ui, |ui| {
+                                                                        for variant in ShaderType::ALL {
+                                                                            if ui
+                                                                                .selectable_label(
+                                                                                    shader_type == variant,
+                                                                                    variant.display_name(),
+                                                                                )
+                                                                                .clicked()
+                                                                            {
+                                                                                shader_type = variant;
+                                                                            }
+                                                                        }
+                                                                    });
+                                                                if shader_type != shader_props.shader_type {
+                                                                    Self::update_shader_property(
+                                                                        &current_shader,
+                                                                        "shader",
+                                                                        shader_type.as_str(),
+                                                                    );
+                                                                }
+
+                                                                ui.add_space(4.0);
+                                                                ui.label("Albedo (Cor):");
+                                                                let mut albedo_color = shader_props.albedo;
+                                                                if ui.color_edit_button_rgb(&mut albedo_color).changed() {
+                                                                    Self::update_shader_property(
+                                                                        &current_shader,
+                                                                        "albedo",
+                                                                        &format!(
+                                                                            "{:.2},{:.2},{:.2}",
+                                                                            albedo_color[0],
+                                                                            albedo_color[1],
+                                                                            albedo_color[2]
+                                                                        ),
+                                                                    );
+                                                                }
+
+                                                                ui.add_space(4.0);
+                                                                ui.label("Metallic:");
+                                                                let mut metallic = shader_props.metallic;
+                                                                if ui
+                                                                    .add(egui::DragValue::new(&mut metallic).range(0.0..=1.0))
+                                                                    .changed()
+                                                                {
+                                                                    Self::update_shader_property(
+                                                                        &current_shader,
+                                                                        "metallic",
+                                                                        &format!("{:.2}", metallic),
+                                                                    );
+                                                                }
+
+                                                                ui.add_space(4.0);
+                                                                ui.label("Roughness/Smoothness:");
+                                                                let mut roughness = shader_props.roughness;
+                                                                if ui
+                                                                    .add(egui::DragValue::new(&mut roughness).range(0.0..=1.0))
+                                                                    .changed()
+                                                                {
+                                                                    Self::update_shader_property(
+                                                                        &current_shader,
+                                                                        "roughness",
+                                                                        &format!("{:.2}", roughness),
+                                                                    );
+                                                                }
+
+                                                                ui.add_space(4.0);
+                                                                ui.label("Textura Albedo:");
+                                                                let mut tex_path =
+                                                                    shader_props.texture_path.clone().unwrap_or_default();
+                                                                if ui.text_edit_singleline(&mut tex_path).changed() {
+                                                                    Self::update_shader_property(
+                                                                        &current_shader,
+                                                                        "albedo_texture",
+                                                                        &tex_path,
+                                                                    );
+                                                                }
+
+                                                                ui.add_space(4.0);
+                                                                ui.label("Normal Map:");
+                                                                let mut normal_map =
+                                                                    shader_props.normal_map.clone().unwrap_or_default();
+                                                                if ui.text_edit_singleline(&mut normal_map).changed() {
+                                                                    Self::update_shader_property(
+                                                                        &current_shader,
+                                                                        "normal_map",
+                                                                        &normal_map,
+                                                                    );
+                                                                }
+
+                                                                ui.add_space(4.0);
+                                                                ui.label("Emission Color:");
+                                                                let mut emission_color = shader_props.emission_color;
+                                                                if ui.color_edit_button_rgb(&mut emission_color).changed() {
+                                                                    Self::update_shader_property(
+                                                                        &current_shader,
+                                                                        "emission",
+                                                                        &format!(
+                                                                            "{:.2},{:.2},{:.2}",
+                                                                            emission_color[0],
+                                                                            emission_color[1],
+                                                                            emission_color[2]
+                                                                        ),
+                                                                    );
+                                                                }
+
+                                                                ui.add_space(4.0);
+                                                                ui.label("Emission Strength:");
+                                                                let mut emission_strength = shader_props.emission_strength;
+                                                                if ui
+                                                                    .add(egui::DragValue::new(&mut emission_strength).range(0.0..=10.0))
+                                                                    .changed()
+                                                                {
+                                                                    Self::update_shader_property(
+                                                                        &current_shader,
+                                                                        "emission_strength",
+                                                                        &format!("{:.2}", emission_strength),
+                                                                    );
+                                                                }
+                                                            });
                                                         }
                                                     }
 
@@ -1287,12 +1620,10 @@ impl InspectorWindow {
                                                         .corner_radius(6)
                                                         .inner_margin(egui::Margin::symmetric(8, 6));
 
-                                                    let mut resp_changed = false;
-                                                    
                                                     // Check for internal drag from Project window (texture)
                                                     let pointer_pos = ui.ctx().input(|i| i.pointer.hover_pos());
                                                     let is_dragging = ui.ctx().input(|i| i.pointer.primary_down() && i.pointer.delta().length_sq() > 0.0);
-                                                    
+
                                                     let tex_resp = tex_frame.show(ui, |ui| {
                                                         let is_hovering_file = ui.ctx().input(|i| !i.raw.hovered_files.is_empty());
 
@@ -1331,7 +1662,7 @@ impl InspectorWindow {
                                                                     }
                                                                 }
                                                             }
-                                                            
+
                                                             // Handle dropped files (external)
                                                             let dropped_files = ui.ctx().input(|i| i.raw.dropped_files.clone());
                                                             if !dropped_files.is_empty() {
@@ -1356,7 +1687,7 @@ impl InspectorWindow {
                                                                     }
                                                                 }
                                                             }
-                                                            
+
                                                             // Handle internal drag from Project window
                                                             if is_dragging && pointer_pos.is_some() && resp.rect.contains(pointer_pos.unwrap()) {
                                                                 if let Some(dragging_asset) = ui.data(|d| d.get_temp::<String>(egui::Id::new("project_dragging_asset"))) {

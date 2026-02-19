@@ -1,6 +1,6 @@
 # Dengine Material
 # Auto-generated for R1.glb
 shader=Standard
-albedo=1,1,1,1
+albedo=1.00,1.00,1.00
 metallic=0.0
 smoothness=0.5

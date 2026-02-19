@@ -135,8 +135,13 @@ impl ViewportGpuRenderer {
             while s.uvs.len() < s.vertices.len() {
                 s.uvs.push([0.0, 0.0]);
             }
-            eprintln!("[GPU] Mesh upload: vertices={}, normals={}, uvs={}, triangles={}", 
-                s.vertices.len(), s.normals.len(), s.uvs.len(), triangles.len().min(MAX_GPU_TRIANGLES));
+            eprintln!(
+                "[GPU] Mesh upload: vertices={}, normals={}, uvs={}, triangles={}",
+                s.vertices.len(),
+                s.normals.len(),
+                s.uvs.len(),
+                triangles.len().min(MAX_GPU_TRIANGLES)
+            );
             let tri_target = triangles.len().min(MAX_GPU_TRIANGLES).max(1);
             let tri_step = ((triangles.len() as f32 / tri_target as f32).ceil() as usize).max(1);
             for (i, tri) in triangles.iter().enumerate() {

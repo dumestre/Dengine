@@ -1,6 +1,8 @@
 use crate::EngineLanguage;
+use crate::inspector;
 use eframe::egui::{
-    self, Align2, Color32, FontFamily, FontId, Id, Order, Pos2, Rect, Stroke, TextureHandle, Vec2,
+    self, Align2, Color32, FontFamily, FontId, Id, Key, Modifiers, Order, Pos2, Rect, Stroke,
+    TextureHandle, Vec2,
 };
 use epaint::ColorImage;
 use std::collections::{HashMap, HashSet};
@@ -17,6 +19,12 @@ pub enum Primitive3DKind {
 #[derive(Clone)]
 pub struct Primitive3DSpawnRequest {
     pub kind: Primitive3DKind,
+    pub object_name: String,
+}
+
+#[derive(Clone)]
+pub struct LightSpawnRequest {
+    pub light_type: inspector::LightType,
     pub object_name: String,
 }
 
@@ -50,7 +58,9 @@ pub struct HierarchyWindow {
     color_picker_open: bool,
     picker_color: Color32,
     pending_delete_object: Option<String>,
+    hovered_object: Option<String>,
     pending_spawn_primitive: Option<Primitive3DSpawnRequest>,
+    pending_spawn_light: Option<LightSpawnRequest>,
     language: EngineLanguage,
     last_panel_rect: Option<Rect>,
 }
@@ -152,7 +162,9 @@ impl HierarchyWindow {
             color_picker_open: false,
             picker_color: Color32::from_rgb(15, 232, 121),
             pending_delete_object: None,
+            hovered_object: None,
             pending_spawn_primitive: None,
+            pending_spawn_light: None,
             language: EngineLanguage::Pt,
             last_panel_rect: None,
         }
@@ -187,6 +199,10 @@ impl HierarchyWindow {
         self.pending_spawn_primitive.take()
     }
 
+    pub fn take_spawn_light_request(&mut self) -> Option<LightSpawnRequest> {
+        self.pending_spawn_light.take()
+    }
+
     fn create_top_object_unique(&mut self, base_name: &str) -> String {
         let mut object_name = base_name.to_string();
         let mut idx = 1;
@@ -210,6 +226,19 @@ impl HierarchyWindow {
         };
         let object_name = self.create_top_object_unique(base_name);
         self.pending_spawn_primitive = Some(Primitive3DSpawnRequest { kind, object_name });
+    }
+
+    fn request_spawn_light(&mut self, light_type: inspector::LightType) {
+        let base_name = match light_type {
+            inspector::LightType::Directional => "Directional Light",
+            inspector::LightType::Point => "Point Light",
+            inspector::LightType::Spot => "Spot Light",
+        };
+        let object_name = self.create_top_object_unique(base_name);
+        self.pending_spawn_light = Some(LightSpawnRequest {
+            light_type,
+            object_name,
+        });
     }
 
     pub fn selected_object_name(&self) -> &str {
@@ -486,8 +515,21 @@ impl HierarchyWindow {
         self.request_delete_object(&selected);
     }
 
+    pub fn handle_delete_shortcut(&mut self) {
+        if let Some(target) = self.hovered_object.clone() {
+            self.request_delete_object(&target);
+        } else {
+            self.request_delete_selected();
+        }
+    }
+
+    pub fn request_delete_by_name(&mut self, object_id: &str) {
+        self.request_delete_object(object_id);
+    }
+
     pub fn take_pending_material_drop(ctx: &egui::Context) -> Option<(String, String)> {
-        let data = ctx.data_mut(|d| d.get_temp::<(String, String)>(Id::new("pending_material_drop")));
+        let data =
+            ctx.data_mut(|d| d.get_temp::<(String, String)>(Id::new("pending_material_drop")));
         if data.is_some() {
             ctx.data_mut(|d| d.remove_temp::<(String, String)>(Id::new("pending_material_drop")));
         }
@@ -630,14 +672,18 @@ impl HierarchyWindow {
             ui.id().with(("hierarchy_drag_row", object_id)),
             egui::Sense::click_and_drag(),
         );
-        
+        if resp.hovered() || drag_resp.hovered() {
+            self.hovered_object = Some(object_id.to_string());
+        }
+
         // Handle dropped files (material)
         if drag_resp.hovered() {
             let dropped_files = ui.input(|i| i.raw.dropped_files.clone());
             if !dropped_files.is_empty() {
                 if let Some(file) = dropped_files.first() {
                     if let Some(path) = &file.path {
-                        let ext = path.extension()
+                        let ext = path
+                            .extension()
                             .and_then(|e| e.to_str())
                             .unwrap_or("")
                             .to_lowercase();
@@ -649,7 +695,7 @@ impl HierarchyWindow {
                                 Stroke::new(2.0, Color32::from_rgb(255, 165, 0)),
                                 egui::StrokeKind::Outside,
                             );
-                            
+
                             // Apply material on drop
                             if ui.input(|i| i.raw.dropped_files.first().is_some()) {
                                 let path_str = path.to_string_lossy().to_string();
@@ -665,7 +711,7 @@ impl HierarchyWindow {
                 }
             }
         }
-        
+
         if !self.is_deleted(object_id) {
             let mut copy_clicked = false;
             let mut delete_clicked = false;
@@ -846,6 +892,7 @@ impl HierarchyWindow {
             return;
         }
         self.language = language;
+        self.hovered_object = None;
 
         if self.selector_icon_texture.is_none() {
             self.selector_icon_texture =
@@ -1207,9 +1254,11 @@ impl HierarchyWindow {
                                             ui.close();
                                         }
                                         if ui.button("Point Light").clicked() {
+                                            self.request_spawn_light(inspector::LightType::Point);
                                             ui.close();
                                         }
                                         if ui.button("Spot Light").clicked() {
+                                            self.request_spawn_light(inspector::LightType::Spot);
                                             ui.close();
                                         }
                                     });
@@ -1269,13 +1318,6 @@ impl HierarchyWindow {
                 });
         }
 
-        let delete_pressed = ctx
-            .input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Delete))
-            || ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Backspace));
-        if delete_pressed && !ctx.wants_keyboard_input() {
-            self.request_delete_selected();
-        }
-
         if let Some(target) = self.pending_delete_object.clone() {
             let title = match self.language {
                 EngineLanguage::Pt => "Confirmar exclusao",
@@ -1293,6 +1335,8 @@ impl HierarchyWindow {
                 EngineLanguage::Es => "Cancelar",
             };
             let delete_label = self.tr("delete");
+            let mut confirm_delete = false;
+            let mut confirm_cancel = false;
             egui::Window::new(title)
                 .collapsible(false)
                 .resizable(false)
@@ -1303,17 +1347,35 @@ impl HierarchyWindow {
                     ui.add_space(10.0);
                     ui.horizontal(|ui| {
                         if ui.button(cancel_label).clicked() {
-                            self.pending_delete_object = None;
+                            confirm_cancel = true;
                         }
                         let delete_btn = egui::Button::new(delete_label)
                             .fill(Color32::from_rgb(160, 56, 56))
                             .stroke(Stroke::new(1.0, Color32::from_rgb(210, 90, 90)));
                         if ui.add(delete_btn).clicked() {
-                            self.delete_object_recursive(&target);
-                            self.pending_delete_object = None;
+                            confirm_delete = true;
                         }
                     });
                 });
+
+            let confirm_key = ctx.input_mut(|i| {
+                i.consume_key(Modifiers::NONE, Key::Enter)
+                    || i.consume_key(Modifiers::NONE, Key::Space)
+            });
+            if confirm_key {
+                confirm_delete = true;
+            }
+            let cancel_key = ctx.input_mut(|i| i.consume_key(Modifiers::NONE, Key::Escape));
+            if cancel_key {
+                confirm_cancel = true;
+            }
+
+            if confirm_delete {
+                self.delete_object_recursive(&target);
+                self.pending_delete_object = None;
+            } else if confirm_cancel {
+                self.pending_delete_object = None;
+            }
         }
 
         if header_drag_started {

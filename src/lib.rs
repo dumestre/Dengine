@@ -6,5 +6,5 @@
 //! - Separation between engine core, renderer, and editor
 
 pub use engine_core;
-pub use engine_render;
 pub use engine_editor;
+pub use engine_render;

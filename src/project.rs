@@ -3,12 +3,13 @@ use std::fs::{self, File};
 use std::hash::{Hash, Hasher};
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender};
-use std::sync::Arc;
 
 use eframe::egui::{
-    self, Align2, Color32, FontFamily, FontId, Id, Order, Rect, Sense, Stroke, TextureHandle, Vec2,
+    self, Align2, Color32, FontFamily, FontId, Id, Order, Pos2, Rect, Sense, Stroke, TextureHandle,
+    Vec2,
 };
 use epaint::ColorImage;
 
@@ -46,6 +47,8 @@ pub struct ProjectWindow {
     mesh_preview_workers: Arc<AtomicUsize>,
     fbx_meta_cache: BTreeMap<String, FbxMetaCacheEntry>,
     fbx_expanded_assets: HashSet<String>,
+    last_panel_rect: Option<Rect>,
+    hovered_asset: Option<String>,
 }
 
 struct MeshPreview {
@@ -94,6 +97,7 @@ impl ProjectWindow {
     const MESH_THUMB_SIZE: [usize; 2] = [176, 124];
 
     pub fn new() -> Self {
+        let _ = fs::create_dir_all("Assets/Textures");
         let (img_tx, img_rx) = mpsc::channel();
         let (mesh_tx, mesh_rx) = mpsc::channel();
         let image_preview_workers = Arc::new(AtomicUsize::new(0));
@@ -130,6 +134,8 @@ impl ProjectWindow {
             mesh_preview_workers,
             fbx_meta_cache: BTreeMap::new(),
             fbx_expanded_assets: HashSet::new(),
+            last_panel_rect: None,
+            hovered_asset: None,
         }
     }
 
@@ -349,7 +355,7 @@ impl ProjectWindow {
         let fbx_dir = fbx_path.parent()?;
         let fbx_name = fbx_path.file_stem()?.to_string_lossy();
         eprintln!("[FBX] Procurando por: {}*", fbx_name);
-        
+
         // Tenta extrair nome base (remove _1, _2, etc do final)
         let base_name = if let Some(idx) = fbx_name.rfind("_texture_") {
             // Meshy_AI__0217192431_texture_6 → Meshy_AI__0217192431
@@ -361,7 +367,7 @@ impl ProjectWindow {
             &fbx_name
         };
         eprintln!("[FBX] Nome base: {}", base_name);
-        
+
         // Procura por texturas com nome similar
         let texture_extensions = [
             format!("{}_texture.png", base_name),
@@ -373,7 +379,7 @@ impl ProjectWindow {
             format!("{}.jpeg", fbx_name),
             format!("{}.tga", fbx_name),
         ];
-        
+
         // Procura em Assets/Meshes/
         for tex_name in &texture_extensions {
             let tex_path = fbx_dir.join(tex_name);
@@ -382,10 +388,13 @@ impl ProjectWindow {
                 return Some(tex_path.to_string_lossy().to_string());
             }
         }
-        
+
         // Procura em Assets/Textures/ (pasta correta para texturas)
         let textures_dir = Path::new("Assets").join("Textures");
-        eprintln!("[FBX] Procurando em Assets/Textures/: exists={}", textures_dir.exists());
+        eprintln!(
+            "[FBX] Procurando em Assets/Textures/: exists={}",
+            textures_dir.exists()
+        );
         if textures_dir.exists() {
             for tex_name in &texture_extensions {
                 let tex_path = textures_dir.join(tex_name);
@@ -400,12 +409,15 @@ impl ProjectWindow {
                 let tex_name = format!("{}.{}", base_name, ext);
                 let tex_path = textures_dir.join(&tex_name);
                 if tex_path.exists() {
-                    eprintln!("[FBX] Textura encontrada (Textures simples): {:?}", tex_path);
+                    eprintln!(
+                        "[FBX] Textura encontrada (Textures simples): {:?}",
+                        tex_path
+                    );
                     return Some(tex_path.to_string_lossy().to_string());
                 }
             }
         }
-        
+
         // Fallback: procura em Assets/Assets/ (legado)
         let assets_dir = Path::new("Assets").join("Assets");
         if assets_dir.exists() {
@@ -413,12 +425,15 @@ impl ProjectWindow {
             for tex_name in &texture_extensions {
                 let tex_path = assets_dir.join(tex_name);
                 if tex_path.exists() {
-                    eprintln!("[FBX] Textura encontrada (Assets/Assets legado): {:?}", tex_path);
+                    eprintln!(
+                        "[FBX] Textura encontrada (Assets/Assets legado): {:?}",
+                        tex_path
+                    );
                     return Some(tex_path.to_string_lossy().to_string());
                 }
             }
         }
-        
+
         eprintln!("[FBX] Textura nao encontrada para {:?}", fbx_path);
         None
     }
@@ -477,11 +492,17 @@ impl ProjectWindow {
             self.selected_asset = None;
         }
         self.deleted_assets.remove(&imported_name);
-        
+
         // Create automatic material for FBX and GLB imports
         if ext == "fbx" || ext == "glb" || ext == "gltf" {
-            let mat_name = format!("{}_Mat", dest_path.file_stem().and_then(|s| s.to_str()).unwrap_or("Material"));
-            
+            let mat_name = format!(
+                "{}_Mat",
+                dest_path
+                    .file_stem()
+                    .and_then(|s| s.to_str())
+                    .unwrap_or("Material")
+            );
+
             // Try to extract texture path
             let texture_path = if ext == "fbx" {
                 Self::extract_fbx_texture_path(&dest_path)
@@ -496,12 +517,18 @@ impl ProjectWindow {
                             if let Some(ext) = path.extension().and_then(|e| e.to_str()) {
                                 if matches!(ext.to_lowercase().as_str(), "png" | "jpg" | "jpeg") {
                                     // Copy to Textures folder
-                                    let tex_name = format!("{}_{}", dest_path.file_stem().unwrap_or_default().to_string_lossy(), path.file_name().unwrap_or_default().to_string_lossy());
-                                    let dest_tex = Path::new("Assets").join("Textures").join(&tex_name);
+                                    let tex_name = format!(
+                                        "{}_{}",
+                                        dest_path.file_stem().unwrap_or_default().to_string_lossy(),
+                                        path.file_name().unwrap_or_default().to_string_lossy()
+                                    );
+                                    let dest_tex =
+                                        Path::new("Assets").join("Textures").join(&tex_name);
                                     if let Ok(_) = std::fs::create_dir_all("Assets/Textures") {
                                         if let Ok(_) = std::fs::copy(&path, &dest_tex) {
                                             eprintln!("[GLB] Textura extraída: {:?}", dest_tex);
-                                            found_tex = Some(dest_tex.to_string_lossy().to_string());
+                                            found_tex =
+                                                Some(dest_tex.to_string_lossy().to_string());
                                             break;
                                         }
                                     }
@@ -512,13 +539,12 @@ impl ProjectWindow {
                 }
                 found_tex
             };
-            
+
             let mat_content = if let Some(tex) = &texture_path {
                 // Quando tem textura, usa só albedo_texture (albedo branco é default)
                 format!(
                     "# Dengine Material\n# Auto-generated for {}\nshader=Standard\nalbedo_texture={}\n",
-                    imported_name,
-                    tex
+                    imported_name, tex
                 )
             } else {
                 // Sem textura, usa cor sólida
@@ -527,15 +553,9 @@ impl ProjectWindow {
                     imported_name
                 )
             };
-            self.create_text_asset_with_name(
-                language,
-                "Materials",
-                &mat_name,
-                "mat",
-                &mat_content,
-            );
+            self.create_text_asset_with_name(language, "Materials", &mat_name, "mat", &mat_content);
         }
-        
+
         if ext == "fbx" {
             match self.upsert_default_animation_module_for_fbx(&imported_name, &dest_path) {
                 Ok(Some(module)) => {
@@ -958,7 +978,10 @@ impl ProjectWindow {
     fn parse_fbx_binary_animation_names(bytes: &[u8]) -> Vec<String> {
         let mut out = Vec::<String>::new();
 
-        eprintln!("[FBX] parse_fbx_binary_animation_names: {} bytes", bytes.len());
+        eprintln!(
+            "[FBX] parse_fbx_binary_animation_names: {} bytes",
+            bytes.len()
+        );
 
         // FBX binary header is 27 bytes, then nodes start
         if bytes.len() < 27 {
@@ -994,13 +1017,16 @@ impl ProjectWindow {
                 eprintln!("[FBX] Limite de iteracoes atingido (10000), saindo");
                 break;
             }
-            
+
             let record_len =
                 u32::from_le_bytes([bytes[pos], bytes[pos + 1], bytes[pos + 2], bytes[pos + 3]])
                     as usize;
 
             if record_len == 0 || record_len > bytes.len().saturating_sub(pos) {
-                eprintln!("[FBX] record_len invalid em pos={}: record_len={}", pos, record_len);
+                eprintln!(
+                    "[FBX] record_len invalid em pos={}: record_len={}",
+                    pos, record_len
+                );
                 break;
             }
 
@@ -1140,7 +1166,10 @@ impl ProjectWindow {
         } else if !out.is_empty() {
             eprintln!("[FBX] Animacoes ja encontradas, pulando busca por Take");
         } else {
-            eprintln!("[FBX] Arquivo muito grande para busca por Take ({} bytes > 10MB)", bytes.len());
+            eprintln!(
+                "[FBX] Arquivo muito grande para busca por Take ({} bytes > 10MB)",
+                bytes.len()
+            );
         }
 
         out.dedup_by(|a, b| a.eq_ignore_ascii_case(b));
@@ -1162,7 +1191,10 @@ impl ProjectWindow {
         imported_fbx_name: &str,
         fbx_path: &Path,
     ) -> Result<Option<String>, String> {
-        eprintln!("[FBX] upsert_default_animation_module_for_fbx: {:?}", fbx_path);
+        eprintln!(
+            "[FBX] upsert_default_animation_module_for_fbx: {:?}",
+            fbx_path
+        );
         let bytes = fs::read(fbx_path).map_err(|e| e.to_string())?;
         eprintln!("[FBX] Lido {} bytes", bytes.len());
         let raw = String::from_utf8_lossy(&bytes);
@@ -1568,6 +1600,37 @@ impl ProjectWindow {
         );
     }
 
+    fn delete_asset(&mut self, language: EngineLanguage, asset: &str) {
+        if self.deleted_assets.contains(asset) {
+            return;
+        }
+        self.deleted_assets.insert(asset.to_string());
+        if self.selected_asset.as_deref() == Some(asset) {
+            self.selected_asset = None;
+        }
+        if self
+            .selected_sub_asset
+            .as_ref()
+            .is_some_and(|s| s.starts_with(&format!("{asset}::")))
+        {
+            self.selected_sub_asset = None;
+        }
+        self.status_text = format!("{}: {}", self.tr(language, "delete"), asset);
+        self.hovered_asset = None;
+    }
+
+    pub fn handle_delete_shortcut(&mut self, language: EngineLanguage) {
+        if let Some(asset) = self.hovered_asset.clone() {
+            self.delete_asset(language, &asset);
+        } else if let Some(asset) = self.selected_asset.clone() {
+            self.delete_asset(language, &asset);
+        }
+    }
+
+    pub fn contains_point(&self, p: Pos2) -> bool {
+        self.last_panel_rect.is_some_and(|r| r.contains(p))
+    }
+
     fn draw_tree_leaf_row(
         ui: &mut egui::Ui,
         id: &str,
@@ -1745,6 +1808,7 @@ impl ProjectWindow {
             .fixed_pos(panel_rect.min)
             .show(ctx, |ui| {
                 let (rect, _) = ui.allocate_exact_size(panel_rect.size(), Sense::hover());
+                self.last_panel_rect = Some(rect);
 
                 ui.painter()
                     .rect_filled(rect, 0.0, Color32::from_rgb(35, 35, 35));
@@ -2008,9 +2072,14 @@ impl ProjectWindow {
                                 }
 
                                 if self.assets_open {
-                                    for folder in
-                                        ["Animations", "Materials", "Meshes", "Mold", "Scripts", "Textures"]
-                                    {
+                                    for folder in [
+                                        "Animations",
+                                        "Materials",
+                                        "Meshes",
+                                        "Mold",
+                                        "Scripts",
+                                        "Textures",
+                                    ] {
                                         if !self.should_show_folder(folder) {
                                             continue;
                                         }
@@ -2185,6 +2254,7 @@ impl ProjectWindow {
                             && (filter.is_empty() || asset.to_lowercase().contains(&filter))
                     })
                     .collect();
+                self.hovered_asset = None;
 
                 ui.scope_builder(
                     egui::UiBuilder::new()
@@ -2535,20 +2605,7 @@ impl ProjectWindow {
                                                 );
                                             }
                                             if delete_clicked {
-                                                self.deleted_assets.insert(asset.clone());
-                                                if self.selected_asset.as_ref() == Some(asset) {
-                                                    self.selected_asset = None;
-                                                }
-                                                if self.selected_sub_asset.as_ref().is_some_and(
-                                                    |s| s.starts_with(&format!("{asset}::")),
-                                                ) {
-                                                    self.selected_sub_asset = None;
-                                                }
-                                                self.status_text = format!(
-                                                    "{}: {}",
-                                                    self.tr(language, "delete"),
-                                                    asset
-                                                );
+                                                self.delete_asset(language, asset);
                                             }
 
                                             if tile_resp.clicked() {
@@ -2564,7 +2621,8 @@ impl ProjectWindow {
                                                 {
                                                     self.dragging_asset = Some(asset.clone());
                                                     // Store in egui data for cross-window drag
-                                                    let full_path = self.get_asset_full_path(&asset);
+                                                    let full_path =
+                                                        self.get_asset_full_path(&asset);
                                                     ui.data_mut(|d| {
                                                         d.insert_temp(
                                                             egui::Id::new("project_dragging_asset"),
@@ -2572,6 +2630,9 @@ impl ProjectWindow {
                                                         );
                                                     });
                                                 }
+                                            }
+                                            if tile_resp.hovered() {
+                                                self.hovered_asset = Some(asset.clone());
                                             }
                                             if tile_resp.hovered()
                                                 && ui.input(|i| {
@@ -2586,7 +2647,8 @@ impl ProjectWindow {
                                                 {
                                                     self.dragging_asset = Some(asset.clone());
                                                     // Store in egui data for cross-window drag
-                                                    let full_path = self.get_asset_full_path(&asset);
+                                                    let full_path =
+                                                        self.get_asset_full_path(&asset);
                                                     ui.data_mut(|d| {
                                                         d.insert_temp(
                                                             egui::Id::new("project_dragging_asset"),
@@ -2878,11 +2940,7 @@ impl ProjectWindow {
     }
 
     pub fn docked_bottom_height(&self) -> f32 {
-        if self.open {
-            self.panel_height
-        } else {
-            0.0
-        }
+        if self.open { self.panel_height } else { 0.0 }
     }
 }
 
@@ -3312,7 +3370,7 @@ fn load_gltf_buffers_mesh_only_preview(
 
 fn load_fbx_ascii_preview_mesh(path: &Path) -> Result<(Vec<glam::Vec3>, Vec<[u32; 3]>), String> {
     use fbxcel_dom::any::AnyDocument;
-    use fbxcel_dom::v7400::object::{geometry::TypedGeometryHandle, TypedObjectHandle};
+    use fbxcel_dom::v7400::object::{TypedObjectHandle, geometry::TypedGeometryHandle};
     use std::io::BufReader;
 
     let file = std::fs::File::open(path).map_err(|e| e.to_string())?;
