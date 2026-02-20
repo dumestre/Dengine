@@ -5208,7 +5208,7 @@ impl FiosState {
 
                 ui.horizontal(|ui| {
                     let icon_size = egui::vec2(32.0, 32.0);
-                    
+
                     let play_icon = egui::RichText::new("▶").size(16.0).color(egui::Color32::WHITE);
                     let play_btn = egui::Button::new(play_icon)
                         .fill(if self.anim_is_playing { egui::Color32::from_rgb(60, 100, 60) } else { egui::Color32::from_rgb(40, 80, 50) })
@@ -5331,7 +5331,7 @@ impl FiosState {
                 ui.horizontal(|ui| {
                     ui.label(egui::RichText::new("Time:").size(12.0).color(egui::Color32::from_gray(180)));
                     ui.add_space(4.0);
-                    
+
                     let current_str = format!("{:.2}", self.anim_current_time);
                     let duration_str = format!("{:.2}", self.anim_total_duration);
                     ui.label(egui::RichText::new(format!("{}/{}", current_str, duration_str)).size(13.0).strong().color(egui::Color32::from_rgb(255, 200, 100)));
@@ -5340,7 +5340,7 @@ impl FiosState {
 
                     ui.label(egui::RichText::new("Duration:").size(12.0).color(egui::Color32::from_gray(180)));
                     ui.add_space(4.0);
-                    
+
                     let mut duration = self.anim_total_duration;
                     ui.add(egui::DragValue::new(&mut duration).range(0.1..=60.0).speed(0.1));
                     self.anim_total_duration = duration;
@@ -5374,7 +5374,7 @@ impl FiosState {
                     let x = time_to_x(t);
                     let is_major = i % 2 == 0;
                     let tick_height = if is_major { 16.0 } else { 8.0 };
-                    
+
                     painter.line_segment(
                         [
                             egui::pos2(x, track_area.bottom() - tick_height),
@@ -5382,7 +5382,7 @@ impl FiosState {
                         ],
                         egui::Stroke::new(1.0, egui::Color32::from_rgba_unmultiplied(100, 100, 120, 150)),
                     );
-                    
+
                     if is_major {
                         painter.text(
                             egui::pos2(x, track_area.bottom() - tick_height - 14.0),

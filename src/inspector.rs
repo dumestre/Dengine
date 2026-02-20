@@ -405,11 +405,8 @@ impl InspectorWindow {
                 let rgba = image.to_rgba8();
                 let size = [rgba.width() as usize, rgba.height() as usize];
                 let color_image = ColorImage::from_rgba_unmultiplied(size, rgba.as_raw());
-                let tex = ctx.load_texture(
-                    texture_path.to_owned(),
-                    color_image,
-                    TextureOptions::LINEAR,
-                );
+                let tex =
+                    ctx.load_texture(texture_path.to_owned(), color_image, TextureOptions::LINEAR);
                 self.shader_texture_cache
                     .insert(texture_path.to_string(), tex.clone());
                 return Some(tex);

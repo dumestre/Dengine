@@ -8,8 +8,8 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender};
 
 use eframe::egui::{
-    self, Align2, Color32, FontFamily, FontId, Id, Order, Pos2, Rect, Sense, Stroke, TextureHandle,
-    Vec2,
+    self, Align2, Color32, FontFamily, FontId, Id, Key, Order, Pos2, Rect, Sense, Stroke,
+    TextureHandle, Vec2,
 };
 use epaint::ColorImage;
 
@@ -54,6 +54,19 @@ pub struct ProjectWindow {
 struct MeshPreview {
     lines: Vec<([f32; 2], [f32; 2])>,
 }
+
+const KNOWN_FOLDER_PATHS: &[(&str, &str)] = &[
+    ("Assets", "Assets"),
+    ("Assets/Animations", "Animations"),
+    ("Assets/Materials", "Materials"),
+    ("Assets/Meshes", "Meshes"),
+    ("Assets/Mold", "Mold"),
+    ("Assets/Scripts", "Scripts"),
+    ("Assets/Textures", "Textures"),
+    ("Packages", "Packages"),
+    ("Packages/TextMeshPro", "TextMeshPro"),
+    ("Packages/InputSystem", "InputSystem"),
+];
 
 #[derive(Clone, Default)]
 struct FbxAssetMeta {
@@ -291,16 +304,7 @@ impl ProjectWindow {
     }
 
     fn should_show_folder(&self, folder: &'static str) -> bool {
-        if let Some(path) = match folder {
-            "Animations" => Some(PathBuf::from("Assets/Animations")),
-            "Materials" => Some(PathBuf::from("Assets/Materials")),
-            "Meshes" => Some(PathBuf::from("Assets/Meshes")),
-            "Mold" => Some(PathBuf::from("Assets/Mold")),
-            "Scripts" => Some(PathBuf::from("Assets/Scripts")),
-            "TextMeshPro" => Some(PathBuf::from("Packages/TextMeshPro")),
-            "InputSystem" => Some(PathBuf::from("Packages/InputSystem")),
-            _ => None,
-        } {
+        if let Some(path) = Self::folder_path_from_id(folder) {
             if path.exists() {
                 return true;
             }
@@ -854,19 +858,32 @@ impl ProjectWindow {
     }
 
     fn folder_path_from_id(folder: &'static str) -> Option<PathBuf> {
-        match folder {
-            "Assets" => Some(PathBuf::from("Assets")),
-            "Animations" => Some(PathBuf::from("Assets/Animations")),
-            "Materials" => Some(PathBuf::from("Assets/Materials")),
-            "Meshes" => Some(PathBuf::from("Assets/Meshes")),
-            "Mold" => Some(PathBuf::from("Assets/Mold")),
-            "Scripts" => Some(PathBuf::from("Assets/Scripts")),
-            "Textures" => Some(PathBuf::from("Assets/Textures")),
-            "Packages" => Some(PathBuf::from("Packages")),
-            "TextMeshPro" => Some(PathBuf::from("Packages/TextMeshPro")),
-            "InputSystem" => Some(PathBuf::from("Packages/InputSystem")),
-            _ => None,
+        for &(path_str, id) in KNOWN_FOLDER_PATHS {
+            if id == folder {
+                return Some(PathBuf::from(path_str));
+            }
         }
+        None
+    }
+
+    fn folder_id_from_path(path: &Path) -> Option<&'static str> {
+        for &(path_str, id) in KNOWN_FOLDER_PATHS {
+            if path.ends_with(Path::new(path_str)) {
+                return Some(id);
+            }
+        }
+        None
+    }
+
+    fn is_assets_folder_id(folder: &'static str) -> bool {
+        matches!(
+            folder,
+            "Assets" | "Animations" | "Materials" | "Meshes" | "Mold" | "Scripts" | "Textures"
+        )
+    }
+
+    fn is_packages_folder_id(folder: &'static str) -> bool {
+        matches!(folder, "Packages" | "TextMeshPro" | "InputSystem")
     }
 
     fn source_stamp(path: &Path) -> Option<(u64, u64)> {
@@ -1619,6 +1636,30 @@ impl ProjectWindow {
         self.hovered_asset = None;
     }
 
+    fn try_open_asset_folder(
+        &mut self,
+        asset: &str,
+        path: &Path,
+        language: EngineLanguage,
+    ) -> bool {
+        if !path.is_dir() {
+            return false;
+        }
+        let Some(folder_id) = Self::folder_id_from_path(path) else {
+            return false;
+        };
+        self.selected_folder = folder_id;
+        self.selected_asset = None;
+        self.selected_sub_asset = None;
+        self.status_text = format!("{}: {}", self.tr(language, "open"), asset);
+        if Self::is_packages_folder_id(folder_id) {
+            self.packages_open = true;
+        } else if Self::is_assets_folder_id(folder_id) {
+            self.assets_open = true;
+        }
+        true
+    }
+
     pub fn handle_delete_shortcut(&mut self, language: EngineLanguage) {
         if let Some(asset) = self.hovered_asset.clone() {
             self.delete_asset(language, &asset);
@@ -2312,6 +2353,12 @@ impl ProjectWindow {
                                         let mut col = 0usize;
                                         for asset in filtered_assets.iter() {
                                             let asset = *asset;
+                                            let asset_path =
+                                                self.asset_path_in_selected_folder(asset);
+                                            let asset_is_dir = asset_path
+                                                .as_ref()
+                                                .map(|p| p.is_dir())
+                                                .unwrap_or(false);
                                             let tile_size = Vec2::new(
                                                 tile_w,
                                                 tile_w + tile_name_h + tile_pad * 2.0,
@@ -2561,6 +2608,23 @@ impl ProjectWindow {
                                                 );
                                             }
 
+                                            let mut navigated_into_folder = false;
+                                            if asset_is_dir {
+                                                if tile_resp.double_clicked()
+                                                    || (tile_resp.hovered()
+                                                        && ui.input(|i| i.key_pressed(Key::Enter)))
+                                                {
+                                                    if let Some(path) = asset_path.as_deref() {
+                                                        navigated_into_folder = self
+                                                            .try_open_asset_folder(
+                                                                asset, path, language,
+                                                            );
+                                                    }
+                                                }
+                                            }
+                                            if navigated_into_folder {
+                                                continue;
+                                            }
                                             let mut open_clicked = false;
                                             let mut reveal_clicked = false;
                                             let mut delete_clicked = false;
