@@ -1201,12 +1201,14 @@ impl InspectorWindow {
                                                 texture_path.clone().unwrap_or_default()
                                             });
 
+                                        let shader_frame_width = ui.available_width();
                                         egui::Frame::new()
                                             .fill(Color32::from_rgb(33, 33, 33))
                                             .stroke(Stroke::new(1.0, Color32::from_gray(60)))
                                             .corner_radius(6)
                                             .inner_margin(egui::Margin::same(10))
                                             .show(ui, |ui| {
+                                                ui.set_width(shader_frame_width);
                                                 ui.label(
                                                     egui::RichText::new(match language {
                                                         EngineLanguage::Pt => "Shader",
@@ -1753,30 +1755,29 @@ impl InspectorWindow {
                                     ui.add_space(10.0);
 
                                     // Botão Adicionar Componente
-                                    let btn_width = (ui.available_width() - 4.0).max(120.0).min(ui.available_width() - 4.0);
-                                    let add_btn = egui::Button::image_and_text(
-                                        egui::Image::new(self.add_icon_texture.as_ref().unwrap())
+                                    ui.horizontal_centered(|ui| {
+                                        let add_btn = egui::Button::image_and_text(
+                                            egui::Image::new(
+                                                self.add_icon_texture.as_ref().unwrap(),
+                                            )
                                             .fit_to_exact_size(egui::vec2(10.0, 10.0)),
-                                        egui::RichText::new(match language {
-                                            EngineLanguage::Pt => "Add Comp",
-                                            EngineLanguage::En => "Add Comp",
-                                            EngineLanguage::Es => "Add Comp",
-                                        })
-                                        .strong()
-                                        .size(11.0)
-                                        .color(Color32::from_rgb(55, 55, 55)),
-                                    )
-                                    .fill(Color32::from_rgb(0x0F, 0xE8, 0x79))
-                                    .corner_radius(6)
-                                    .min_size(egui::vec2(btn_width, 24.0));
+                                            egui::RichText::new(match language {
+                                                EngineLanguage::Pt => "Add Comp",
+                                                EngineLanguage::En => "Add Comp",
+                                                EngineLanguage::Es => "Add Comp",
+                                            })
+                                            .strong()
+                                            .size(11.0)
+                                            .color(Color32::from_rgb(55, 55, 55)),
+                                        )
+                                        .fill(Color32::from_rgb(0x0F, 0xE8, 0x79))
+                                        .corner_radius(6);
 
-                                    let add_id = Id::new("add_comp_menu");
-                                    let add_resp = ui.add(add_btn);
-                                    if add_resp.clicked() {
-                                        egui::Popup::toggle_id(ui.ctx(), add_id);
-                                    }
+                                        let add_resp = ui.add_sized([140.0, 26.0], add_btn);
 
-                                    egui::Popup::menu(&add_resp).id(add_id).show(|ui| {
+                                        let add_id = Id::new("add_comp_menu");
+
+                                        egui::Popup::menu(&add_resp).id(add_id).show(|ui| {
                                         ui.set_width(220.0);
 
                                         ui.menu_button("💡 Iluminação", |ui: &mut egui::Ui| {
@@ -1868,6 +1869,7 @@ impl InspectorWindow {
                                                     .or_default();
                                                 ui.close();
                                             }
+                                        });
                                         });
                                     });
 
